@@ -33,6 +33,12 @@ enum {
 void HostGfxDma(int nChannel, uint32_t nMadr, uint32_t nQwc, uint32_t nTadr, uint32_t nChcr);
 
 /**
+ * Read nBytes of the GS-to-host image transfer just started (TRXDIR = 1) into pDest, as the EE
+ * reads them from the VIF1 FIFO. Without a renderer pDest keeps its contents.
+ */
+void HostGfxReadImage(void *pDest, unsigned nBytes);
+
+/**
  * Present the frame. Called once each vertical blank, from the vertical blank thread, before the
  * game's blank handlers run and before VSync() returns.
  */

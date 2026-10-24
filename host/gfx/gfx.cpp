@@ -384,6 +384,16 @@ void HostGfxDma(int nChannel, uint32_t nMadr, uint32_t nQwc, uint32_t nTadr, uin
     pthread_mutex_unlock(&g_lock);
 }
 
+void HostGfxReadImage(void *pDest, unsigned nBytes) {
+    if (!Drawing()) {
+        return;
+    }
+    pthread_mutex_lock(&g_lock);
+    const SystemHeap systemHeap;
+    ps2gfx_read_image(pDest, nBytes);
+    pthread_mutex_unlock(&g_lock);
+}
+
 // The game's thread at its swap: wait for the present of the frame swapped at nTick, so the GS
 // is never more than a frame behind, and pump the game's timers (as its drawing does) so that the
 // scheduler and the music keep their time while the renderer is slow.
