@@ -71,7 +71,7 @@ constexpr long long kFieldsNs = 1001000000LL; // 60 fields
 constexpr size_t kVblankStackSize = 0x80000;
 // In the fixed clock, a game that has not waited for this long gets its tick anyway (a load that
 // spins on the clock).
-constexpr long kFixedClockPatienceNs = 2000000000L;
+constexpr long kFixedClockPatienceNs = 10000000000L;
 
 pthread_mutex_t g_vblankLock = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t g_vblankSignal = PTHREAD_COND_INITIALIZER;
