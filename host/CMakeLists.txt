@@ -67,3 +67,22 @@ target_link_libraries(
           -Wl,--end-group)
 # host/stubs/gen-stubs.py reads the link errors by their symbol names.
 target_link_options(resonance_host PRIVATE -Wl,--no-demangle)
+
+# The OpenGL backend in host/gfx draws through libps2gfx (Play!, BSD-2) in an SDL2 window.
+find_package(SDL2 QUIET)
+option(RESONANCE_PS2GFX "Draw with host/gfx (OpenGL and SDL2) instead of the null backend"
+       ${SDL2_FOUND})
+if(RESONANCE_PS2GFX)
+  find_package(SDL2 REQUIRED)
+  add_subdirectory(gfx/ps2gfx)
+  target_sources(resonance_host PRIVATE gfx/gfx.cpp)
+  target_link_libraries(resonance_host PRIVATE ps2gfx SDL2::SDL2)
+  # host/gfx/gfx.cpp anchors its screenshots at the breadcrumbs of HostBreadcrumb(const char *).
+  target_link_options(
+    resonance_host PRIVATE -Wl,--wrap=_Z14HostBreadcrumbPKc
+    "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/gfx/local-symbols.map")
+  set_property(
+    TARGET resonance_host
+    APPEND
+    PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/gfx/local-symbols.map")
+endif()
