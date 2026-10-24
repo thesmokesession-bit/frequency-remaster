@@ -1,2 +1,3 @@
 3rdparty/**
+host/gfx/ps2gfx/**
 src/python/**
