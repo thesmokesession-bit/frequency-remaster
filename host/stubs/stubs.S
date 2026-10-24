@@ -36,29 +36,5 @@
     .size \name, 256
     .endm
 
-STUB sceCdStInit
-STUB sceCdStRead
-STUB sceCdStStart
-STUB sceCdStStop
-STUB sceDmaCreateQueueSemaphore
-STUB sceDmaDeleteQueueSemaphore
-STUB sceMpegAddStrCallback
-STUB sceMpegCreateDecoderContext
-STUB sceMpegDelete
-STUB sceMpegDemuxPssRing
-STUB sceMpegGetPicture
-STUB sceMpegInit
-STUB sceMpegIsEnd
-STUB sceMpegIsRefBuffEmpty
-STUB sceMpegReset
-STUB sceMpegSetCallbackSlot
-STUB sceMpegSetDecodeMode
-STUB viBufAddDMA
-STUB viBufFlush
-STUB viBufGetTs
-STUB viBufModifyPts
-STUB viBufReset
-STUB viBufRestartDMA
-STUB viBufStopDMA
 
     .section .note.GNU-stack, "", @progbits

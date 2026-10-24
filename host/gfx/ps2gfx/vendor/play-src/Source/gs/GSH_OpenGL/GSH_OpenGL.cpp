@@ -1673,16 +1673,17 @@ void CGSH_OpenGL::Prim_Sprite()
 			st[0] <<= m_VtxBuffer[1].st;
 			st[1] <<= m_VtxBuffer[0].st;
 
-			float nQ1 = rgbaq[1].nQ;
-			float nQ2 = rgbaq[0].nQ;
-			if(nQ1 == 0) nQ1 = 1;
-			if(nQ2 == 0) nQ2 = 1;
+			//A sprite has one Q, its second vertex's, as on the GS. (resonance: the first vertex's
+			//Q used to divide the second vertex's S and T. The game's VU1 sprites send Q = 0 with
+			//the first corner, so every particle sampled a single texel.)
+			float nQ = rgbaq[1].nQ;
+			if(nQ == 0) nQ = 1;
 
-			nS[0] = st[0].nS / nQ1;
-			nS[1] = st[1].nS / nQ2;
+			nS[0] = st[0].nS / nQ;
+			nS[1] = st[1].nS / nQ;
 
-			nT[0] = st[0].nT / nQ1;
-			nT[1] = st[1].nT / nQ2;
+			nT[0] = st[0].nT / nQ;
+			nT[1] = st[1].nT / nQ;
 		}
 	}
 

@@ -16,6 +16,12 @@
 #include "os/log.h"
 #include "os/mem.h"
 
+#ifdef RESONANCE_HOST
+// host/mpeg/mpeg.cpp
+void HostMovieIdle(void);
+void HostMovieStarted(void);
+#endif
+
 // The one block every decoder buffer is carved from. Each buffer starts on a 64-byte boundary, and
 // the block reserves 64 bytes of slack for aligning the first.
 enum {
@@ -35,6 +41,15 @@ enum {
     kCutsceneMemorySize = 0x57bc00,
 #endif
 };
+
+#ifdef RESONANCE_HOST
+// ponytail: the host queues twice the decoded frames. A host blank can come late, and the late ones
+// then come back to back; two frames were not slack enough for that and the movie fell behind its
+// blanks. The frame images, their tags, and the block grow by the same factor.
+enum { kQueueScale = 2 };
+#else
+enum { kQueueScale = 1 };
+#endif
 
 // Decoded frames the queue holds, tags and time stamps the decoder records, and the two thread
 // stacks.
@@ -166,6 +181,9 @@ void ErrMessage(char *message) {
 
 void switchThread(void) {
     RotateThreadReadyQueue(g_default_priority);
+#ifdef RESONANCE_HOST
+    HostMovieIdle();
+#endif
 }
 
 // NTSC-U/C: 0x00510f70, PAL: 0x005511e8
@@ -198,13 +216,16 @@ static void reset_display(void) {
 
 // NTSC-U/C: 0x005107a8, PAL: 0x00550a20
 static void init_all(void) {
-    g_cutscene_memory = MemAllocTagged(kCutsceneMemorySize, __FILE__, __LINE__);
+    g_cutscene_memory = MemAllocTagged(
+        kCutsceneMemorySize + (kQueueScale - 1) * (kFrameImagesSize + kFrameTagsSize),
+        __FILE__,
+        __LINE__);
     g_mpeg_work = ALIGN_UP(g_cutscene_memory);
     g_audio_buffer = ALIGN_UP(g_mpeg_work + kMpegWorkSize);
     g_video_data = ALIGN_UP(g_audio_buffer + kAudioBufferSize);
     g_frame_images = ALIGN_UP((unsigned char *)g_video_data + kVideoDataSize);
-    g_frame_tags = ALIGN_UP((unsigned char *)g_frame_images + kFrameImagesSize);
-    g_read_buf = ALIGN_UP((unsigned char *)g_frame_tags + kFrameTagsSize);
+    g_frame_tags = ALIGN_UP((unsigned char *)g_frame_images + kQueueScale * kFrameImagesSize);
+    g_read_buf = ALIGN_UP((unsigned char *)g_frame_tags + kQueueScale * kFrameTagsSize);
 
     sceGsResetPath();
     sceDmaReset(kDmaResetEnable);
@@ -236,7 +257,7 @@ static void prepare_playback(const char *name) {
     if (g_is_with_audio != 0) {
         videoDecSetStream(&videoDec, sceMpegStrPCM, 0, pcmCallback, g_read_buf);
     }
-    voBufCreate(&voBuf, UNCACHED(g_frame_images), g_frame_tags, kFrameCount);
+    voBufCreate(&voBuf, UNCACHED(g_frame_images), g_frame_tags, kQueueScale * kFrameCount);
 
     // Both threads run at the priority of the calling thread.
     struct ThreadParam status;
@@ -341,6 +362,9 @@ static int play_mpeg(VideoDec *video_dec, ReadBuf *buffer, StrFile *file) {
 
         if (is_started == 0 && voBufIsFull(&voBuf) != 0 && is_audio_ok() != 0) {
             startDisplay(1);
+#ifdef RESONANCE_HOST
+            HostMovieStarted(); // host/mpeg/mpeg.cpp: the movie clock, and INTRO_MOVIE_STARTED.
+#endif
             if (g_is_with_audio != 0) {
                 audioDecStart(&audioDec);
             }
@@ -402,9 +426,6 @@ void play_cutscene(const char *name, int with_audio) {
         }
         fclose(probe);
     }
-#ifdef RESONANCE_HOST
-    return; // ponytail: the movie ends at once until the native build decodes MPEG (libmpeg, IPU).
-#endif
     init_all();
     play(name, with_audio);
     free_all();

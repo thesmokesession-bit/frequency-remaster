@@ -3,7 +3,8 @@
 //
 // ponytail: a read finishes inside sceCdRead(), and the completion callback runs there too rather
 // than on libcdvd's callback thread. The game polls for it either way. The streaming calls
-// (sceCdSt*) serve only the intro movie, which does not play here, and stay stubs.
+// (sceCdSt*), which only the intro movie uses, read straight from the image at the stream's
+// sector and never call back.
 
 #include <ctype.h>
 #include <fcntl.h>
@@ -37,6 +38,8 @@ constexpr int kBadDescriptor = -9;
 int g_nDisc = -1;
 sceCdCBFunc g_pfnCallback = nullptr;
 int g_nError = 0;
+// The next sector sceCdStRead() returns.
+unsigned g_nStreamLsn = 0;
 
 struct DiscFile {
     bool bOpen;
@@ -237,6 +240,25 @@ int sceCdRead(unsigned nLsn, unsigned nSectors, void *pBuffer, sceCdRMode *) {
     // A read past the end of the disc reports an illegal address, as the drive does.
     g_nError = ReadSectors(nLsn, nSectors, pBuffer) ? 0 : 0x32;
     Complete(SCECdFuncRead);
+    return 1;
+}
+
+int sceCdStInit(unsigned, unsigned, unsigned) {
+    return 1;
+}
+
+int sceCdStStart(unsigned nLsn, sceCdRMode *) {
+    g_nStreamLsn = nLsn;
+    return 1;
+}
+
+int sceCdStRead(unsigned nSectors, unsigned *pBuffer, unsigned, unsigned *pnError) {
+    *pnError = ReadSectors(g_nStreamLsn, nSectors, pBuffer) ? 0 : 0x32;
+    g_nStreamLsn += nSectors;
+    return *pnError == 0 ? static_cast<int>(nSectors) : 0;
+}
+
+int sceCdStStop() {
     return 1;
 }
 

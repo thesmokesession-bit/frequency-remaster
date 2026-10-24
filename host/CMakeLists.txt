@@ -19,6 +19,9 @@ add_library(
   "${RESONANCE_EZMPEG_SAMPLE_DIR}/videodec.c"
   "${RESONANCE_EZMPEG_SAMPLE_DIR}/vobuf.c")
 target_link_libraries(resonance_ezmpeg PRIVATE resonance_common)
+# The movie's sound driver calls go to host/mpeg/mpeg.cpp, which keeps the SPU2's transfer clock.
+set_source_files_properties("${RESONANCE_EZMPEG_SAMPLE_DIR}/audiodec.c"
+                            PROPERTIES COMPILE_DEFINITIONS sceSdRemote=HostMovieSdRemote)
 
 # The Sony library units that are plain C with no hardware access (the VU0 arithmetic, the packet
 # builders, and the MIDI input stream) link unchanged.
@@ -37,6 +40,7 @@ add_executable(
   io/stdio.cpp
   kernel/iop.cpp
   kernel/kernel.cpp
+  mpeg/mpeg.cpp
   stubs/stubs.S
   stubs/unimplemented.c
   "${CMAKE_SOURCE_DIR}/sce/ee/src/libgifpk.c"
@@ -67,6 +71,11 @@ target_link_libraries(
           -Wl,--end-group)
 # host/stubs/gen-stubs.py reads the link errors by their symbol names.
 target_link_options(resonance_host PRIVATE -Wl,--no-demangle)
+
+# host/mpeg decodes the movies with libavcodec (FFmpeg, LGPL), linked dynamically.
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(LIBAVCODEC REQUIRED IMPORTED_TARGET libavcodec libavutil)
+target_link_libraries(resonance_host PRIVATE PkgConfig::LIBAVCODEC)
 
 # The OpenGL backend in host/gfx draws through libps2gfx (Play!, BSD-2) in an SDL2 window.
 find_package(SDL2 QUIET)
