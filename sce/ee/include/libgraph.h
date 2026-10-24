@@ -16,14 +16,14 @@ extern "C" {
  * An opening GIFtag, four register-and-tag pairs for BITBLTBUF, TRXPOS, TRXREG, and TRXDIR, and a
  * closing GIFtag.
  */
-typedef struct {
+typedef struct __attribute__((aligned(16))) {
     unsigned long long mWords[12]; /*!< The descriptor words. */
-} sceGsLoadImage __attribute__((aligned(16)));
+} sceGsLoadImage;
 
 /** Image download descriptor, with the same 96-byte layout as sceGsLoadImage. */
-typedef struct {
+typedef struct __attribute__((aligned(16))) {
     unsigned long long mWords[12]; /*!< The descriptor words. */
-} sceGsStoreImage __attribute__((aligned(16)));
+} sceGsStoreImage;
 
 /**
  * One GIFtag, 16 bytes.
@@ -31,9 +31,9 @@ typedef struct {
  * DMA reads it by quadword. It and every structure that includes it are therefore quadword
  * aligned.
  */
-typedef struct {
+typedef struct __attribute__((aligned(16))) {
     unsigned long long mWords[2]; /*!< The tag words. */
-} sceGifTag __attribute__((aligned(16)));
+} sceGifTag;
 
 /**
  * The five display registers in the order sceGsSetDefDispEnv() fills them.
