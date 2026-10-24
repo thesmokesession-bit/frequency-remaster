@@ -198,6 +198,7 @@ int StartRequest() {
 // still running.
 void HostBreadcrumb(const char *pszName) {
     fprintf(stderr, "%s\n", pszName);
+    HostEvent("breadcrumb %s", pszName);
     pthread_mutex_lock(&g_inputLock);
     g_anchors.push_back(Anchor{pszName, HostVblankCount()});
     pthread_mutex_unlock(&g_inputLock);

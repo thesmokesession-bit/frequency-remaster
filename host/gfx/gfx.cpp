@@ -6,6 +6,11 @@
 //
 // FREQ_SHOT=<directory> and FREQ_SHOT_AT=<BREADCRUMB>:<blank>[,<blank>...] save the displayed frame
 // as <directory>/<BREADCRUMB>+<blank>.png, where blank 0 is the first blank after the breadcrumb.
+// Blanks are fields (59.94 Hz) at any FREQ_FPS.
+//
+// FREQ_FRAMEHASH=<BREADCRUMB>:<fields> logs "FRAMEHASH <tick> <ns> <hash>" for each frame presented
+// in that many fields from the breadcrumb: a hash of the displayed frame's PNG, and the fixed
+// clock's time (FREQ_CLOCK=fixed presents each tick's frame before the game goes on).
 
 #include <algorithm>
 #include <atomic>
@@ -76,15 +81,40 @@ std::atomic<unsigned> g_nNextShotVblank{~0U};
 // The frames presented, counted on the GS thread.
 std::atomic<unsigned> g_nPresents{0};
 
+std::string g_hashBreadcrumb;
+unsigned g_nHashFields = 0;
+bool g_bHashAnchored = false;
+unsigned g_nHashAnchor = 0;
+
+void HashFrame(unsigned nTick) {
+    char szPath[64];
+    snprintf(szPath, sizeof(szPath), "/dev/shm/freq-framehash-%d.png", static_cast<int>(getpid()));
+    unsigned long long nHash = 1469598103934665603ULL; // FNV-1a
+    if (ps2gfx_screenshot(szPath) == 0) {
+        if (FILE *pFile = fopen(szPath, "rb")) {
+            for (int c; (c = fgetc(pFile)) != EOF;) {
+                nHash = (nHash ^ static_cast<unsigned char>(c)) * 1099511628211ULL;
+            }
+            fclose(pFile);
+        }
+        unlink(szPath);
+    }
+    fprintf(stderr, "FRAMEHASH %u %lld %016llx\n", nTick, HostFixedClockNs(), nHash);
+}
+
 void TakeShots(unsigned nVblank);
 
-// Called with g_lock held.
-void PresentLocked(unsigned nVblank) {
+// Called with g_lock held, for the frame loop's tick nTick (see HostFrameTick()).
+void PresentLocked(unsigned nTick) {
     for (uint32_t nRegister : kDisplayRegisters) {
         ps2gfx_priv_write(
             nRegister, *reinterpret_cast<volatile uint64_t *>(static_cast<uintptr_t>(nRegister)));
     }
     ps2gfx_vsync();
+    const unsigned nVblank = nTick / HostTicksPerField();
+    if (g_bHashAnchored && nVblank - g_nHashAnchor < g_nHashFields) {
+        HashFrame(nTick);
+    }
     TakeShots(nVblank);
 }
 
@@ -127,6 +157,15 @@ void *RunPresents(void *) {
 }
 
 void ParseShots() {
+    if (const char *pszHash = getenv("FREQ_FRAMEHASH")) {
+        const char *pszColon = strchr(pszHash, ':');
+        if (pszColon == nullptr) {
+            fprintf(stderr, "host: FREQ_FRAMEHASH is not <BREADCRUMB>:<fields>\n");
+            _exit(70);
+        }
+        g_hashBreadcrumb.assign(pszHash, pszColon);
+        g_nHashFields = static_cast<unsigned>(strtoul(pszColon + 1, nullptr, 10));
+    }
     g_pszShotDirectory = getenv("FREQ_SHOT");
     const char *pszAt = getenv("FREQ_SHOT_AT");
     if (g_pszShotDirectory == nullptr || pszAt == nullptr) {
@@ -256,6 +295,15 @@ extern "C" {
 void __real__Z14HostBreadcrumbPKc(const char *pszName);
 
 void __wrap__Z14HostBreadcrumbPKc(const char *pszName) {
+    if (Drawing() && g_nHashFields != 0 && g_hashBreadcrumb == pszName) {
+        const unsigned nVblank = HostVblankCount();
+        pthread_mutex_lock(&g_lock);
+        if (!g_bHashAnchored) {
+            g_nHashAnchor = nVblank;
+            g_bHashAnchored = true;
+        }
+        pthread_mutex_unlock(&g_lock);
+    }
     if (Drawing() && g_pszShotDirectory != nullptr && g_shotBreadcrumb == pszName) {
         const unsigned nVblank = HostVblankCount();
         pthread_mutex_lock(&g_lock);
@@ -285,16 +333,16 @@ void HostGfxVsync() {
     if (!Drawing()) {
         return;
     }
-    const unsigned nVblank = HostVblankCount() + 1;
-    if (nVblank >= g_nNextShotVblank) {
+    const unsigned nTick = HostFrameTick() + 1;
+    if (nTick / HostTicksPerField() >= g_nNextShotVblank || HostFixedClockNs() >= 0) {
         pthread_mutex_lock(&g_lock);
         const SystemHeap systemHeap;
-        PresentLocked(nVblank);
+        PresentLocked(nTick);
         pthread_mutex_unlock(&g_lock);
         return;
     }
     pthread_mutex_lock(&g_presentLock);
-    g_nPendingVblank = nVblank;
+    g_nPendingVblank = nTick;
     pthread_cond_signal(&g_presentSignal);
     pthread_mutex_unlock(&g_presentLock);
 }

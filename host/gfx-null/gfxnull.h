@@ -44,6 +44,31 @@ unsigned HostVblankCount(void);
 /** Wait for the next vertical blank, and return the field it began (the CSR FIELD bit). */
 int HostWaitVblank(void);
 
+/** The frame loop's blanks so far: the field blanks, or twice as many with FREQ_FPS=120. */
+unsigned HostFrameTick(void);
+
+/** Wait until HostFrameTick() reaches nTarget (the game's swap), and return the tick. */
+unsigned HostWaitFrameTick(unsigned nTarget);
+
+/** The frame loop's blanks in one field: 1, or 2 with FREQ_FPS=120. */
+unsigned HostTicksPerField(void);
+
+/**
+ * The fields between the last two swaps: 1 at 60 Hz (always, as the game counts frames), the
+ * ticks over 2 at 120 Hz. Frame code that steps by the frame scales its step by it.
+ */
+float HostFrameFields(void);
+
+/** Whether the last swap began a field (always at 60 Hz). Frame code that draws random numbers or
+ *  counts whole frames does so only then, so it runs as at 60 Hz. */
+int HostFrameEndsField(void);
+
+/** The fixed clock's time in nanoseconds (FREQ_CLOCK=fixed), or -1. */
+long long HostFixedClockNs(void);
+
+/** Print "EVENT <HostFrameTick()> <fixed clock ns> <text>" when FREQ_EVENTLOG is set. */
+void HostEvent(const char *pszFormat, ...);
+
 #ifdef __cplusplus
 }
 #endif

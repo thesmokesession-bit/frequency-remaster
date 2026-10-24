@@ -10,6 +10,7 @@
 
 #include "app/longop.h"
 #include "gfx/gsdoublebuffer.h"
+#include "gfx/hostframe.h"
 #include "gfx/renderstats.h"
 #include "gfx/vram.h"
 #include "os/dbg.h"
@@ -521,7 +522,11 @@ void GfxDevice::InitDisplayMode() {
                                   nZPsm,
                                   kClearOnSwap);
     SetClearColor(mClearColor);
+#ifdef RESONANCE_HOST
+    mnSwapVblank = HostFrameTick() + 1;
+#else
     mnSwapVblank = gVCount + 1;
+#endif
     sceGsSyncVCallback(DrawVSyncCB); // The previous handler it returns is discarded.
     FlipFrameBuffer();
     RestorePacket();
@@ -554,9 +559,13 @@ void GfxDevice::BeginFrame() {
 
 inline void GfxDevice::SwapBuffers() {
     sceGsSyncPath(0, 0);
+#ifdef RESONANCE_HOST
+    mnSwapVblank = HostWaitFrameTick(mnSwapVblank) + 1;
+#else
     while (gVCount < mnSwapVblank) {
     }
     mnSwapVblank = gVCount + 1;
+#endif
     PutDispBuffer(mpDisplayBuffers, mnDrawBuffer, 1);
     sceGsSyncPath(0, 0);
     mnDrawBuffer = mnDrawBuffer == 0;

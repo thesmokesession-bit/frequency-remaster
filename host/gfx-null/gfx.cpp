@@ -3,10 +3,20 @@
 //
 // HostGfxDma() and HostGfxVsync() are where a renderer takes the transfers and presents frames.
 // Here they do nothing.
+//
+// FREQ_FPS=120 ticks the frame loop's blank (HostWaitFrameTick(), and a present each tick) twice
+// a field. The field blank itself (the CSR, VSync(), the interrupt handlers, HostVblankCount())
+// stays at 59.94 Hz, so the movies, the input script and the shot offsets keep their pace.
+//
+// FREQ_CLOCK=fixed is a test mode: the game's clock (ReadCycleCount()) reads tick * period, and
+// a tick comes as soon as the game waits for one, so a run is independent of the host's speed.
 
+#include <atomic>
+#include <stdarg.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
@@ -57,13 +67,80 @@ constexpr uint32_t kChcrNormalFromMemory = 0x101;
 constexpr uint32_t kChcrChainFromMemory = 0x105;
 
 // NTSC: 60000 / 1001 fields a second.
-constexpr long kVblankPeriodNs = 1001000000L / 60;
+constexpr long long kFieldsNs = 1001000000LL; // 60 fields
 constexpr size_t kVblankStackSize = 0x80000;
+// In the fixed clock, a game that has not waited for this long gets its tick anyway (a load that
+// spins on the clock).
+constexpr long kFixedClockPatienceNs = 2000000000L;
 
 pthread_mutex_t g_vblankLock = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t g_vblankSignal = PTHREAD_COND_INITIALIZER;
 pthread_once_t g_vblankOnce = PTHREAD_ONCE_INIT;
 unsigned g_nVblankCount = 0;
+
+// Under g_vblankLock: the frame loop's ticks, the tick of its last swap, and whether it waits.
+unsigned g_nTicksPerField = 1;
+bool g_bFixedClock = false;
+unsigned g_nTickCount = 0;
+unsigned g_nSwapTick = 0;
+bool g_bGameWaits = false;
+pthread_cond_t g_gameWaitsSignal = PTHREAD_COND_INITIALIZER;
+// Set at each swap, for the frame code that counts frames (see HostFrameFields()).
+float g_flFrameFields = 1.0f;
+int g_bFrameEndsField = 1;
+// The fixed clock's time, -1 outside the fixed clock.
+std::atomic<long long> g_nFixedNs{-1};
+// Negative controls for the tests (p3/fps-out): FREQ_TEST_CLOCK_SCALE runs the fixed clock faster
+// than its ticks, FREQ_TEST_SLOW_SWAP=1 makes each swap wait a tick more (each frame shown twice).
+double g_flTestClockScale = 1.0;
+unsigned g_nTestSwapTicks = 0;
+
+// The time of a tick: exact multiples, so tick 2n at 120 Hz is tick n at 60 Hz.
+long long TickNs(unsigned nTick) {
+    return static_cast<long long>(nTick) * kFieldsNs / (60LL * g_nTicksPerField);
+}
+
+// Read before the game's first instruction, as the clock must not change under it.
+__attribute__((constructor)) void ReadSettings() {
+    const char *pszFps = getenv("FREQ_FPS");
+    if (pszFps != nullptr && strcmp(pszFps, "120") == 0) {
+        g_nTicksPerField = 2;
+    } else if (pszFps != nullptr && strcmp(pszFps, "60") != 0) {
+        fprintf(stderr, "host: FREQ_FPS=%s is neither 60 nor 120\n", pszFps);
+        _exit(70);
+    }
+    const char *pszClock = getenv("FREQ_CLOCK");
+    g_bFixedClock = pszClock != nullptr && strcmp(pszClock, "fixed") == 0;
+    if (g_bFixedClock) {
+        g_nFixedNs = 0;
+    }
+    if (const char *pszScale = getenv("FREQ_TEST_CLOCK_SCALE")) {
+        g_flTestClockScale = strtod(pszScale, nullptr);
+    }
+    g_nTestSwapTicks = getenv("FREQ_TEST_SLOW_SWAP") != nullptr ? 1 : 0;
+}
+
+// The fixed clock waits for the game to wait (or loses patience), the wall clock for the time.
+void AwaitTick(timespec &next, unsigned nTick) {
+    if (g_bFixedClock) {
+        timespec limit; // the condition's clock
+        clock_gettime(CLOCK_REALTIME, &limit);
+        limit.tv_sec += kFixedClockPatienceNs / 1000000000L;
+        pthread_mutex_lock(&g_vblankLock);
+        while (!g_bGameWaits &&
+               pthread_cond_timedwait(&g_gameWaitsSignal, &g_vblankLock, &limit) == 0) {
+        }
+        pthread_mutex_unlock(&g_vblankLock);
+        g_nFixedNs = static_cast<long long>(static_cast<double>(TickNs(nTick)) * g_flTestClockScale);
+        return;
+    }
+    next.tv_nsec += kFieldsNs / 60 / g_nTicksPerField;
+    if (next.tv_nsec >= 1000000000L) {
+        next.tv_nsec -= 1000000000L;
+        ++next.tv_sec;
+    }
+    clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, nullptr);
+}
 
 sceDmaEnv g_dmaEnv;
 
@@ -96,13 +173,8 @@ __attribute__((constructor)) void MapRegisterPages() {
 void *RunVblanks(void *) {
     timespec next;
     clock_gettime(CLOCK_MONOTONIC, &next);
-    for (;;) {
-        next.tv_nsec += kVblankPeriodNs;
-        if (next.tv_nsec >= 1000000000L) {
-            next.tv_nsec -= 1000000000L;
-            ++next.tv_sec;
-        }
-        clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, nullptr);
+    for (unsigned nTick = 1;; ++nTick) {
+        AwaitTick(next, nTick);
 
         // A blank that comes late does not make up the ones it missed.
         timespec now;
@@ -115,14 +187,21 @@ void *RunVblanks(void *) {
         // the game's next transfers do not overlap.
         HostGfxVsync();
 
+        const bool bField = nTick % g_nTicksPerField == 0;
         pthread_mutex_lock(&g_vblankLock);
-        *HOST_GS_CSR = (*HOST_GS_CSR ^ HOST_GS_CSR_FIELD) | HOST_GS_CSR_VSYNC;
-        ++g_nVblankCount;
+        if (bField) {
+            *HOST_GS_CSR = (*HOST_GS_CSR ^ HOST_GS_CSR_FIELD) | HOST_GS_CSR_VSYNC;
+            ++g_nVblankCount;
+        }
+        ++g_nTickCount;
+        g_bGameWaits = false;
         pthread_cond_broadcast(&g_vblankSignal);
         pthread_mutex_unlock(&g_vblankLock);
 
-        HostRaiseIntc(INTC_VBLANK_S);
-        HostRaiseIntc(INTC_VBLANK_E);
+        if (bField) {
+            HostRaiseIntc(INTC_VBLANK_S);
+            HostRaiseIntc(INTC_VBLANK_E);
+        }
     }
     return nullptr;
 }
@@ -189,11 +268,74 @@ int HostWaitVblank() {
     pthread_mutex_lock(&g_vblankLock);
     const unsigned nStart = g_nVblankCount;
     while (g_nVblankCount == nStart) {
+        g_bGameWaits = true;
+        pthread_cond_signal(&g_gameWaitsSignal);
         pthread_cond_wait(&g_vblankSignal, &g_vblankLock);
     }
     const int nField = (*HOST_GS_CSR & HOST_GS_CSR_FIELD) != 0;
     pthread_mutex_unlock(&g_vblankLock);
     return nField;
+}
+
+unsigned HostFrameTick() {
+    pthread_once(&g_vblankOnce, StartVblanks);
+    pthread_mutex_lock(&g_vblankLock);
+    const unsigned nTick = g_nTickCount;
+    pthread_mutex_unlock(&g_vblankLock);
+    return nTick;
+}
+
+unsigned HostWaitFrameTick(unsigned nTarget) {
+    pthread_once(&g_vblankOnce, StartVblanks);
+    nTarget += g_nTestSwapTicks;
+    pthread_mutex_lock(&g_vblankLock);
+    while (g_nTickCount < nTarget) {
+        g_bGameWaits = true;
+        pthread_cond_signal(&g_gameWaitsSignal);
+        pthread_cond_wait(&g_vblankSignal, &g_vblankLock);
+    }
+    const unsigned nTick = g_nTickCount;
+    if (g_nTicksPerField != 1) {
+        g_flFrameFields = static_cast<float>(nTick - g_nSwapTick) / g_nTicksPerField;
+        g_bFrameEndsField = nTick / g_nTicksPerField != g_nSwapTick / g_nTicksPerField;
+    }
+    g_nSwapTick = nTick;
+    pthread_mutex_unlock(&g_vblankLock);
+    return nTick;
+}
+
+float HostFrameFields() {
+    return g_flFrameFields;
+}
+
+int HostFrameEndsField() {
+    return g_bFrameEndsField;
+}
+
+unsigned HostTicksPerField() {
+    return g_nTicksPerField;
+}
+
+long long HostFixedClockNs() {
+    return g_nFixedNs;
+}
+
+// FREQ_EVENTLOG=1 prints the game's events (the guarded HostEvent() calls in src/) on stderr, with
+// the fixed clock's time.
+void HostEvent(const char *pszFormat, ...) {
+    static const bool bLog = getenv("FREQ_EVENTLOG") != nullptr;
+    if (!bLog) {
+        return;
+    }
+    char szText[256];
+    va_list arguments;
+    va_start(arguments, pszFormat);
+    vsnprintf(szText, sizeof(szText), pszFormat, arguments);
+    va_end(arguments);
+    pthread_mutex_lock(&g_vblankLock);
+    const unsigned nTick = g_nTickCount;
+    pthread_mutex_unlock(&g_vblankLock);
+    fprintf(stderr, "EVENT %u %lld %s\n", nTick, static_cast<long long>(g_nFixedNs), szText);
 }
 
 sceDmaChan *sceDmaGetChan(int nChannel) {
