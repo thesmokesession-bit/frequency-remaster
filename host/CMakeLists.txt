@@ -20,8 +20,8 @@ add_library(
   "${RESONANCE_EZMPEG_SAMPLE_DIR}/vobuf.c")
 target_link_libraries(resonance_ezmpeg PRIVATE resonance_common)
 
-# libvu0.c is the one Sony library unit that is plain C arithmetic, with no hardware access, and the
-# native build links it unchanged.
+# The Sony library units that are plain C with no hardware access (the VU0 arithmetic, the packet
+# builders, and the MIDI input stream) link unchanged.
 add_executable(
   resonance_host
   core/cycles.cpp
@@ -29,9 +29,20 @@ add_executable(
   core/libc.c
   core/main.cpp
   core/vumicrocode.S
+  gfx-null/gfx.cpp
+  gfx-null/libgraph.c
+  io/disc.cpp
+  io/memcard.cpp
+  io/pad.cpp
+  io/stdio.cpp
+  kernel/iop.cpp
+  kernel/kernel.cpp
   stubs/stubs.S
   stubs/unimplemented.c
-  "${CMAKE_SOURCE_DIR}/sce/ee/src/libvu0.c")
+  "${CMAKE_SOURCE_DIR}/sce/ee/src/libgifpk.c"
+  "${CMAKE_SOURCE_DIR}/sce/ee/src/libvifpk.c"
+  "${CMAKE_SOURCE_DIR}/sce/ee/src/libvu0.c"
+  "${CMAKE_SOURCE_DIR}/sce/ee/src/msin.c")
 # dlmalloc is compiled as released.
 set_source_files_properties(core/heap.c PROPERTIES COMPILE_OPTIONS -w)
 set_source_files_properties(
