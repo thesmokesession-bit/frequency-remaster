@@ -25,6 +25,8 @@ constexpr int kSectorSize = 2048;
 constexpr int kVolumeDescriptorSector = 16;
 constexpr int kRootRecordOffset = 156;
 constexpr int kDirectoryFlag = 2;
+// A directory record's name follows its 33 fixed bytes, the last of which is the name's length.
+constexpr int kRecordNameOffset = 33;
 constexpr int kFileCount = 32;
 
 // The kernel file service's error for a file that does not exist.
@@ -121,7 +123,11 @@ bool FindFile(const char *pszPath, unsigned *pnLsn, unsigned *pnSize, bool *pbDi
             // Records never cross a sector, and a zero length pads out the rest of one.
             for (int i = 0; i < kSectorSize && abSector[i] != 0; i += abSector[i]) {
                 const unsigned char *pRecord = abSector + i;
-                if (NameMatches(reinterpret_cast<const char *>(pRecord + 33),
+                if (i + kRecordNameOffset > kSectorSize ||
+                    i + kRecordNameOffset + pRecord[32] > kSectorSize) {
+                    break;
+                }
+                if (NameMatches(reinterpret_cast<const char *>(pRecord + kRecordNameOffset),
                                 pRecord[32],
                                 pszComponent,
                                 nLength)) {
