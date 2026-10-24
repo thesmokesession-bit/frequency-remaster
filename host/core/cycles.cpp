@@ -1,13 +1,11 @@
 #include "os/cycles.h"
 
 #include <stdint.h>
-#include <time.h>
 
-// The monotonic clock in Emotion Engine cycles, which wraps at 32 bits as the Count register does.
+extern "C" uint64_t HostAudioCycles(); // host/audio/audio.cpp
+
+// The free-running cycle counter, which wraps at 32 bits as the Count register does. It runs on
+// the audio clock, so that the song clock and everything else timed by it follow the sound.
 unsigned ReadCycleCount() {
-    timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    return static_cast<unsigned>(static_cast<uint64_t>(now.tv_sec) * kCyclesPerMillisecond * 1000 +
-                                 static_cast<uint64_t>(now.tv_nsec) * kCyclesPerMillisecond /
-                                     1000000);
+    return static_cast<unsigned>(HostAudioCycles());
 }

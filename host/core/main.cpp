@@ -13,6 +13,8 @@
 // The game's main() in src/main.cpp, which host/CMakeLists.txt compiles under this name.
 int GameMain();
 
+extern "C" void HostAudioStart(); // host/audio/audio.cpp
+
 extern "C" {
 // The start of the executable's writable data, from the C start-up file, and its end.
 extern char __data_start[];
@@ -183,6 +185,9 @@ int main() {
 
     const char *pszSelfTest = getenv("FREQ_SELFTEST");
     const bool bSelfTest = pszSelfTest != nullptr && strcmp(pszSelfTest, "lowmem") == 0;
+    if (!bSelfTest) {
+        HostAudioStart(); // the clock the game reads from here on
+    }
 
     // The game runs on _stack, as the Emotion Engine's main thread does.
     pthread_attr_t attributes;
