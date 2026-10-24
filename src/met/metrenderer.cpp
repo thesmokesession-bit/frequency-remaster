@@ -234,7 +234,20 @@ MetRenderer::MetRenderer()
     GlobalSettings::Create();
     mCommandRepeater = new MetCommandRepeater;
     mCommandMap = new MetCommandMap;
+#ifdef RESONANCE_HOST
+    // The seed is the time the console took from creating the watchdog's clock to here: 169 ms
+    // in PCSX2 running the original disc (its R250 table after seeding, read from a savestate,
+    // matches no other seed). The host gets here in under a millisecond, which seeded 0 or 1 and
+    // dealt the attract demo's powerups to other phrases than the console's.
+    constexpr int kConsoleSeedMs = 169;
+    SeedR250(kConsoleSeedMs);
+#else
+#line 237
     SeedR250(FrameIntervalMs(FrameClockNs(Application::shared()->GetWatchdog()), 0));
+#endif
+#ifndef RESONANCE_HOST
+#line 237
+#endif
     RebuildStageLists();
     RebuildArenaLists();
     MetPersonaData::ClearSavedList();

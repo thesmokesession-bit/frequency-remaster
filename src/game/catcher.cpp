@@ -21,6 +21,13 @@
 #include "msg/seekermsg.h"
 #include "sch/command.h"
 
+#ifdef RESONANCE_HOST
+extern "C" int HostRand(void); // host/core/libc.c: the console C library's rand()
+#endif
+#ifndef RESONANCE_HOST
+#line 22
+#endif
+
 namespace {
 
 // Start() searches for the first gem from the position before the song starts.
@@ -469,7 +476,15 @@ void Catcher::SimulateRemoteGem(int nTick) {
     if (mRemotePlayer != &NullPlayer::sInstance && mRemotePlayer->GetInputSlot() == kNoPlayerSlot) {
         const Sch::Tick window = MakePosition(mRemotePosition.mTick + Sch::Tick(kBarTicks).mTick);
         if (!(window.mTick < nTick) &&
+#ifdef RESONANCE_HOST
+            static_cast<float>(HostRand() % kRandomScale) < mRemoteSuccess * kRandomScale) {
+#else
+#line 472
             static_cast<float>(std::rand() % kRandomScale) < mRemoteSuccess * kRandomScale) {
+#endif
+#ifndef RESONANCE_HOST
+#line 472
+#endif
             Sch::Tick gemTick;
             int nGem;
             mTrackData->FindGemAtOrAfter(nTick, &gemTick.mTick, &nGem);

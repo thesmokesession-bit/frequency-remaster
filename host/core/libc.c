@@ -33,6 +33,15 @@ int LibcConsoleIsatty(int nFile) {
     return tcgetattr(nFile, &settings) == 0;
 }
 
+// The console C library's rand() (newlib's, in SCUS_971.25 at 0x0053aa78): a 32-bit linear
+// congruential step from 1, never reseeded. The game's draws (the computer player's catches) must
+// follow it, not the host's rand(), which is another generator that the host's libraries share.
+int HostRand(void) {
+    static unsigned nNext = 1;
+    nNext = nNext * 0x41c64e6du + 12345u;
+    return (int)(nNext & 0x7fffffffu);
+}
+
 // The Emotion Engine runtime's three-way compare, which reports an unordered pair as greater.
 int freq_compare_double(double a, double b) {
     if (a < b) {
