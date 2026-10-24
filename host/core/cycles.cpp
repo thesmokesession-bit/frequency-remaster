@@ -1,21 +1,13 @@
 #include "os/cycles.h"
 
 #include <stdint.h>
-#include <time.h>
 
-#include "../gfx-null/gfxnull.h"
+extern "C" uint64_t HostAudioCycles(); // host/audio/audio.cpp
 
-// The monotonic clock in Emotion Engine cycles, which wraps at 32 bits as the Count register does.
-// FREQ_CLOCK=fixed reads the frame loop's ticks instead (host/gfx-null/gfx.cpp).
+// The free-running cycle counter, which wraps at 32 bits as the Count register does. It runs on
+// the audio clock, so that the song clock and everything else timed by it follow the sound. With
+// FREQ_CLOCK=fixed the audio clock is the frame loop's fixed clock (host/gfx-null/gfx.cpp), and
+// the audio renders up to it at each tick.
 unsigned ReadCycleCount() {
-    const long long nFixedNs = HostFixedClockNs();
-    if (nFixedNs >= 0) {
-        return static_cast<unsigned>(static_cast<uint64_t>(nFixedNs) * kCyclesPerMillisecond /
-                                     1000000);
-    }
-    timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    return static_cast<unsigned>(static_cast<uint64_t>(now.tv_sec) * kCyclesPerMillisecond * 1000 +
-                                 static_cast<uint64_t>(now.tv_nsec) * kCyclesPerMillisecond /
-                                     1000000);
+    return static_cast<unsigned>(HostAudioCycles());
 }

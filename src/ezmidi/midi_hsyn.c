@@ -1346,6 +1346,24 @@ static int hsyn_atick(void) {
     return 0;
 }
 
+#ifdef RESONANCE_HOST
+// The native build has no IOP threads. host/audio/audio.cpp runs one pass of hsyn_atick()'s loop
+// for each period of the synth timer in the audio it renders.
+void HostHsynTick(void) {
+    hs_tick_setup();
+    HardSynthKillOld();
+    scan_inbuf(0);
+    scan_inbuf(1);
+    HardSynthUpdate();
+    _do_reg_out();
+}
+
+// The two MIDI stream buffers the EE writes to, which HardSynthInit() reports to it.
+void *HostHsynInput(void) {
+    return hsBf_T;
+}
+#endif
+
 // NTSC-U/C: 0x5fec, PAL: 0x5fec
 static unsigned int timer_handler(void *common) {
     TimerCtx *tc = common;

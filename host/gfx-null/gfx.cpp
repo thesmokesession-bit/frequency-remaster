@@ -28,6 +28,8 @@
 #include <libdma.h>
 #include <malloc.h>
 
+extern "C" void HostAudioFixedTick(); // host/audio/audio.cpp
+
 #include "../kernel/kernel.h"
 #include "gfxnull.h"
 
@@ -133,6 +135,7 @@ void AwaitTick(timespec &next, unsigned nTick) {
         pthread_mutex_unlock(&g_vblankLock);
         g_nFixedNs =
             static_cast<long long>(static_cast<double>(TickNs(nTick)) * g_flTestClockScale);
+        HostAudioFixedTick(); // the sound catches up with the clock while the game waits
         return;
     }
     next.tv_nsec += kFieldsNs / 60 / g_nTicksPerField;

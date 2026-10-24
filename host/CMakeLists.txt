@@ -86,3 +86,12 @@ if(RESONANCE_PS2GFX)
     APPEND
     PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/gfx/local-symbols.map")
 endif()
+
+# Sound: the game's own driver on Play!'s SPU2, out through SDL2 (host/audio). It needs SDL2 and the
+# Framework libps2gfx vendors, whichever backend draws.
+find_package(SDL2 REQUIRED)
+if(NOT TARGET ps2gfx)
+  add_subdirectory(gfx/ps2gfx)
+endif()
+add_subdirectory(audio)
+target_link_libraries(resonance_host PRIVATE resonance_audio)
