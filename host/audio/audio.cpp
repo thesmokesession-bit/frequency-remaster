@@ -5,9 +5,11 @@
 //
 // The audio is the clock. One thread renders 10 ms blocks at the wall-clock rate; the synth ticks
 // and the SPU2 advance by rendered sample count, and the EE cycle counter (host/core/cycles.cpp)
-// reads the rendered position, so the game's song clock follows the audio however slowly frames
-// draw. MIDI the EE ships is stamped with that clock and reaches the synth at the tick its stamp
-// falls in, as it would on the console.
+// reads the rendered position plus a fixed lead, so the game's song clock follows the audio
+// however slowly frames draw. Each MIDI message the EE sends is stamped with its due time (the
+// scheduler command sending it may run late; on the console the game polls its scheduler all
+// through a frame, here it can idle a frame at the swap) and reaches the synth at the tick that
+// time falls in. The lead absorbs that lateness, so the music plays the lead behind the game.
 
 #include <SDL.h>
 #include <fcntl.h>
@@ -46,6 +48,7 @@ constexpr uint64_t kEeCyclesPerSample = 6144; // 294912 EE cycles per millisecon
 constexpr uint64_t kIopCyclesPerSample = 768; // 36.864 MHz IOP system clock
 constexpr int kBlock = 480;                   // frames per rendered block, 10 ms
 constexpr int64_t kBlockNs = 10000000;
+constexpr uint64_t kLeadCycles = 25 * 294912; // 25 ms, a frame and a scheduler poll
 constexpr int64_t kMaxLagNs = 200000000;         // a longer stall is waited out, not caught up
 constexpr unsigned kMaxQueuedBytes = 4 * kRate / 10; // 100 ms of S16 stereo
 constexpr uint32_t kSpuRamSize = 2 << 20;
@@ -86,12 +89,21 @@ std::atomic<int64_t> g_nAnchorNs{0};
 std::atomic<uint64_t> g_nLastCycles{0};
 bool g_bStarted = false;
 
-// MIDI the EE has shipped that the synth has not been given, stamped with the EE clock.
-struct MidiBlock {
+// MIDI messages the EE has shipped that the synth has not been given, with their due times.
+struct MidiMessage {
     uint64_t nStamp;
-    std::vector<uint8_t> bytes;
+    uint8_t nLength;
+    uint8_t aBytes[3];
 };
-std::deque<MidiBlock> g_midi;
+std::deque<MidiMessage> g_midi;
+
+// The due time of each message in the EE's stream buffer since it last shipped, by byte offset.
+// Only game threads touch it, one at a time.
+struct MidiDue {
+    unsigned nOffset;
+    uint64_t nStamp;
+};
+std::vector<MidiDue> g_midiDue;
 
 SDL_AudioDeviceID g_nDevice = 0;
 FILE *g_pWav = nullptr;
@@ -113,9 +125,9 @@ uint64_t EeClock() {
         nCycles = g_nAnchorCycles.load();
         nAnchorNs = g_nAnchorNs.load();
     } while (nCycles != g_nAnchorCycles.load());
-    // The EE moves through the block the renderer makes next, and no further.
+    // The EE moves through the block the renderer makes next, and no further, a lead ahead.
     const int64_t nSince = std::clamp<int64_t>(NowNs() - nAnchorNs, 0, kBlockNs);
-    const uint64_t nNow = nCycles + static_cast<uint64_t>(nSince) * 294912 / 1000000;
+    const uint64_t nNow = nCycles + kLeadCycles + static_cast<uint64_t>(nSince) * 294912 / 1000000;
     uint64_t nLast = g_nLastCycles.load();
     while (nNow > nLast && !g_nLastCycles.compare_exchange_weak(nLast, nNow)) {
     }
@@ -418,20 +430,27 @@ void SdInit() {
 
 // ---- The renderer -------------------------------------------------------------------------------
 
-// Hands the synth the MIDI due by this tick, oldest first, while its buffers are free.
+// Hands the synth the MIDI due by this tick, in order, as full as its two buffers hold.
 void ReleaseMidi() {
     auto *pInput = static_cast<uint8_t *>(HostHsynInput());
     const uint64_t nNow = g_nRendered * kEeCyclesPerSample;
-    for (int nBuffer = 0; nBuffer < kMidiBuffers && !g_midi.empty(); ++nBuffer) {
+    for (int nBuffer = 0; nBuffer < kMidiBuffers; ++nBuffer) {
         uint8_t *pStream = pInput + nBuffer * kMidiBufferSize;
-        uint32_t nValid;
-        memcpy(&nValid, pStream + sizeof(uint32_t), sizeof(nValid));
-        if (nValid != 0 || g_midi.front().nStamp > nNow) {
+        uint32_t aHeader[2]; // sceCslMidiStream: buffer size, valid size
+        memcpy(aHeader, pStream, sizeof(aHeader));
+        if (aHeader[1] != 0) {
             continue;
         }
-        const std::vector<uint8_t> &bytes = g_midi.front().bytes;
-        memcpy(pStream, bytes.data(), std::min<size_t>(bytes.size(), kMidiBufferSize));
-        g_midi.pop_front();
+        uint32_t nValid = 0;
+        while (!g_midi.empty() && g_midi.front().nStamp <= nNow &&
+               nValid + g_midi.front().nLength <= kMidiBufferSize - sizeof(aHeader)) {
+            memcpy(pStream + sizeof(aHeader) + nValid, g_midi.front().aBytes, g_midi.front().nLength);
+            nValid += g_midi.front().nLength;
+            g_midi.pop_front();
+        }
+        aHeader[0] = kMidiBufferSize;
+        aHeader[1] = nValid;
+        memcpy(pStream, aHeader, sizeof(aHeader));
     }
 }
 
@@ -565,16 +584,43 @@ void HostIopUnlock() {
     g_iop.unlock();
 }
 
-// A SIF DMA write into IOP memory, under the IOP lock. MIDI for the synth waits for its tick.
+// src/synth/midi_main.cpp: the EE puts a message at nOffset of its stream buffer, due nLateNs ago.
+void HostMidiQueued(unsigned nOffset, long long nLateNs) {
+    const uint64_t nLate = static_cast<uint64_t>(std::max(nLateNs, 0LL)) * 294912 / 1000000;
+    const uint64_t nNow = EeClock();
+    g_midiDue.push_back({nOffset, nNow - std::min(nLate, nNow)});
+}
+
+// A SIF DMA write into IOP memory, under the IOP lock. MIDI for the synth waits for its due time:
+// the shipped stream (sceCslMidiStream) is split into messages, each stamped with the due time
+// HostMidiQueued() recorded for its offset, or now.
 void HostIopWrite(void *pDest, const void *pSource, unsigned nSize) {
     uint8_t *pInput = static_cast<uint8_t *>(HostHsynInput());
     uint8_t *pDestBytes = static_cast<uint8_t *>(pDest);
-    if (g_bTicking && pDestBytes >= pInput && pDestBytes < pInput + kMidiBuffers * kMidiBufferSize) {
-        const uint8_t *pBytes = static_cast<const uint8_t *>(pSource);
-        g_midi.push_back({EeClock(), std::vector<uint8_t>(pBytes, pBytes + nSize)});
+    if (!g_bTicking || pDestBytes < pInput || pDestBytes >= pInput + kMidiBuffers * kMidiBufferSize) {
+        memcpy(pDest, pSource, nSize);
         return;
     }
-    memcpy(pDest, pSource, nSize);
+    const uint8_t *pData = static_cast<const uint8_t *>(pSource) + 2 * sizeof(uint32_t);
+    const unsigned nData = nSize > 2 * sizeof(uint32_t) ? nSize - 2 * sizeof(uint32_t) : 0;
+    const uint64_t nNow = EeClock();
+    size_t nDue = 0;
+    uint64_t nStamp = nNow;
+    for (unsigned nOffset = 0; nOffset < nData;) {
+        while (nDue < g_midiDue.size() && g_midiDue[nDue].nOffset <= nOffset) {
+            nStamp = g_midiDue[nDue++].nStamp;
+        }
+        // As msin queues them: note off, program change, and channel pressure are two bytes.
+        const unsigned nType = pData[nOffset] & 0xf0;
+        MidiMessage message = {nStamp, static_cast<uint8_t>(
+                                           nType == 0x80 || nType == 0xc0 || nType == 0xd0 ? 2 : 3),
+                               {}};
+        message.nLength = static_cast<uint8_t>(std::min<unsigned>(message.nLength, nData - nOffset));
+        memcpy(message.aBytes, pData + nOffset, message.nLength);
+        g_midi.push_back(message);
+        nOffset += message.nLength;
+    }
+    g_midiDue.clear();
 }
 
 // EZMIDI.IRX's start: its server thread's body, which registers the server and returns here.

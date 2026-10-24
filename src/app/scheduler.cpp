@@ -32,6 +32,12 @@ constexpr int kCommandErrorDuration = 50;
 
 } // namespace
 
+#ifdef RESONANCE_HOST
+// How late the command Service() is running was due, in the clock's nanoseconds, and zero
+// outside a command. host/audio/audio.cpp schedules the MIDI the command sends at its due time.
+long long g_llHostCommandLateNs = 0;
+#endif
+
 // NTSC-U/C: 0x006f8a80, PAL: 0x0073c4d0
 long long g_llWatchdogSecondNs;
 
@@ -191,11 +197,18 @@ void Sch::Scheduler::Service() {
         Sch::TimedCommand *pCommand = *it;
         mQueue.erase(it);
         mNowNs = pCommand->mDueTick.mValue;
+#ifdef RESONANCE_HOST
+        const long long llOuterLateNs = g_llHostCommandLateNs;
+        g_llHostCommandLateNs = nNow - mNowNs;
+#endif
         try {
             pCommand->Run();
         } catch (std::exception &error) {
             ShowReportedMessage(HxStr(error.what()), kCommandErrorDuration);
         }
+#ifdef RESONANCE_HOST
+        g_llHostCommandLateNs = llOuterLateNs;
+#endif
         // Yes, the binary clears the flag before it tests the wrapper for null.
         pCommand->mCommand->mQueued = 0;
         if (pCommand != nullptr) {
