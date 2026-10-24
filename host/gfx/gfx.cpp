@@ -7,6 +7,7 @@
 // FREQ_SHOT=<directory> and FREQ_SHOT_AT=<BREADCRUMB>:<blank>[,<blank>...] save the displayed frame
 // as <directory>/<BREADCRUMB>+<blank>.png, where blank 0 is the first blank after the breadcrumb.
 
+#include <algorithm>
 #include <atomic>
 #include <pthread.h>
 #include <stdint.h>
@@ -48,9 +49,14 @@ constexpr int kGifChannel = 2;
 constexpr uint32_t kDisplayRegisters[] = {
     0x12000000, 0x12000020, 0x12000070, 0x12000080, 0x12000090, 0x120000a0, 0x120000e0};
 
-// ps2gfx takes one call at a time. The game's threads send transfers and the blank thread
+// ps2gfx takes one call at a time. The game's threads send transfers and the present thread
 // presents.
 pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
+// The blank thread only records the blank for the present thread, so a slow present never delays
+// the blanks, and the blank count stays with the clock.
+pthread_mutex_t g_presentLock = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t g_presentSignal = PTHREAD_COND_INITIALIZER;
+unsigned g_nPendingVblank = 0;
 pthread_once_t g_startOnce = PTHREAD_ONCE_INIT;
 bool g_bDrawing = false;
 SDL_Window *g_pWindow = nullptr;
@@ -64,8 +70,23 @@ bool g_bShotAnchored = false;
 unsigned g_nShotAnchor = 0;
 timespec g_shotAnchorTime;
 unsigned g_nShotAnchorPresents;
+// The blank of the next shot. The blank thread takes it itself, so the shot shows what the GS
+// displays at that blank rather than at the present thread's later turn.
+std::atomic<unsigned> g_nNextShotVblank{~0U};
 // The frames presented, counted on the GS thread.
 std::atomic<unsigned> g_nPresents{0};
+
+void TakeShots(unsigned nVblank);
+
+// Called with g_lock held.
+void PresentLocked(unsigned nVblank) {
+    for (uint32_t nRegister : kDisplayRegisters) {
+        ps2gfx_priv_write(
+            nRegister, *reinterpret_cast<volatile uint64_t *>(static_cast<uintptr_t>(nRegister)));
+    }
+    ps2gfx_vsync();
+    TakeShots(nVblank);
+}
 
 [[noreturn]] void Fail(const char *pszWhat) {
     fprintf(stderr, "host: %s: %s\n", pszWhat, SDL_GetError());
@@ -85,6 +106,24 @@ void Present(void *) {
     if (SDL_PeepEvents(nullptr, 1, SDL_PEEKEVENT, SDL_QUIT, SDL_QUIT) > 0) {
         _exit(0);
     }
+}
+
+void *RunPresents(void *) {
+    HostUseSystemHeap(1);
+    unsigned nPresented = 0;
+    for (;;) {
+        pthread_mutex_lock(&g_presentLock);
+        while (g_nPendingVblank == nPresented) {
+            pthread_cond_wait(&g_presentSignal, &g_presentLock);
+        }
+        nPresented = g_nPendingVblank;
+        pthread_mutex_unlock(&g_presentLock);
+
+        pthread_mutex_lock(&g_lock);
+        PresentLocked(nPresented);
+        pthread_mutex_unlock(&g_lock);
+    }
+    return nullptr;
 }
 
 void ParseShots() {
@@ -151,6 +190,11 @@ void Start() {
         Fail("cannot start ps2gfx");
     }
     ParseShots();
+    pthread_t thread;
+    if (pthread_create(&thread, nullptr, RunPresents, nullptr) != 0) {
+        Fail("cannot start the present thread");
+    }
+    pthread_detach(thread);
     g_bDrawing = true;
 }
 
@@ -161,6 +205,15 @@ bool Drawing() {
 
 // Called with g_lock held, after the blank that brings the count to nVblank. A shot whose blank
 // passed before the breadcrumb was recorded is taken at once.
+// Called with g_lock held.
+void ScheduleNextShot() {
+    unsigned nNext = ~0U;
+    for (unsigned nOffset : g_shotOffsets) {
+        nNext = std::min(nNext, g_nShotAnchor + nOffset + 1);
+    }
+    g_nNextShotVblank = nNext;
+}
+
 void TakeShots(unsigned nVblank) {
     if (!g_bShotAnchored) {
         return;
@@ -192,6 +245,7 @@ void TakeShots(unsigned nVblank) {
                 g_nPresents - g_nShotAnchorPresents);
         it = g_shotOffsets.erase(it);
     }
+    ScheduleNextShot();
 }
 
 } // namespace
@@ -210,6 +264,7 @@ void __wrap__Z14HostBreadcrumbPKc(const char *pszName) {
             clock_gettime(CLOCK_MONOTONIC, &g_shotAnchorTime);
             g_nShotAnchorPresents = g_nPresents;
             g_bShotAnchored = true;
+            ScheduleNextShot();
         }
         pthread_mutex_unlock(&g_lock);
     }
@@ -231,15 +286,17 @@ void HostGfxVsync() {
         return;
     }
     const unsigned nVblank = HostVblankCount() + 1;
-    pthread_mutex_lock(&g_lock);
-    const SystemHeap systemHeap;
-    for (uint32_t nRegister : kDisplayRegisters) {
-        ps2gfx_priv_write(
-            nRegister, *reinterpret_cast<volatile uint64_t *>(static_cast<uintptr_t>(nRegister)));
+    if (nVblank >= g_nNextShotVblank) {
+        pthread_mutex_lock(&g_lock);
+        const SystemHeap systemHeap;
+        PresentLocked(nVblank);
+        pthread_mutex_unlock(&g_lock);
+        return;
     }
-    ps2gfx_vsync();
-    TakeShots(nVblank);
-    pthread_mutex_unlock(&g_lock);
+    pthread_mutex_lock(&g_presentLock);
+    g_nPendingVblank = nVblank;
+    pthread_cond_signal(&g_presentSignal);
+    pthread_mutex_unlock(&g_presentLock);
 }
 
 } // extern "C"
