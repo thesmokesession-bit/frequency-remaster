@@ -1,6 +1,9 @@
 #include "met/metlogoscreen.h"
 
 #include <vector>
+#ifdef RESONANCE_HOST
+#include <stdlib.h>
+#endif
 
 #include "app/application.h"
 #include "app/playsound.h"
@@ -111,6 +114,12 @@ MetLogoScreen::MetLogoScreen(MetRenderer *pRenderer, int nPriority)
     : MetScreen(pRenderer, nPriority, HxStr(kScreenName), HxStr(kDirectory), HxStr(kContainerName)),
       mBlinkTime(0), mAttractEnabled(0), mLastActivityNs(kNoActivity) {
     mAttractDelaySeconds = QueryConfigValue(kAttractDelayConfigCode);
+#ifdef RESONANCE_HOST
+    // FREQ_TEST_ATTRACT_DELAY=<seconds> shortens the title's wait for the attract demo (tests).
+    if (const char *pszDelay = getenv("FREQ_TEST_ATTRACT_DELAY")) {
+        mAttractDelaySeconds = atoi(pszDelay);
+    }
+#endif
     mAttractStarted = 0;
     mShowsLoadedDrawables = 0;
 #ifdef VIDEO_STANDARD_PAL
