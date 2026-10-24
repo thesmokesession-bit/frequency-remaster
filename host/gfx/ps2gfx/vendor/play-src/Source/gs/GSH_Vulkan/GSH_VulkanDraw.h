@@ -69,6 +69,7 @@ namespace GSH_Vulkan
 			uint32 clutFormat : 6;
 			uint32 framebufferFormat : 6;
 			uint32 depthbufferFormat : 6;
+			uint32 textureScaled : 1; //resonance: sample the texture in sub-texels (it was drawn at resFactor)
 		};
 		static_assert(sizeof(PIPELINE_CAPS) <= sizeof(PipelineCapsInt), "PIPELINE_CAPS too big for PipelineCapsInt");
 

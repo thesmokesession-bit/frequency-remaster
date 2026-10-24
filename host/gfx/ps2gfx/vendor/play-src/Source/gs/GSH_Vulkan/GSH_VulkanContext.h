@@ -43,6 +43,16 @@ namespace GSH_Vulkan
 		VkImageView swizzleTablePSMZ32View = VK_NULL_HANDLE;
 		VkImageView swizzleTablePSMZ16View = VK_NULL_HANDLE;
 		VkImageView swizzleTablePSMZ16SView = VK_NULL_HANDLE;
+		//resonance: the GS draws at resFactor times its resolution. GS memory then holds resFactor^2
+		//planes of RAMSIZE bytes, one per sub-pixel (sx, sy): plane sy * resFactor + sx holds the
+		//sub-pixel of every GS pixel, laid out as the GS lays out that pixel. Transfers from the host
+		//write every plane, local copies copy each plane, and textures the GS drew read the plane of their
+		//sub-texel (CGSH_Vulkan tracks which pages draws wrote).
+		uint32 resFactor = 1;
+		uint32 GetPlaneCount() const
+		{
+			return resFactor * resFactor;
+		}
 
 		VkImageView GetSwizzleTable(uint32 psm) const
 		{

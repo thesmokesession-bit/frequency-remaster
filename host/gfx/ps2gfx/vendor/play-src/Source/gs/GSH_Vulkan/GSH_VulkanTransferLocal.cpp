@@ -71,7 +71,8 @@ void CTransferLocal::DoTransfer()
 	m_context->device.vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, xferPipeline->pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
 	m_context->device.vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, xferPipeline->pipeline);
 	m_context->device.vkCmdPushConstants(commandBuffer, xferPipeline->pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(XFERPARAMS), &Params);
-	m_context->device.vkCmdDispatch(commandBuffer, workUnitsX, workUnitsY, 1);
+	//resonance: one z per plane; each plane copies its own sub-pixels.
+	m_context->device.vkCmdDispatch(commandBuffer, workUnitsX, workUnitsY, m_context->GetPlaneCount());
 }
 
 VkDescriptorSet CTransferLocal::PrepareDescriptorSet(VkDescriptorSetLayout descriptorSetLayout, const DESCRIPTORSET_CAPS& caps)
@@ -217,9 +218,10 @@ Framework::Vulkan::CShaderModule CTransferLocal::CreateShader(const PIPELINE_CAP
 		auto offsetParams = CInt4Lvalue(b.CreateUniformInt4("offsetParams", Nuanceur::UNIFORM_UNIT_PUSHCONSTANT));
 		auto sizeParams = CInt4Lvalue(b.CreateUniformInt4("sizeParams", Nuanceur::UNIFORM_UNIT_PUSHCONSTANT));
 
-		auto srcBufAddress = bufferParams->x();
+		auto planeOffset = inputInvocationId->z() * NewInt(b, CGSHandler::RAMSIZE);
+		auto srcBufAddress = bufferParams->x() + planeOffset;
 		auto srcBufWidth = bufferParams->y();
-		auto dstBufAddress = bufferParams->z();
+		auto dstBufAddress = bufferParams->z() + planeOffset;
 		auto dstBufWidth = bufferParams->w();
 
 		auto srcOffset = offsetParams->xy();

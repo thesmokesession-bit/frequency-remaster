@@ -132,7 +132,8 @@ void CTransferHost::DoTransfer(const XferBuffer& inputData)
 	m_context->device.vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, xferPipeline->pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
 	m_context->device.vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, xferPipeline->pipeline);
 	m_context->device.vkCmdPushConstants(commandBuffer, xferPipeline->pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(XFERPARAMS), &Params);
-	m_context->device.vkCmdDispatch(commandBuffer, workUnits, 1, 1);
+	//resonance: one z per plane, so every sub-pixel gets the host's pixel.
+	m_context->device.vkCmdDispatch(commandBuffer, workUnits, 1, m_context->GetPlaneCount());
 
 	m_xferBufferOffset += inputData.size();
 	m_xferBufferOffset = (m_xferBufferOffset + (m_context->storageBufferAlignment - 1)) & -m_context->storageBufferAlignment;
@@ -271,7 +272,7 @@ Framework::Vulkan::CShaderModule CTransferHost::CreateXferShader(const PIPELINE_
 		auto xferParams0 = CInt4Lvalue(b.CreateUniformInt4("xferParams0", Nuanceur::UNIFORM_UNIT_PUSHCONSTANT));
 		auto xferParams1 = CInt4Lvalue(b.CreateUniformInt4("xferParams1", Nuanceur::UNIFORM_UNIT_PUSHCONSTANT));
 
-		auto bufAddress = xferParams0->x();
+		auto bufAddress = xferParams0->x() + inputInvocationId->z() * NewInt(b, CGSHandler::RAMSIZE);
 		auto bufWidth = xferParams0->y();
 		auto rrw = xferParams0->z();
 		auto dsax = xferParams0->w();

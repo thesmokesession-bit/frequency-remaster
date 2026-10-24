@@ -44,7 +44,9 @@ void CDrawDesktop::CreateRenderPass()
 	auto result = VK_SUCCESS;
 
 	VkAttachmentDescription colorAttachment = {};
-	colorAttachment.format = VK_FORMAT_R8G8B8A8_UNORM;
+	//resonance: the attachment is never read. Scaled, it is R8 so a 2048 x factor square stays small
+	//(RGBA8 at 6x is 600 MB); native keeps RGBA8 and so its output (lavapipe's tile handling sees the format).
+	colorAttachment.format = (m_context->resFactor > 1) ? VK_FORMAT_R8_UNORM : VK_FORMAT_R8G8B8A8_UNORM;
 	colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
 	colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 	colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -88,8 +90,8 @@ void CDrawDesktop::CreateFramebuffer()
 
 	auto frameBufferCreateInfo = Framework::Vulkan::FramebufferCreateInfo();
 	frameBufferCreateInfo.renderPass = m_renderPass;
-	frameBufferCreateInfo.width = DRAW_AREA_SIZE;
-	frameBufferCreateInfo.height = DRAW_AREA_SIZE;
+	frameBufferCreateInfo.width = DRAW_AREA_SIZE * m_context->resFactor;
+	frameBufferCreateInfo.height = DRAW_AREA_SIZE * m_context->resFactor;
 	frameBufferCreateInfo.layers = 1;
 	frameBufferCreateInfo.attachmentCount = 1;
 	frameBufferCreateInfo.pAttachments = &m_drawImageView;
@@ -104,7 +106,8 @@ void CDrawDesktop::CreateDrawImage()
 	//that don't write to any color attachment
 
 	m_drawImage = Framework::Vulkan::CImage(m_context->device, m_context->physicalDeviceMemoryProperties,
-	                                        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_FORMAT_R8G8B8A8_UNORM, DRAW_AREA_SIZE, DRAW_AREA_SIZE);
+	                                        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, (m_context->resFactor > 1) ? VK_FORMAT_R8_UNORM : VK_FORMAT_R8G8B8A8_UNORM,
+	                                        DRAW_AREA_SIZE * m_context->resFactor, DRAW_AREA_SIZE * m_context->resFactor);
 
 	m_drawImage.SetLayout(m_context->queue, m_context->commandBufferPool, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
@@ -251,6 +254,9 @@ PIPELINE CDrawDesktop::CreateDrawPipeline(const PIPELINE_CAPS& caps)
 	// Our attachment will write to all color channels, but no blending is enabled.
 	VkPipelineColorBlendAttachmentState blendAttachment = {};
 	blendAttachment.colorWriteMask = 0xf;
+	//resonance: scaled, no colour is written. Draws then never look opaque to lavapipe, which drops a
+	//64x64 tile's earlier draws (and their GS memory writes) under a later draw covering the tile.
+	if(m_context->resFactor > 1) blendAttachment.colorWriteMask = 0;
 
 	auto colorBlendStateInfo = Framework::Vulkan::PipelineColorBlendStateCreateInfo();
 	colorBlendStateInfo.attachmentCount = 1;
@@ -527,12 +533,21 @@ Framework::Vulkan::CShaderModule CDrawDesktop::CreateFragmentShader(const PIPELI
 				    return NewInt2(clampU, clampV);
 			    };
 
+			//resonance: textureIuv is in sub-texels (factor per texel). The texel is clamped as before,
+			//and the sub-texel picks the plane read.
+			// ponytail: a clamped texel keeps its sub-texel's plane; edges past a CLAMP repeat sub-texels.
+			auto factor = NewInt(b, caps.textureScaled ? m_context->resFactor : 1);
 			auto getTextureColor =
 			    [&](CInt2Value textureIuv, CIntValue texMipLevel, CFloat4Lvalue& textureColor) {
-				    auto mipIuv = textureIuv->xy() / (NewInt2(b, 1, 1) << texMipLevel->xx());
+				    auto texel = textureIuv / NewInt2(factor, factor);
+				    auto subU = Clamp(textureIuv->x() - texel->x() * factor, NewInt(b, 0), factor - NewInt(b, 1));
+				    auto subV = Clamp(textureIuv->y() - texel->y() * factor, NewInt(b, 0), factor - NewInt(b, 1));
+				    auto planeOffset = (subV * factor + subU) * NewInt(b, CGSHandler::RAMSIZE);
+				    auto clampTexel = clampCoordinates(texel);
+				    auto mipIuv = clampTexel->xy() / (NewInt2(b, 1, 1) << texMipLevel->xx());
 				    auto textureSource = caps.textureUseMemoryCopy ? memoryBufferCopy : memoryBuffer;
 				    textureColor = CDrawUtils::GetTextureColor(b, caps.textureFormat, caps.clutFormat, mipIuv,
-				                                               textureSource, clutBuffer, texSwizzleTable, texBufAddress, texBufWidth, texCsa);
+				                                               textureSource, clutBuffer, texSwizzleTable, texBufAddress + planeOffset, texBufWidth, texCsa);
 				    if(caps.textureHasAlpha)
 				    {
 					    CDrawUtils::ExpandAlpha(b, caps.textureFormat, caps.clutFormat, caps.textureBlackIsTransparent, textureColor, texA0, texA1);
@@ -592,7 +607,7 @@ Framework::Vulkan::CShaderModule CDrawDesktop::CreateFragmentShader(const PIPELI
 				auto textureColorC = CFloat4Lvalue(b.CreateVariableFloat("textureColorC"));
 				auto textureColorD = CFloat4Lvalue(b.CreateVariableFloat("textureColorD"));
 
-				textureLinearPos = (textureSt * ToFloat(texSize)) + NewFloat2(b, -0.5f, -0.5f);
+				textureLinearPos = (textureSt * ToFloat(texSize * NewInt2(factor, factor))) + NewFloat2(b, -0.5f, -0.5f);
 				//Check if ST is infinite due to being divided by a Q equal to zero.
 				//Happens in map rendering for Simple 2000 Series Vol. 90 - The OneeChambara 2.
 				textureLinearAb = Mix(Fract(textureLinearPos), NewFloat2(b, 0, 0), IsInf(textureSt));
@@ -600,13 +615,10 @@ Framework::Vulkan::CShaderModule CDrawDesktop::CreateFragmentShader(const PIPELI
 				textureIuv0 = ToInt(textureLinearPos);
 				textureIuv1 = textureIuv0 + NewInt2(b, 1, 1);
 
-				auto textureClampIuv0 = clampCoordinates(textureIuv0);
-				auto textureClampIuv1 = clampCoordinates(textureIuv1);
-
-				getTextureColor(NewInt2(textureClampIuv0->x(), textureClampIuv0->y()), texMipLevel, textureColorA);
-				getTextureColor(NewInt2(textureClampIuv1->x(), textureClampIuv0->y()), texMipLevel, textureColorB);
-				getTextureColor(NewInt2(textureClampIuv0->x(), textureClampIuv1->y()), texMipLevel, textureColorC);
-				getTextureColor(NewInt2(textureClampIuv1->x(), textureClampIuv1->y()), texMipLevel, textureColorD);
+				getTextureColor(NewInt2(textureIuv0->x(), textureIuv0->y()), texMipLevel, textureColorA);
+				getTextureColor(NewInt2(textureIuv1->x(), textureIuv0->y()), texMipLevel, textureColorB);
+				getTextureColor(NewInt2(textureIuv0->x(), textureIuv1->y()), texMipLevel, textureColorC);
+				getTextureColor(NewInt2(textureIuv1->x(), textureIuv1->y()), texMipLevel, textureColorD);
 
 				auto factorA = (NewFloat(b, 1.0f) - textureLinearAb->x()) * (NewFloat(b, 1.0f) - textureLinearAb->y());
 				auto factorB = textureLinearAb->x() * (NewFloat(b, 1.0f) - textureLinearAb->y());
@@ -623,9 +635,8 @@ Framework::Vulkan::CShaderModule CDrawDesktop::CreateFragmentShader(const PIPELI
 			{
 				//Point Sampling
 				//------------------------------
-				auto texelPos = ToInt(textureSt * ToFloat(texSize));
-				auto clampTexPos = clampCoordinates(texelPos);
-				getTextureColor(clampTexPos, texMipLevel, textureColor);
+				auto texelPos = ToInt(textureSt * ToFloat(texSize * NewInt2(factor, factor)));
+				getTextureColor(texelPos, texMipLevel, textureColor);
 			}
 
 			switch(caps.textureFunction)
@@ -696,7 +707,11 @@ Framework::Vulkan::CShaderModule CDrawDesktop::CreateFragmentShader(const PIPELI
 		writeDepth = NewBool(b, true);
 		writeAlpha = NewBool(b, true);
 
-		auto screenPos = ToInt(inputPosition->xy());
+		//resonance: the fragment is sub-pixel (subPos) of GS pixel screenPos, stored in its plane.
+		auto fbFactor = NewInt(b, m_context->resFactor);
+		auto scaledPos = ToInt(inputPosition->xy());
+		auto screenPos = scaledPos / NewInt2(fbFactor, fbFactor);
+		auto fbPlaneOffset = ((scaledPos->y() % fbFactor) * fbFactor + (scaledPos->x() % fbFactor)) * NewInt(b, CGSHandler::RAMSIZE);
 
 		switch(caps.scanMask)
 		{
@@ -763,8 +778,8 @@ Framework::Vulkan::CShaderModule CDrawDesktop::CreateFragmentShader(const PIPELI
 
 		//Prevent writing out of bounds (seems to cause wierd issues
 		//on Intel GPUs with games such as SNK vs. Capcom: SVC Chaos)
-		fbAddress = fbAddress & NewInt(b, CGSHandler::RAMSIZE - 1);
-		depthAddress = depthAddress & NewInt(b, CGSHandler::RAMSIZE - 1);
+		fbAddress = (fbAddress & NewInt(b, CGSHandler::RAMSIZE - 1)) + fbPlaneOffset;
+		depthAddress = (depthAddress & NewInt(b, CGSHandler::RAMSIZE - 1)) + fbPlaneOffset;
 
 		auto srcIColor = CInt4Lvalue(b.CreateVariableInt("srcIColor"));
 		srcIColor = ToInt(textureColor->xyzw() * NewFloat4(b, 255.f, 255.f, 255.f, 255.f));
@@ -959,12 +974,16 @@ void CDrawDesktop::FlushVertices()
 		assert(!m_renderPassBegun);
 
 		//We need to keep a copy of the memory
-		VkBufferCopy bufferCopy = {};
-		bufferCopy.srcOffset = m_memoryCopyAddress;
-		bufferCopy.dstOffset = m_memoryCopyAddress;
-		bufferCopy.size = m_memoryCopySize;
+		std::vector<VkBufferCopy> bufferCopies(m_context->GetPlaneCount());
+		for(uint32 plane = 0; plane < bufferCopies.size(); plane++)
+		{
+			bufferCopies[plane].srcOffset = m_memoryCopyAddress + plane * CGSHandler::RAMSIZE;
+			bufferCopies[plane].dstOffset = m_memoryCopyAddress + plane * CGSHandler::RAMSIZE;
+			bufferCopies[plane].size = m_memoryCopySize;
+		}
 
-		m_context->device.vkCmdCopyBuffer(commandBuffer, m_context->memoryBuffer, m_context->memoryBufferCopy, 1, &bufferCopy);
+		m_context->device.vkCmdCopyBuffer(commandBuffer, m_context->memoryBuffer, m_context->memoryBufferCopy,
+		                                  static_cast<uint32>(bufferCopies.size()), bufferCopies.data());
 
 		m_memoryCopyRegion.Reset();
 	}
@@ -977,17 +996,18 @@ void CDrawDesktop::FlushVertices()
 	}
 
 	{
+		uint32 factor = m_context->resFactor;
 		VkViewport viewport = {};
-		viewport.width = DRAW_AREA_SIZE;
-		viewport.height = DRAW_AREA_SIZE;
+		viewport.width = DRAW_AREA_SIZE * factor;
+		viewport.height = DRAW_AREA_SIZE * factor;
 		viewport.maxDepth = 1.0f;
 		m_context->device.vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
 
 		VkRect2D scissor = {};
-		scissor.offset.x = m_scissorX;
-		scissor.offset.y = m_scissorY;
-		scissor.extent.width = m_scissorWidth;
-		scissor.extent.height = m_scissorHeight;
+		scissor.offset.x = m_scissorX * factor;
+		scissor.offset.y = m_scissorY * factor;
+		scissor.extent.width = m_scissorWidth * factor;
+		scissor.extent.height = m_scissorHeight * factor;
 		m_context->device.vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 	}
 
@@ -1006,8 +1026,8 @@ void CDrawDesktop::FlushVertices()
 
 		auto renderPassBeginInfo = Framework::Vulkan::RenderPassBeginInfo();
 		renderPassBeginInfo.renderPass = m_renderPass;
-		renderPassBeginInfo.renderArea.extent.width = DRAW_AREA_SIZE;
-		renderPassBeginInfo.renderArea.extent.height = DRAW_AREA_SIZE;
+		renderPassBeginInfo.renderArea.extent.width = DRAW_AREA_SIZE * m_context->resFactor;
+		renderPassBeginInfo.renderArea.extent.height = DRAW_AREA_SIZE * m_context->resFactor;
 		renderPassBeginInfo.framebuffer = m_framebuffer;
 		m_context->device.vkCmdBeginRenderPass(commandBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
 

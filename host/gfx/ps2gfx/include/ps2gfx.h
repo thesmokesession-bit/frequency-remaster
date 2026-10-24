@@ -36,7 +36,7 @@ typedef struct ps2gfx_config
 	   May be NULL. */
 	void (*present)(void* user);
 	int window_width, window_height; /* presentation size for the default framebuffer, 0 = 640x448 */
-	/* OpenGL: the GS draws at res_factor times its resolution (0 or 1 = native). */
+	/* The GS draws at res_factor times its resolution (0 or 1 = native; Vulkan: at most 8). */
 	int res_factor;
 	/* Shape of the presented picture inside the window: 0 = the CRT's 640x448, 1 = 4:3, 2 = 16:9. */
 	int aspect;
@@ -82,8 +82,9 @@ void ps2gfx_vsync(void);
    overlap any other. */
 void ps2gfx_wait_frames(void);
 
-/* Writes the displayed framebuffer (DISPFB of the active read circuit, cropped to DISPLAY) as PNG.
-   Returns 0 on success, -1 if nothing is displayed. */
+/* Writes the displayed framebuffer (DISPFB of the active read circuit, cropped to DISPLAY) as PNG,
+   at res_factor times its size with Vulkan (OpenGL: native size). Returns 0 on success, -1 if
+   nothing is displayed. */
 int ps2gfx_screenshot(const char* path);
 /* OpenGL: presents the displayed framebuffer again and writes the whole window, at the window's
    size, as PNG. Call after ps2gfx_vsync. Returns 0 on success. */

@@ -10,13 +10,17 @@
 #include "GSH_VulkanPresent.h"
 #include "GSH_VulkanTransferHost.h"
 #include "GSH_VulkanTransferLocal.h"
+#include <bitset>
 #include <vector>
 #include <map>
 #include <cstring>
 #include "../GSHandler.h"
 #include "../GsDebuggerInterface.h"
 #include "../GsCachedArea.h"
+#include "../GsPixelFormats.h"
 #include "../GsTextureCache.h"
+
+#define PREF_CGSH_VULKAN_RESOLUTION_FACTOR "renderer.vulkan.resfactor"
 
 class CGSH_Vulkan : public CGSHandler, public CGsDebuggerInterface
 {
@@ -163,6 +167,10 @@ private:
 	void CheckSpriteCachedClutInvalidation(const CGsSpriteRect&);
 	static CLUTKEY MakeCachedClutKey(const TEX0&, const TEXCLUT&);
 
+	typedef std::bitset<RAMSIZE / CGsPixelFormats::PAGESIZE> PageSet;
+	static void MarkPages(PageSet&, uint32, uint32, bool);
+	static bool HasPages(const PageSet&, uint32, uint32);
+
 	Framework::CBitmap GetFramebufferImpl(uint64);
 	Framework::CBitmap GetDepthbufferImpl(uint64, uint64);
 	Framework::CBitmap GetTextureImpl(uint64, uint32, uint64, uint64, uint32);
@@ -240,6 +248,8 @@ private:
 	GSH_Vulkan::TransferLocalPtr m_transferLocal;
 
 	uint8* m_memoryCache = nullptr;
+	//resonance: GS memory pages last written by a draw (at resFactor), not by the host.
+	PageSet m_scaledPages;
 
 	//Draw context
 	VERTEX m_vtxBuffer[3];

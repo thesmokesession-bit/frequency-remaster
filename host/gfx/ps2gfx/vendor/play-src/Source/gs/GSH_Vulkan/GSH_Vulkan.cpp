@@ -49,6 +49,7 @@ static Framework::Vulkan::CImage CreateSwizzleTable(Framework::Vulkan::CDevice& 
 CGSH_Vulkan::CGSH_Vulkan()
 {
 	m_context = std::make_shared<CContext>();
+	CAppConfig::GetInstance().RegisterPreferenceInteger(PREF_CGSH_VULKAN_RESOLUTION_FACTOR, 1);
 }
 
 Framework::Vulkan::CInstance CGSH_Vulkan::CreateInstance(bool useValidationLayers)
@@ -164,6 +165,8 @@ void CGSH_Vulkan::InitializeImpl()
 	m_context->commandBufferPool = Framework::Vulkan::CCommandBufferPool(m_context->device, renderQueueFamily);
 
 	CreateDescriptorPool();
+	//The draw area (2048 x factor) must fit the 16384 framebuffers RADV and lavapipe allow.
+	m_context->resFactor = std::clamp(CAppConfig::GetInstance().GetPreferenceInteger(PREF_CGSH_VULKAN_RESOLUTION_FACTOR), 1, 8);
 	CreateMemoryBuffer();
 	CreateClutBuffer();
 
@@ -566,15 +569,17 @@ void CGSH_Vulkan::CreateMemoryBuffer()
 	assert(m_context->memoryBuffer.IsEmpty());
 	assert(!m_memoryCache);
 
+	uint32 memorySize = RAMSIZE * m_context->GetPlaneCount();
 	m_context->memoryBuffer = Framework::Vulkan::CBuffer(m_context->device,
 	                                                     m_context->physicalDeviceMemoryProperties,
 	                                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 	                                                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-	                                                     RAMSIZE);
+	                                                     memorySize);
 	m_context->annotations.SetBufferName(m_context->memoryBuffer, "GS Memory");
 
-	m_memoryCache = new uint8[RAMSIZE];
-	memset(m_memoryCache, 0, RAMSIZE);
+	//GetRam() is plane 0, the GS memory at native resolution.
+	m_memoryCache = new uint8[memorySize];
+	memset(m_memoryCache, 0, memorySize);
 
 	m_context->memoryBuffer.Write(m_context->queue, m_context->commandBufferPool,
 	                              m_context->physicalDeviceMemoryProperties, m_memoryCache);
@@ -583,7 +588,7 @@ void CGSH_Vulkan::CreateMemoryBuffer()
 	                                                         m_context->physicalDeviceMemoryProperties,
 	                                                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 	                                                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-	                                                         RAMSIZE);
+	                                                         memorySize);
 	m_context->annotations.SetBufferName(m_context->memoryBufferCopy, "GS Memory Copy");
 
 	m_context->memoryBufferTransfer = Framework::Vulkan::CBuffer(m_context->device,
@@ -981,6 +986,27 @@ void CGSH_Vulkan::SetRenderingContext(uint64 primReg)
 		}
 	}
 	pipelineCaps.textureUseMemoryCopy = needsTextureCopy;
+
+	//resonance: a texture the GS drew (a render target) is sampled in sub-texels; one the host sent is
+	//sampled at its own resolution, as GSH_OpenGL samples its scaled framebuffers and its textures.
+	if(m_context->resFactor > 1)
+	{
+		if(pipelineCaps.hasTexture)
+		{
+			CGsCachedArea textureArea;
+			textureArea.SetArea(tex0.nPsm, tex0.nBufPtr, tex0.GetBufWidth(), tex0.GetHeight());
+			pipelineCaps.textureScaled = HasPages(m_scaledPages, tex0.GetBufPtr(), textureArea.GetSize());
+		}
+		CGsCachedArea frameArea;
+		frameArea.SetArea(frame.nPsm, frame.nPtr, frame.GetWidth(), scissor.scay1 + 1);
+		MarkPages(m_scaledPages, frame.GetBasePtr(), frameArea.GetSize(), true);
+		if(pipelineCaps.writeDepth)
+		{
+			CGsCachedArea depthArea;
+			depthArea.SetArea(zbuf.nPsm | 0x30, zbuf.nPtr, frame.GetWidth(), scissor.scay1 + 1);
+			MarkPages(m_scaledPages, zbuf.GetBasePtr(), depthArea.GetSize(), true);
+		}
+	}
 
 	m_draw->SetPipelineCaps(pipelineCaps);
 	m_draw->SetFramebufferParams(frame.GetBasePtr(), frame.GetWidth(), fbWriteMask);
@@ -1462,6 +1488,8 @@ void CGSH_Vulkan::ProcessHostToLocalTransfer()
 
 	m_transferHost->SetPipelineCaps(pipelineCaps);
 	m_transferHost->DoTransfer(m_xferBuffer);
+	auto [dstAddress, dstSize] = GsTransfer::GetDstRange(bltBuf, trxReg, trxPos);
+	MarkPages(m_scaledPages, dstAddress, dstSize, false);
 
 	m_xferBuffer.clear();
 }
@@ -1577,18 +1605,25 @@ void CGSH_Vulkan::ProcessLocalToLocalTransfer()
 
 		auto commandBuffer = m_frameCommandBuffer->GetCommandBuffer();
 
-		VkBufferCopy bufferCopy = {};
-		bufferCopy.srcOffset = transferAddress;
-		bufferCopy.dstOffset = transferAddress;
-		bufferCopy.size = transferSize;
+		std::vector<VkBufferCopy> bufferCopies(m_context->GetPlaneCount());
+		for(uint32 plane = 0; plane < bufferCopies.size(); plane++)
+		{
+			bufferCopies[plane].srcOffset = transferAddress + plane * RAMSIZE;
+			bufferCopies[plane].dstOffset = transferAddress + plane * RAMSIZE;
+			bufferCopies[plane].size = transferSize;
+		}
 
-		m_context->device.vkCmdCopyBuffer(commandBuffer, m_context->memoryBuffer, m_context->memoryBufferCopy, 1, &bufferCopy);
+		m_context->device.vkCmdCopyBuffer(commandBuffer, m_context->memoryBuffer, m_context->memoryBufferCopy,
+		                                  static_cast<uint32>(bufferCopies.size()), bufferCopies.data());
 
 		pipelineCaps.srcUseMemoryCopy = true;
 	}
 
 	m_transferLocal->SetPipelineCaps(pipelineCaps);
 	m_transferLocal->DoTransfer();
+	auto [srcAddress, srcSize] = GsTransfer::GetSrcRange(bltBuf, trxReg, trxPos);
+	auto [dstAddress, dstSize] = GsTransfer::GetDstRange(bltBuf, trxReg, trxPos);
+	MarkPages(m_scaledPages, dstAddress, dstSize, HasPages(m_scaledPages, srcAddress, srcSize));
 }
 
 void CGSH_Vulkan::ProcessClutTransfer(uint32 csa, uint32)
@@ -1608,6 +1643,12 @@ void CGSH_Vulkan::TransferWrite(const uint8* imageData, uint32 length)
 
 void CGSH_Vulkan::WriteBackMemoryCache()
 {
+	//The CPU side changed plane 0 (reset, state load): the sub-pixels repeat their pixel.
+	m_scaledPages.reset();
+	for(uint32 plane = 1; plane < m_context->GetPlaneCount(); plane++)
+	{
+		memcpy(m_memoryCache + plane * RAMSIZE, m_memoryCache, RAMSIZE);
+	}
 	m_frameCommandBuffer->Flush();
 	m_context->device.vkQueueWaitIdle(m_context->queue);
 
@@ -1677,6 +1718,23 @@ void CGSH_Vulkan::SyncCLUT(const TEX0& tex0)
 	}
 }
 
+void CGSH_Vulkan::MarkPages(PageSet& pages, uint32 address, uint32 size, bool value)
+{
+	for(uint32 page = address / CGsPixelFormats::PAGESIZE; page < std::min<uint32>(pages.size(), (address + size + CGsPixelFormats::PAGESIZE - 1) / CGsPixelFormats::PAGESIZE); page++)
+	{
+		pages[page] = value;
+	}
+}
+
+bool CGSH_Vulkan::HasPages(const PageSet& pages, uint32 address, uint32 size)
+{
+	for(uint32 page = address / CGsPixelFormats::PAGESIZE; page < std::min<uint32>(pages.size(), (address + size + CGsPixelFormats::PAGESIZE - 1) / CGsPixelFormats::PAGESIZE); page++)
+	{
+		if(pages[page]) return true;
+	}
+	return false;
+}
+
 uint8* CGSH_Vulkan::GetRam() const
 {
 	return m_memoryCache;
@@ -1740,7 +1798,7 @@ Framework::CBitmap CGSH_Vulkan::GetTexture(uint64 tex0Reg, uint32 maxMip, uint64
 
 int CGSH_Vulkan::GetFramebufferScale()
 {
-	return 1;
+	return m_context->resFactor;
 }
 
 const CGSHandler::VERTEX* CGSH_Vulkan::GetInputVertices() const
@@ -1787,6 +1845,40 @@ Framework::CBitmap CGSH_Vulkan::GetFramebufferImpl(uint64 frameReg)
 	default:
 		assert(false);
 		break;
+	}
+	if(m_context->resFactor > 1 && !bitmap.IsEmpty())
+	{
+		//Every plane read as a native frame, each pixel of plane (sx, sy) put at (x * factor + sx, y * factor + sy).
+		uint32 factor = m_context->resFactor;
+		auto scaled = Framework::CBitmap(bitmap.GetWidth() * factor, bitmap.GetHeight() * factor, 32);
+		auto scaledPixels = reinterpret_cast<uint32*>(scaled.GetPixels());
+		for(uint32 plane = 0; plane < m_context->GetPlaneCount(); plane++)
+		{
+			auto planeBitmap = (plane == 0) ? bitmap : [&]() {
+				auto ram = GetRam() + plane * RAMSIZE;
+				switch(frame.nPsm)
+				{
+				case PSMCT32:
+					return ReadImage32<CGsPixelFormats::CPixelIndexorPSMCT32>(ram, frame.GetBasePtr(), frame.nWidth, frameWidth, frameHeight);
+				case PSMCT24:
+					return ReadImage32<CGsPixelFormats::CPixelIndexorPSMCT32, 0x00FFFFFF>(ram, frame.GetBasePtr(), frame.nWidth, frameWidth, frameHeight);
+				case PSMCT16:
+					return ReadImage16<CGsPixelFormats::CPixelIndexorPSMCT16>(ram, frame.GetBasePtr(), frame.nWidth, frameWidth, frameHeight);
+				default:
+					return ReadImage16<CGsPixelFormats::CPixelIndexorPSMCT16S>(ram, frame.GetBasePtr(), frame.nWidth, frameWidth, frameHeight);
+				}
+			}();
+			auto planePixels = reinterpret_cast<const uint32*>(planeBitmap.GetPixels());
+			uint32 sx = plane % factor, sy = plane / factor;
+			for(uint32 y = 0; y < bitmap.GetHeight(); y++)
+			{
+				for(uint32 x = 0; x < bitmap.GetWidth(); x++)
+				{
+					scaledPixels[(y * factor + sy) * scaled.GetWidth() + x * factor + sx] = planePixels[y * bitmap.GetWidth() + x];
+				}
+			}
+		}
+		bitmap = std::move(scaled);
 	}
 	return bitmap;
 }

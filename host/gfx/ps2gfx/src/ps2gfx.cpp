@@ -311,7 +311,10 @@ extern "C" int ps2gfx_init(const ps2gfx_config* config)
 		gs = new CGSH_Null();
 #ifdef PS2GFX_VULKAN
 	else if(config->renderer == PS2GFX_RENDERER_VULKAN)
+	{
 		gs = new CGSH_VulkanOffscreen();
+		if(config->res_factor > 1) CAppConfig::GetInstance().SetPreferenceInteger(PREF_CGSH_VULKAN_RESOLUTION_FACTOR, config->res_factor);
+	}
 #endif
 	if(!gs)
 	{
@@ -423,7 +426,9 @@ extern "C" int ps2gfx_screenshot(const char* path)
 	uint64 frame = (l.bufPtr / 8192) | (static_cast<uint64>(l.bufWidth / 64) << 16) | (static_cast<uint64>(l.psm) << 24);
 	auto bmp = dbg->GetFramebuffer(frame);
 	if(bmp.IsEmpty() || bmp.GetBitsPerPixel() != 32) return -1;
-	return WritePng(path, bmp, info.width, info.height) ? 0 : -1;
+	// The Vulkan GS returns its scaled framebuffer; OpenGL keeps the native-size crop it always had.
+	uint32 scale = dynamic_cast<CGSH_OpenGLLib*>(g->gs) ? 1 : dbg->GetFramebufferScale();
+	return WritePng(path, bmp, info.width * scale, info.height * scale) ? 0 : -1;
 }
 
 extern "C" int ps2gfx_screenshot_output(const char* path)
