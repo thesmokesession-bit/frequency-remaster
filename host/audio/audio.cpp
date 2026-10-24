@@ -430,17 +430,24 @@ unsigned SdGetCoreAttr(unsigned nEntry) {
     }
 }
 
-// sceSdInit(): both cores reset and enabled. Sound memory keeps its contents.
+// sceSdInit(): both cores reset and enabled, their effect work areas ending at the top of sound
+// memory as libsd leaves them (EEA 0x1dffff for core 0, 0x1fffff for core 1). Sound memory keeps
+// its contents. The movie player's cold init comes after the game has placed the work areas.
 void SdInit() {
     for (Iop::CSpuBase *pCore : {&g_pSpu->core0, &g_pSpu->core1}) {
         pCore->Reset();
         pCore->SetDestinationSamplingRate(kRate);
+        // FREQ_TEST_NO_REVERB=1, a test control: the mix without the effect processors.
+        if (getenv("FREQ_TEST_NO_REVERB") != nullptr) {
+            pCore->SetReverbEnabled(false);
+        }
     }
     memset(g_pSpu->shadow, 0, sizeof(g_pSpu->shadow));
     g_pSpu->cache.Clear();
     g_abEffectSet[0] = g_abEffectSet[1] = false;
     for (int nCore = 0; nCore < 2; ++nCore) {
         WriteRegister(CoreRegister(nCore, kAttrRegister), kAttrEnable);
+        WriteRegister(CoreRegister(nCore, 0x33c), 0xe + nCore);
     }
 }
 

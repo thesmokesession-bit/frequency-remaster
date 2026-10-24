@@ -281,6 +281,10 @@ namespace Iop
 		int32 m_extInputVolL = 0x7FFF;
 		int32 m_extInputVolR = 0x7FFF;
 
+		//Effect (reverb) output volume, EVOL
+		int16 m_reverbOutVolL = 0;
+		int16 m_reverbOutVolR = 0;
+
 		static void MixSamples(int32, int32, int16*);
 
 	private:
@@ -392,7 +396,8 @@ namespace Iop
 		void UpdateAdsr(CHANNEL&);
 		void UpdateReverb(int16[2], int16*);
 		uint32 GetAdsrDelta(unsigned int) const;
-		float GetReverbSample(uint32) const;
+		uint32 GetReverbAddress(uint32, int32) const;
+		float GetReverbSample(uint32, int32 = 0) const;
 		void SetReverbSample(uint32, float);
 		uint32 GetReverbOffset(unsigned int) const;
 		float GetReverbCoef(unsigned int) const;
@@ -419,6 +424,8 @@ namespace Iop
 		uint32 m_reverbCurrAddr;
 		uint16 m_ctrl;
 		int m_reverbTicks;
+		float m_reverbIn[2];
+		float m_reverbOut[2];
 		uint32 m_reverb[REVERB_REG_COUNT];
 		CSpuSampleCache* m_sampleCache = nullptr;
 		CSpuIrqWatcher* m_irqWatcher = nullptr;
