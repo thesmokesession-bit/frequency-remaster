@@ -38,6 +38,10 @@ void HostGfxDma(int nChannel, uint32_t nMadr, uint32_t nQwc, uint32_t nTadr, uin
  */
 void HostGfxVsync(void);
 
+/** Return once the frame swapped at frame-loop tick nTick has been presented (the renderer's own
+ * pace), keeping the game's timers going meanwhile. */
+void HostGfxWaitPresented(unsigned nTick);
+
 /** The vertical blanks so far, at 59.94 Hz. The first call starts the count. */
 unsigned HostVblankCount(void);
 

@@ -259,6 +259,9 @@ __attribute__((weak)) void HostGfxDma(int, uint32_t, uint32_t, uint32_t, uint32_
 __attribute__((weak)) void HostGfxVsync() {
 }
 
+__attribute__((weak)) void HostGfxWaitPresented(unsigned) {
+}
+
 unsigned HostVblankCount() {
     pthread_once(&g_vblankOnce, StartVblanks);
     pthread_mutex_lock(&g_vblankLock);
@@ -299,12 +302,15 @@ unsigned HostWaitFrameTick(unsigned nTarget) {
         pthread_cond_wait(&g_vblankSignal, &g_vblankLock);
     }
     const unsigned nTick = g_nTickCount;
+    const unsigned nPreviousSwap = g_nSwapTick;
     if (g_nTicksPerField != 1) {
         g_flFrameFields = static_cast<float>(nTick - g_nSwapTick) / g_nTicksPerField;
         g_bFrameEndsField = nTick / g_nTicksPerField != g_nSwapTick / g_nTicksPerField;
     }
     g_nSwapTick = nTick;
     pthread_mutex_unlock(&g_vblankLock);
+    // A renderer slower than the game holds the game here, one frame behind, not in its transfers.
+    HostGfxWaitPresented(nPreviousSwap);
     return nTick;
 }
 

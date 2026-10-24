@@ -65,6 +65,12 @@ uint32_t ps2gfx_io_read(uint32_t addr);
 /* Vertical blank: flushes the GS, presents (config.present), sets CSR VSYNC and toggles CSR FIELD. */
 void ps2gfx_vsync(void);
 
+/* Waits until the GS thread has drawn every frame ps2gfx_vsync() queued. ps2gfx_vsync() keeps one
+   frame in flight and otherwise waits for the GS itself; called first, without the lock that
+   serialises the other calls, it lets ps2gfx_dma() go on while the GS draws. The one call that may
+   overlap any other. */
+void ps2gfx_wait_frames(void);
+
 /* Writes the displayed framebuffer (DISPFB of the active read circuit, cropped to DISPLAY) as PNG.
    Returns 0 on success, -1 if nothing is displayed. */
 int ps2gfx_screenshot(const char* path);

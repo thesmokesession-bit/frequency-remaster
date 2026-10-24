@@ -33,6 +33,7 @@
 #include "ps2gfx.h"
 
 extern "C" void HostUseSystemHeap(int bOn); // host/core/heap.c
+void RunLongOperationPollProc();            // src/app/longop.cpp: MainLoop::PumpTimers()
 
 namespace {
 
@@ -50,6 +51,8 @@ constexpr int kScreenWidth = 640;
 constexpr int kScreenHeight = 448;
 constexpr int kVif1Channel = 1;
 constexpr int kGifChannel = 2;
+// How often a game held at its swap pumps its timers, as its drawing would.
+constexpr long kPumpNs = 2000000;
 
 // The display registers the game writes to the privileged page each frame (PMODE, SMODE2, DISPFB1,
 // DISPLAY1, DISPFB2, DISPLAY2, and BGCOLOR). The GS reads them at the blank.
@@ -57,13 +60,18 @@ constexpr uint32_t kDisplayRegisters[] = {
     0x12000000, 0x12000020, 0x12000070, 0x12000080, 0x12000090, 0x120000a0, 0x120000e0};
 
 // ps2gfx takes one call at a time. The game's threads send transfers and the present thread
-// presents.
+// presents. A present first waits for the GS thread to draw the frame before, outside the lock
+// (ps2gfx_wait_frames()), so the lock is never held across a draw and a transfer waits at most
+// for the present's own short work (display registers, flush, flip queued).
 pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 // The blank thread only records the blank for the present thread, so a slow present never delays
 // the blanks, and the blank count stays with the clock.
 pthread_mutex_t g_presentLock = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t g_presentSignal = PTHREAD_COND_INITIALIZER;
 unsigned g_nPendingVblank = 0;
+// Under g_presentLock: the tick of the last frame presented, signalled to HostGfxWaitPresented().
+unsigned g_nPresentedTick = 0;
+pthread_cond_t g_presentedSignal = PTHREAD_COND_INITIALIZER;
 pthread_once_t g_startOnce = PTHREAD_ONCE_INIT;
 bool g_bDrawing = false;
 SDL_Window *g_pWindow = nullptr;
@@ -123,6 +131,10 @@ void PresentLocked(unsigned nTick) {
             nRegister, *reinterpret_cast<volatile uint64_t *>(static_cast<uintptr_t>(nRegister)));
     }
     ps2gfx_vsync();
+    pthread_mutex_lock(&g_presentLock);
+    g_nPresentedTick = std::max(g_nPresentedTick, nTick);
+    pthread_cond_broadcast(&g_presentedSignal);
+    pthread_mutex_unlock(&g_presentLock);
     const unsigned nVblank = nTick / HostTicksPerField();
     if (g_bHashAnchored && nVblank - g_nHashAnchor < g_nHashFields) {
         HashFrame(nTick);
@@ -158,9 +170,14 @@ void *RunPresents(void *) {
         while (g_nPendingVblank == nPresented) {
             pthread_cond_wait(&g_presentSignal, &g_presentLock);
         }
-        nPresented = g_nPendingVblank;
         pthread_mutex_unlock(&g_presentLock);
 
+        // The GS draws the last frame without g_lock held, so the game's transfers go on. The
+        // blank presented is the latest one after that wait.
+        ps2gfx_wait_frames();
+        pthread_mutex_lock(&g_presentLock);
+        nPresented = g_nPendingVblank;
+        pthread_mutex_unlock(&g_presentLock);
         pthread_mutex_lock(&g_lock);
         PresentLocked(nPresented);
         pthread_mutex_unlock(&g_lock);
@@ -341,12 +358,37 @@ void HostGfxDma(int nChannel, uint32_t nMadr, uint32_t nQwc, uint32_t nTadr, uin
     pthread_mutex_unlock(&g_lock);
 }
 
+// The game's thread at its swap: wait for the present of the frame swapped at nTick, so the GS
+// is never more than a frame behind, and pump the game's timers (as its drawing does) so that the
+// scheduler and the music keep their time while the renderer is slow.
+void HostGfxWaitPresented(unsigned nTick) {
+    if (!g_bDrawing || HostFixedClockNs() >= 0) {
+        return; // the fixed clock presents each tick before the game goes on
+    }
+    pthread_mutex_lock(&g_presentLock);
+    while (g_nPresentedTick < nTick && g_nPendingVblank >= nTick) {
+        pthread_mutex_unlock(&g_presentLock);
+        RunLongOperationPollProc();
+        pthread_mutex_lock(&g_presentLock);
+        timespec until;
+        clock_gettime(CLOCK_REALTIME, &until);
+        until.tv_nsec += kPumpNs;
+        if (until.tv_nsec >= 1000000000L) {
+            until.tv_nsec -= 1000000000L;
+            ++until.tv_sec;
+        }
+        pthread_cond_timedwait(&g_presentedSignal, &g_presentLock, &until);
+    }
+    pthread_mutex_unlock(&g_presentLock);
+}
+
 void HostGfxVsync() {
     if (!Drawing()) {
         return;
     }
     const unsigned nTick = HostFrameTick() + 1;
     if (nTick / HostTicksPerField() >= g_nNextShotVblank || HostFixedClockNs() >= 0) {
+        ps2gfx_wait_frames();
         pthread_mutex_lock(&g_lock);
         const SystemHeap systemHeap;
         PresentLocked(nTick);

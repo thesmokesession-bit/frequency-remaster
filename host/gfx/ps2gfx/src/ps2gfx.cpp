@@ -386,6 +386,12 @@ extern "C" void ps2gfx_vsync(void)
 	g->gs->ResetVBlank();
 }
 
+extern "C" void ps2gfx_wait_frames(void)
+{
+	// Only the mailbox is touched, which takes its own lock. Unthreaded, there is nothing to wait for.
+	g->gs->SendGSCall([]() {}, true, false);
+}
+
 extern "C" int ps2gfx_screenshot(const char* path)
 {
 	auto info = g->gs->GetCurrentDisplayInfo();
