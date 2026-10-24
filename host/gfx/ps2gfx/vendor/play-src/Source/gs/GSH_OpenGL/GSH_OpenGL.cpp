@@ -2131,23 +2131,19 @@ void CGSH_OpenGL::ProcessHostToLocalTransfer()
 
 void CGSH_OpenGL::ProcessLocalToHostTransfer()
 {
-	//This is constrained to work only with ps2autotest, will be unconstrained later
-
+	//(resonance: this read back only ps2autotest's 32x32 at address 0. Frequency reads back the
+	//render targets it draws its FreQ portraits into, so the framebuffer holding the source is copied
+	//to RAM, one sample per GS pixel, for ReadImageData() to read.)
 	auto bltBuf = make_convertible<BITBLTBUF>(m_nReg[GS_REG_BITBLTBUF]);
 	auto trxPos = make_convertible<TRXPOS>(m_nReg[GS_REG_TRXPOS]);
 	auto trxReg = make_convertible<TRXREG>(m_nReg[GS_REG_TRXREG]);
 
 	if(bltBuf.nSrcPsm != PSMCT32) return;
 
-	uint32 transferAddress = bltBuf.GetSrcPtr();
-	if(transferAddress != 0) return;
-
-	if((trxReg.nRRW != 32) || (trxReg.nRRH != 32)) return;
-	if((trxPos.nSSAX != 0) || (trxPos.nSSAY != 0)) return;
-
 	auto framebufferIterator = std::find_if(m_framebuffers.begin(), m_framebuffers.end(),
-	                                        [](const FramebufferPtr& framebuffer) {
-		                                        return (framebuffer->m_psm == PSMCT32) && (framebuffer->m_basePtr == 0);
+	                                        [&](const FramebufferPtr& framebuffer) {
+		                                        return (framebuffer->m_psm == PSMCT32) && (framebuffer->m_basePtr == bltBuf.GetSrcPtr()) &&
+		                                               (framebuffer->m_width == bltBuf.GetSrcWidth());
 	                                        });
 	if(framebufferIterator == std::end(m_framebuffers)) return;
 	const auto& framebuffer = (*framebufferIterator);
@@ -2155,26 +2151,25 @@ void CGSH_OpenGL::ProcessLocalToHostTransfer()
 	FlushVertexBuffer();
 	m_renderState.isValid = false;
 
-	auto pixels = new uint32[trxReg.nRRW * trxReg.nRRH];
+	uint32 scale = m_fbScale;
+	uint32 width = trxReg.nRRW * scale;
+	std::vector<uint32> pixels(width * trxReg.nRRH * scale);
 
 	glBindFramebuffer(GL_FRAMEBUFFER, framebuffer->m_framebuffer);
-	glReadPixels(trxPos.nSSAX, trxPos.nSSAY, trxReg.nRRW, trxReg.nRRH, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+	glReadPixels(trxPos.nSSAX * scale, trxPos.nSSAY * scale, width, trxReg.nRRH * scale, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
 	CHECKGLERROR();
 
 	//Write back to RAM
 	{
 		CGsPixelFormats::CPixelIndexorPSMCT32 indexor(m_pRAM, bltBuf.GetSrcPtr(), bltBuf.nSrcWidth);
-		for(uint32 y = trxPos.nSSAY; y < (trxPos.nSSAY + trxReg.nRRH); y++)
+		for(uint32 y = 0; y < trxReg.nRRH; y++)
 		{
-			for(uint32 x = trxPos.nSSAX; x < (trxPos.nSSAX + trxReg.nRRH); x++)
+			for(uint32 x = 0; x < trxReg.nRRW; x++)
 			{
-				uint32 pixel = pixels[x + (y * trxReg.nRRW)];
-				indexor.SetPixel(x, y, pixel);
+				indexor.SetPixel(trxPos.nSSAX + x, trxPos.nSSAY + y, pixels[(x + y * width) * scale]);
 			}
 		}
 	}
-
-	delete[] pixels;
 }
 
 void CGSH_OpenGL::ProcessLocalToLocalTransfer()
