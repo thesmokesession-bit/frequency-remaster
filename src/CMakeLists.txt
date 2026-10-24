@@ -53,6 +53,12 @@ foreach(SUBSYSTEM ${RESONANCE_SUBSYSTEMS})
   list(APPEND RESONANCE_LIBRARIES resonance_${SUBSYSTEM})
 endforeach()
 
+# The native build links the same archives over host/ in place of the Sony libraries under sce/ee.
+if(RESONANCE_HOST)
+  add_subdirectory("${CMAKE_SOURCE_DIR}/host" "${CMAKE_BINARY_DIR}/host")
+  return()
+endif()
+
 # The Sony sample archive lives under sce/ee rather than with the game subsystems.
 list(APPEND RESONANCE_LIBRARIES resonance_ezmpeg)
 

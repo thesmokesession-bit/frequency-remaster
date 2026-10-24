@@ -29,6 +29,11 @@ set(RESONANCE_OS_SRCS
     timer.cpp
     zone.cpp)
 
+# The cycle counter is the Emotion Engine's own register. The native build reads host/core's.
+if(RESONANCE_HOST)
+  list(REMOVE_ITEM RESONANCE_OS_SRCS cycles.cpp)
+endif()
+
 add_library(resonance_os STATIC ${RESONANCE_OS_SRCS})
 target_link_libraries(resonance_os PRIVATE resonance_common)
 

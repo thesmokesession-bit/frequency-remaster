@@ -129,6 +129,17 @@ if(ENABLE_PATCHES)
   set(RESONANCE_CREDITS_TEXT
       "Reconstruction:\\nAndrew Udvare\\ngithub.com/Tatsh"
       CACHE STRING "Text of the first credit. \\n breaks a line.")
+  # The native build has no host tools, and its first credit shows the text alone.
+  if(RESONANCE_HOST)
+    file(
+      CONFIGURE
+      OUTPUT
+      "${CMAKE_BINARY_DIR}/generated/creditsavatar.h"
+      CONTENT
+      "#pragma once\n\n#include <stdint.h>\n\n#define RESONANCE_CREDITS_TEXT \"@RESONANCE_CREDITS_TEXT@\"
+#define RESONANCE_CREDITS_AVATAR_SIZE 128\n#define RESONANCE_CREDITS_HAS_AVATAR 0\n")
+    return()
+  endif()
   find_program(RESONANCE_MAGICK magick)
   set(_credits_magick "${RESONANCE_MAGICK}")
   if(NOT RESONANCE_MAGICK)

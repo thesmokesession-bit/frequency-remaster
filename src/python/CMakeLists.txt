@@ -97,6 +97,11 @@ target_compile_definitions(
           SIZEOF_DOUBLE=8)
 target_compile_options(
   resonance_python PRIVATE "-include${CMAKE_SOURCE_DIR}/src/python/PC/pycompat.h")
+# The build machine's C library supplies the integer limits through limits.h alone, and its
+# va_list is an array.
+if(RESONANCE_HOST)
+  target_compile_definitions(resonance_python PRIVATE HAVE_LIMITS_H=1 VA_LIST_IS_ARRAY=1)
+endif()
 
 # Upstream CPython 2.0 is compiled as released. These warnings concern its style, not the port.
 set(_python_upstream_srcs ${RESONANCE_PYTHON_SRCS})

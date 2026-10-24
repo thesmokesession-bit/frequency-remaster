@@ -1,5 +1,12 @@
 set(RESONANCE_GFX_SRCS gfxdevice.cpp gsdoublebuffer.cpp vram.cpp)
 
+# The native build takes the assembled chains from host/core.
+if(RESONANCE_HOST)
+  add_library(resonance_gfx STATIC ${RESONANCE_GFX_SRCS})
+  target_link_libraries(resonance_gfx PRIVATE resonance_common)
+  return()
+endif()
+
 # The VU microprograms and the DMA chains that upload them. The DVP assembler builds them. It ships
 # with the SDK beside the Emotion Engine compiler.
 find_program(DVP_AS dvp-as REQUIRED HINTS "$ENV{PS2DEV}/dvp/bin")
