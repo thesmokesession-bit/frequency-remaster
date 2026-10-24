@@ -11,6 +11,7 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -92,8 +93,9 @@ struct Decoder {
     bool bEnd;
     bool bReset;
     int nPictures;
-    // The blank of the INTRO_MOVIE_STARTED breadcrumb, or 0 before the display starts.
+    // Two blanks before picture 0 went up, or 0 before then, and the handler that records it.
     unsigned nStartVblank;
+    int nClockHandler;
     unsigned char *pLastPicture;
     unsigned char abInput[0x10000];
     int nInput;
@@ -293,6 +295,9 @@ void *sceMpegCreateDecoderContext(void *pDecoder, void *pWork, int) {
 
 int sceMpegDelete(void *) {
     Decoder &decoder = g_decoder;
+    if (decoder.nClockHandler > 0) {
+        RemoveIntcHandler(INTC_VBLANK_S, decoder.nClockHandler);
+    }
     fprintf(stderr,
             "host: movie decoded %d pictures, dropped %d late, held early ones %d turns\n",
             decoder.nPictures,
@@ -586,10 +591,23 @@ void HostMovieIdle(void) {
     usleep(500);
 }
 
-// The first frame of the intro movie goes up at the second blank after this.
+// The movie clock starts from the display itself: a blank handler that runs after disp.c's sees
+// the blank picture 0 goes up, and the clock and the INTRO_MOVIE_STARTED breadcrumb both start
+// there. Reading the blank count in the thread that starts the display instead set them a blank
+// late whenever the host held that thread past the blank, which moved every picture by one.
+int MovieClockHandler(int) {
+    const int *pHead = static_cast<const int *>(voBufGetTag(&voBuf));
+    if (g_decoder.nStartVblank == 0 && pHead != nullptr && *pHead == kTagFirstFieldShown) {
+        g_decoder.nStartVblank = HostVblankCount() - 2; // Picture n is due at start + 2 + 2n.
+        HostBreadcrumb("INTRO_MOVIE_STARTED");
+    }
+    ExitHandler();
+    return 0;
+}
+
+// cutscene.c calls this once the display runs, after disp.c's blank handler is installed.
 void HostMovieStarted(void) {
-    g_decoder.nStartVblank = HostVblankCount();
-    HostBreadcrumb("INTRO_MOVIE_STARTED");
+    g_decoder.nClockHandler = AddIntcHandler(INTC_VBLANK_S, MovieClockHandler, 0);
 }
 
 // The movie's sound driver calls (audiodec.c is compiled with sceSdRemote renamed to this).

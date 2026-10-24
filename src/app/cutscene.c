@@ -363,7 +363,7 @@ static int play_mpeg(VideoDec *video_dec, ReadBuf *buffer, StrFile *file) {
         if (is_started == 0 && voBufIsFull(&voBuf) != 0 && is_audio_ok() != 0) {
             startDisplay(1);
 #ifdef RESONANCE_HOST
-            HostMovieStarted(); // host/mpeg/mpeg.cpp: the INTRO_MOVIE_STARTED breadcrumb.
+            HostMovieStarted(); // host/mpeg/mpeg.cpp: the movie clock, and INTRO_MOVIE_STARTED.
 #endif
             if (g_is_with_audio != 0) {
                 audioDecStart(&audioDec);
