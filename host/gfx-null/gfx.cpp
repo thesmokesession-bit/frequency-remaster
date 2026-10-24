@@ -7,6 +7,7 @@
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
@@ -182,6 +183,14 @@ unsigned HostVblankCount() {
     const unsigned nCount = g_nVblankCount;
     pthread_mutex_unlock(&g_vblankLock);
     return nCount;
+}
+
+int HostWidescreen() {
+    static const bool bWidescreen = [] {
+        const char *pszValue = getenv("FREQ_WIDESCREEN");
+        return pszValue != nullptr && strcmp(pszValue, "1") == 0;
+    }();
+    return bWidescreen;
 }
 
 int HostWaitVblank() {

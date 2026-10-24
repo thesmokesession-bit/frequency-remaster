@@ -10,6 +10,7 @@
 #include <png.h>
 
 #include "AlignedAlloc.h"
+#include "AppConfig.h"
 #include "PtrStream.h"
 #include "placeholder_def.h"
 #include "zip/ZipArchiveReader.h"
@@ -59,8 +60,21 @@ namespace
 		}
 		void PresentBackbuffer() override
 		{
+			if(capture)
+			{
+				// A capture re-presents a frame already shown, so it is read back instead of swapped.
+				captured = Framework::CBitmap(m_presentationParams.windowWidth, m_presentationParams.windowHeight, 32);
+				glPixelStorei(GL_PACK_ALIGNMENT, 1);
+				glReadPixels(0, 0, captured.GetWidth(), captured.GetHeight(), GL_BGRA, GL_UNSIGNED_BYTE, captured.GetPixels());
+				capture = false;
+				return;
+			}
 			if(g_cfg.present) g_cfg.present(g_cfg.user);
 		}
+
+	public:
+		bool capture = false;
+		Framework::CBitmap captured;
 	};
 
 	struct State
@@ -263,7 +277,7 @@ namespace
 
 	std::unique_ptr<State> g;
 
-	bool WritePng(const char* path, const Framework::CBitmap& bmp, uint32 w, uint32 h)
+	bool WritePng(const char* path, const Framework::CBitmap& bmp, uint32 w, uint32 h, bool bottomUp = false)
 	{
 		w = std::min(w, bmp.GetWidth());
 		h = std::min(h, bmp.GetHeight());
@@ -275,7 +289,7 @@ namespace
 		int stride = static_cast<int>(bmp.GetWidth() * 4);
 		std::vector<uint8> px(bmp.GetPixels(), bmp.GetPixels() + bmp.GetPixelsSize());
 		for(size_t i = 3; i < px.size(); i += 4) px[i] = 0xFF; // the reference ignores alpha too
-		return png_image_write_to_file(&img, path, 0, px.data(), stride, nullptr) != 0;
+		return png_image_write_to_file(&img, path, 0, px.data(), bottomUp ? -stride : stride, nullptr) != 0;
 	}
 }
 
@@ -285,7 +299,14 @@ extern "C" int ps2gfx_init(const ps2gfx_config* config)
 	g = std::make_unique<State>();
 	CGSHandler* gs = nullptr;
 	if(config->renderer == PS2GFX_RENDERER_OPENGL && config->make_current)
+	{
 		gs = new CGSH_OpenGLLib();
+		auto& appConfig = CAppConfig::GetInstance();
+		if(config->res_factor > 1) appConfig.SetPreferenceInteger(PREF_CGSH_OPENGL_RESOLUTION_FACTOR, config->res_factor);
+		appConfig.RegisterPreferenceBoolean("ps2gfx.aspect43", false);
+		appConfig.SetPreferenceBoolean("ps2gfx.aspect43", config->aspect == PS2GFX_ASPECT_4_3);
+		appConfig.SetPreferenceBoolean(PREF_CGSHANDLER_WIDESCREEN, config->aspect == PS2GFX_ASPECT_16_9);
+	}
 	else if(config->renderer == PS2GFX_RENDERER_NULL)
 		gs = new CGSH_Null();
 #ifdef PS2GFX_VULKAN
@@ -397,6 +418,17 @@ extern "C" int ps2gfx_screenshot(const char* path)
 	auto bmp = dbg->GetFramebuffer(frame);
 	if(bmp.IsEmpty() || bmp.GetBitsPerPixel() != 32) return -1;
 	return WritePng(path, bmp, info.width, info.height) ? 0 : -1;
+}
+
+extern "C" int ps2gfx_screenshot_output(const char* path)
+{
+	auto gs = dynamic_cast<CGSH_OpenGLLib*>(g->gs);
+	if(!gs) return -1;
+	gs->capture = true;
+	gs->Flip(CGSHandler::FLIP_FLAG_FORCE | CGSHandler::FLIP_FLAG_WAIT);
+	if(gs->capture || gs->captured.IsEmpty()) return -1;
+	const auto& bmp = gs->captured;
+	return WritePng(path, bmp, bmp.GetWidth(), bmp.GetHeight(), true) ? 0 : -1;
 }
 
 extern "C" int ps2gfx_load_state(const void* zip, size_t size)
