@@ -16,3 +16,16 @@ target_compile_definitions(ps2gfx PRIVATE GLEW_STATIC USE_GLEW NDEBUG)
 target_compile_options(ps2gfx PRIVATE -msse -msse2 -mssse3 -w -g0)
 set_target_properties(ps2gfx PROPERTIES CXX_STANDARD 17 CXX_EXTENSIONS ON)
 target_link_libraries(ps2gfx PUBLIC OpenGL::GL ZLIB::ZLIB PNG::PNG Threads::Threads)
+
+# The Vulkan GS (offscreen, GSH_VulkanOffscreen) for ports without OpenGL: needs only the Vulkan
+# headers, as the loader is dlopen'ed at runtime. Off by default; the Linux host draws with OpenGL.
+option(PS2GFX_VULKAN "Build the Vulkan GS handler" OFF)
+if(PS2GFX_VULKAN)
+	find_package(Vulkan REQUIRED)
+	file(STRINGS ${CMAKE_CURRENT_SOURCE_DIR}/vendor/sources_vulkan.txt VK_SOURCES)
+	list(TRANSFORM VK_SOURCES PREPEND ${P}/)
+	target_sources(ps2gfx PRIVATE ${VK_SOURCES})
+	target_include_directories(ps2gfx PRIVATE ${P}/deps/Nuanceur/include ${Vulkan_INCLUDE_DIRS})
+	target_compile_definitions(ps2gfx PRIVATE PS2GFX_VULKAN)
+	target_link_libraries(ps2gfx PUBLIC ${CMAKE_DL_LIBS})
+endif()
