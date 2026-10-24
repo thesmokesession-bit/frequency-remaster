@@ -26,6 +26,9 @@
 extern long long g_llHostCommandLateNs;                              // src/app/scheduler.cpp
 extern "C" void HostMidiQueued(unsigned nOffset, long long nLateNs); // host/audio/audio.cpp
 #endif
+#ifndef RESONANCE_HOST
+#line 23
+#endif
 
 // The driver's diagnostic request, submitted by SynthCommand's third command and by the tail of the
 // voice report.
@@ -735,6 +738,9 @@ void SendMidiToDriver(unsigned char nStatus, unsigned char nData1, unsigned char
     // The message's due time, for the host to play it at: now, less how late the scheduler
     // command sending it runs.
     HostMidiQueued(msinBf.mValidSize, g_llHostCommandLateNs);
+#endif
+#ifndef RESONANCE_HOST
+#line 728
 #endif
     sceMSIn_PutMsg(&msinCtx,
                    kMidiInputPort,

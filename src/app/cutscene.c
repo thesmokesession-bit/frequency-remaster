@@ -21,6 +21,9 @@
 void HostMovieIdle(void);
 void HostMovieStarted(void);
 #endif
+#ifndef RESONANCE_HOST
+#line 17
+#endif
 
 // The one block every decoder buffer is carved from. Each buffer starts on a 64-byte boundary, and
 // the block reserves 64 bytes of slack for aligning the first.
@@ -49,6 +52,9 @@ enum {
 enum { kQueueScale = 2 };
 #else
 enum { kQueueScale = 1 };
+#endif
+#ifndef RESONANCE_HOST
+#line 37
 #endif
 
 // Decoded frames the queue holds, tags and time stamps the decoder records, and the two thread
@@ -184,6 +190,9 @@ void switchThread(void) {
 #ifdef RESONANCE_HOST
     HostMovieIdle();
 #endif
+#ifndef RESONANCE_HOST
+#line 168
+#endif
 }
 
 // NTSC-U/C: 0x00510f70, PAL: 0x005511e8
@@ -215,11 +224,8 @@ static void reset_display(void) {
 }
 
 // NTSC-U/C: 0x005107a8, PAL: 0x00550a20
-static void init_all(void) {
-    g_cutscene_memory = MemAllocTagged(
-        kCutsceneMemorySize + (kQueueScale - 1) * (kFrameImagesSize + kFrameTagsSize),
-        __FILE__,
-        __LINE__);
+static void init_all(void) { // clang-format off (one line keeps __LINE__ as on the console)
+    g_cutscene_memory = MemAllocTagged(kCutsceneMemorySize + (kQueueScale - 1) * (kFrameImagesSize + kFrameTagsSize), __FILE__, __LINE__); // clang-format on
     g_mpeg_work = ALIGN_UP(g_cutscene_memory);
     g_audio_buffer = ALIGN_UP(g_mpeg_work + kMpegWorkSize);
     g_video_data = ALIGN_UP(g_audio_buffer + kAudioBufferSize);
@@ -364,6 +370,9 @@ static int play_mpeg(VideoDec *video_dec, ReadBuf *buffer, StrFile *file) {
             startDisplay(1);
 #ifdef RESONANCE_HOST
             HostMovieStarted(); // host/mpeg/mpeg.cpp: the movie clock, and INTRO_MOVIE_STARTED.
+#endif
+#ifndef RESONANCE_HOST
+#line 343
 #endif
             if (g_is_with_audio != 0) {
                 audioDecStart(&audioDec);
