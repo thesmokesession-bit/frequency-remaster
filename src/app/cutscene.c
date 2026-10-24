@@ -402,6 +402,9 @@ void play_cutscene(const char *name, int with_audio) {
         }
         fclose(probe);
     }
+#ifdef RESONANCE_HOST
+    return; // ponytail: the movie ends at once until the native build decodes MPEG (libmpeg, IPU).
+#endif
     init_all();
     play(name, with_audio);
     free_all();

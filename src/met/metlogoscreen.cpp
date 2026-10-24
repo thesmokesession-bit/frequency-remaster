@@ -199,6 +199,10 @@ void MetLogoScreen::OnEnterFinished() {
     mBlinkTime = kBlinkStart;
     mRenderer->mTitlePromptShowing = 1;
     PlaySoundByName(kFrequencySound);
+#ifdef RESONANCE_HOST
+    void HostBreadcrumb(const char *pszName); // host/io/pad.cpp
+    HostBreadcrumb("TITLE_SCREEN_REACHED");
+#endif
 }
 
 void MetLogoScreen::OnExitFinished() {

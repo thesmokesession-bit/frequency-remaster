@@ -204,6 +204,10 @@ void MetMainScreen::OnEnterFinished() {
 #ifdef VIDEO_STANDARD_PAL
     ActivateNamedPanel(HxStr(kMainScreen));
 #endif
+#ifdef RESONANCE_HOST
+    void HostBreadcrumb(const char *pszName); // host/io/pad.cpp
+    HostBreadcrumb("MAIN_MENU_REACHED");
+#endif
 }
 
 void MetMainScreen::OnExitFinished() {
