@@ -260,6 +260,10 @@ void RunTransfer(sceDmaChan *pChannel, uint32_t nChcrBits) {
 
 } // namespace
 
+// src/rnd/pstex.cpp reports a texture level the game drew; host/gfx/gfx.cpp takes it.
+__attribute__((weak)) void HostTexGenerated(const char *, int, int, int, const void *, int) {
+}
+
 extern "C" {
 
 // host/gfx/gfx.cpp replaces both when the build includes it.

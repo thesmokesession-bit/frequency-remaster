@@ -15,6 +15,9 @@
 // FREQ_SCALE=<n> draws the GS at n times its resolution, FREQ_OUTPUT=<width>x<height> sizes the
 // window, and FREQ_WIDESCREEN=1 presents 16:9. With any of them, the picture keeps a TV's 4:3 (or
 // 16:9) inside the window, the window defaults to 448n pixels high, and a shot is the whole window.
+//
+// FREQ_TEX_DUMP=<directory> and FREQ_TEX_REPLACE=<directory> dump the textures the GS draws and draw
+// HD replacements in their place (host/gfx/ps2gfx/src/TexReplace.h).
 
 #include <algorithm>
 #include <atomic>
@@ -343,6 +346,14 @@ void TakeShots(unsigned nVblank) {
 }
 
 } // namespace
+
+// PsTex::UnlockMipBitmap(): the game drew this texture level itself, so it is not dumped or replaced.
+void HostTexGenerated(
+    const char *pszName, int nPsm, int nWidth, int nHeight, const void *pPixels, int nStride) {
+    if (Drawing()) {
+        ps2gfx_tex_generated(pszName, nPsm, nWidth, nHeight, pPixels, nStride);
+    }
+}
 
 extern "C" {
 
