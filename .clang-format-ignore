@@ -1,3 +1,4 @@
 3rdparty/**
 host/gfx/ps2gfx/**
 src/python/**
+host/audio/play/**

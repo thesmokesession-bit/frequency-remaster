@@ -11,9 +11,12 @@
 // through a frame, here it can idle a frame at the swap) and reaches the synth at the tick that
 // time falls in. The lead absorbs that lateness, so the music plays the lead behind the game.
 
-#include <SDL.h>
+#include <algorithm>
+#include <atomic>
+#include <deque>
 #include <fcntl.h>
 #include <limits.h>
+#include <mutex>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -22,14 +25,11 @@
 #include <sys/resource.h>
 #include <time.h>
 #include <unistd.h>
-
-#include <algorithm>
-#include <atomic>
-#include <deque>
-#include <mutex>
 #include <vector>
 
 #include <libsdr.h>
+
+#include <SDL.h>
 
 #include "Iop_Spu2.h"
 #include "Iop_SpuBase.h"
@@ -48,8 +48,8 @@ constexpr uint64_t kEeCyclesPerSample = 6144; // 294912 EE cycles per millisecon
 constexpr uint64_t kIopCyclesPerSample = 768; // 36.864 MHz IOP system clock
 constexpr int kBlock = 480;                   // frames per rendered block, 10 ms
 constexpr int64_t kBlockNs = 10000000;
-constexpr uint64_t kLeadCycles = 25 * 294912; // 25 ms, a frame and a scheduler poll
-constexpr int64_t kMaxLagNs = 200000000;         // a longer stall is waited out, not caught up
+constexpr uint64_t kLeadCycles = 25 * 294912;        // 25 ms, a frame and a scheduler poll
+constexpr int64_t kMaxLagNs = 200000000;             // a longer stall is waited out, not caught up
 constexpr unsigned kMaxQueuedBytes = 4 * kRate / 10; // 100 ms of S16 stereo
 constexpr uint32_t kSpuRamSize = 2 << 20;
 constexpr uint32_t kRegisterBase = 0x1F900000;
@@ -73,11 +73,11 @@ struct Spu {
 };
 Spu *g_pSpu;
 
-// The synth timer of the driver, in IOP cycles, and how far the renderer is into its period.
-bool g_bTicking = false;
-
 // Set once SdSetEffectAttr() has placed a core's effect work area.
 bool g_abEffectSet[2] = {};
+
+// The synth timer of the driver, in IOP cycles, and how far the renderer is into its period.
+bool g_bTicking = false;
 uint64_t g_nTickCycles = 76787;
 uint64_t g_nTickAccumulated = 0;
 
@@ -303,8 +303,8 @@ void SdSetCoreAttr(unsigned nEntry, unsigned nValue) {
 // dLSAME, dRSAME, mLDIFF, mRDIFF, mLCOMB3, mRCOMB3, mLCOMB4, mRCOMB4, dLDIFF, dRDIFF, mLAPF1,
 // mRAPF1, mLAPF2, mRAPF2, vLIN, vRIN, with addresses in 8-byte units. Modes: off, room, studio
 // A-C, hall, space, echo, delay, pipe.
-constexpr uint16_t kEffectAreaSize[10] = {0x2, 0x4d8, 0x3e8, 0x908, 0xdfc,
-                                          0x15bc, 0x1ed8, 0x3008, 0x3008, 0x780};
+constexpr uint16_t kEffectAreaSize[10] = {
+    0x2, 0x4d8, 0x3e8, 0x908, 0xdfc, 0x15bc, 0x1ed8, 0x3008, 0x3008, 0x780};
 constexpr uint16_t kEffectPresets[10][32] = {
     {0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0001,
      0x0001, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0001, 0x0001, 0x0000, 0x0000,
@@ -375,8 +375,8 @@ void SdSetEffectAttr(int nCore, const EffectAttr &attr) {
     WriteRegister(CoreRegister(nCore, 0x2e0), (nStart >> 17) & 0xffff);
     WriteRegister(CoreRegister(nCore, 0x2e2), (nStart >> 1) & 0xffff);
     static constexpr uint32_t kCoefficients[32] = {
-        0,     0,     0x774, 0x776, 0x778, 0x77a, 0x77c, 0x77e, 0x780, 0x782, 0, 0, 0, 0, 0, 0,
-        0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0, 0, 0, 0, 0x784, 0x786};
+        0, 0, 0x774, 0x776, 0x778, 0x77a, 0x77c, 0x77e, 0x780, 0x782, 0, 0, 0, 0, 0,     0,
+        0, 0, 0,     0,     0,     0,     0,     0,     0,     0,     0, 0, 0, 0, 0x784, 0x786};
     int nAddress = 0;
     for (int i = 0; i < 32; ++i) {
         if (kCoefficients[i] != 0) {
@@ -444,7 +444,8 @@ void ReleaseMidi() {
         uint32_t nValid = 0;
         while (!g_midi.empty() && g_midi.front().nStamp <= nNow &&
                nValid + g_midi.front().nLength <= kMidiBufferSize - sizeof(aHeader)) {
-            memcpy(pStream + sizeof(aHeader) + nValid, g_midi.front().aBytes, g_midi.front().nLength);
+            memcpy(
+                pStream + sizeof(aHeader) + nValid, g_midi.front().aBytes, g_midi.front().nLength);
             nValid += g_midi.front().nLength;
             g_midi.pop_front();
         }
@@ -487,8 +488,16 @@ void RenderLocked(int16_t *pOut, int nFrames) {
 
 void WriteWavHeader() {
     const uint32_t nData = static_cast<uint32_t>(g_nWavFrames * 4);
-    const uint32_t aHeader[] = {0x46464952, 36 + nData, 0x45564157, 0x20746d66, 16,
-                                0x00020001, kRate,      kRate * 4,  0x00100004, 0x61746164,
+    const uint32_t aHeader[] = {0x46464952,
+                                36 + nData,
+                                0x45564157,
+                                0x20746d66,
+                                16,
+                                0x00020001,
+                                kRate,
+                                kRate * 4,
+                                0x00100004,
+                                0x61746164,
                                 nData};
     fseek(g_pWav, 0, SEEK_SET);
     fwrite(aHeader, sizeof(aHeader), 1, g_pWav);
@@ -597,7 +606,8 @@ void HostMidiQueued(unsigned nOffset, long long nLateNs) {
 void HostIopWrite(void *pDest, const void *pSource, unsigned nSize) {
     uint8_t *pInput = static_cast<uint8_t *>(HostHsynInput());
     uint8_t *pDestBytes = static_cast<uint8_t *>(pDest);
-    if (!g_bTicking || pDestBytes < pInput || pDestBytes >= pInput + kMidiBuffers * kMidiBufferSize) {
+    if (!g_bTicking || pDestBytes < pInput ||
+        pDestBytes >= pInput + kMidiBuffers * kMidiBufferSize) {
         memcpy(pDest, pSource, nSize);
         return;
     }
@@ -612,10 +622,12 @@ void HostIopWrite(void *pDest, const void *pSource, unsigned nSize) {
         }
         // As msin queues them: note off, program change, and channel pressure are two bytes.
         const unsigned nType = pData[nOffset] & 0xf0;
-        MidiMessage message = {nStamp, static_cast<uint8_t>(
-                                           nType == 0x80 || nType == 0xc0 || nType == 0xd0 ? 2 : 3),
-                               {}};
-        message.nLength = static_cast<uint8_t>(std::min<unsigned>(message.nLength, nData - nOffset));
+        MidiMessage message = {
+            nStamp,
+            static_cast<uint8_t>(nType == 0x80 || nType == 0xc0 || nType == 0xd0 ? 2 : 3),
+            {}};
+        message.nLength =
+            static_cast<uint8_t>(std::min<unsigned>(message.nLength, nData - nOffset));
         memcpy(message.aBytes, pData + nOffset, message.nLength);
         g_midi.push_back(message);
         nOffset += message.nLength;
@@ -688,7 +700,8 @@ unsigned short sceSdNote2Pitch(unsigned short nCenterNote,
     return static_cast<unsigned short>(std::min(flPitch + 0.5, 65535.0));
 }
 
-int sceSdVoiceTrans(short, unsigned short nMode, unsigned char *pIop, unsigned int nSpu, unsigned int nSize) {
+int sceSdVoiceTrans(
+    short, unsigned short nMode, unsigned char *pIop, unsigned int nSpu, unsigned int nSize) {
     if (nSpu >= kSpuRamSize) {
         return -1;
     }
