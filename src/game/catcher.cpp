@@ -9,6 +9,7 @@
 #include "game/gamemanagerimpl.h"
 #include "game/nullplayer.h"
 #include "game/riff.h"
+#include "gfx/hostframe.h"
 #include "mid/tick.h"
 #include "msg/beginphrasecatchmsg.h"
 #include "msg/catchmsg.h"
@@ -202,6 +203,9 @@ void Catcher::MissGem(int nTick, int nGem) {
         break;
     }
 
+#ifdef RESONANCE_HOST
+    HostEvent("miss track=%d gem=%d tick=%d songns=%lld", mTrack, nGem, nTick, mClock->Now());
+#endif
     CatchMsg msg(nTick, mTrack, nGem, kCatchMiss, mPlayer, kNoProgress, kNoProgress);
     Send(&msg);
 
@@ -217,6 +221,9 @@ void Catcher::MissGem(int nTick, int nGem) {
 }
 
 void Catcher::CatchGem(int nTick, int nGem) {
+#ifdef RESONANCE_HOST
+    HostEvent("hit track=%d gem=%d tick=%d songns=%lld", mTrack, nGem, nTick, mClock->Now());
+#endif
     // The tick is stored without the finiteness check.
     mLastCaughtPosition.mTick = nTick;
     ++mCaughtGems;

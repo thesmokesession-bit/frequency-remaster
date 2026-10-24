@@ -11,6 +11,10 @@
 #include "game/player.h"
 #include "game/tnlarena.h"
 #include "gfx/gfxdevice.h"
+#include "gfx/hostframe.h"
+#ifdef RESONANCE_HOST
+#include "os/random.h" // gRandom, for the event log
+#endif
 #include "gfx/vram.h"
 #include "msg/barstatusmsg.h"
 #include "msg/gamebeginmsg.h"
@@ -180,6 +184,9 @@ void Renderer::DispatchPriv(Message *pMsg) {
 
 void Renderer::PollMessages() {
     mSongTick = static_cast<float>(mSongClock->SongTick());
+#ifdef RESONANCE_HOST
+    HostEvent("frame songtick=%d songns=%lld rng=%d", mSongClock->SongTick(), mSongClock->Now(), gRandom);
+#endif
     RendererBase::PollMessages();
 }
 

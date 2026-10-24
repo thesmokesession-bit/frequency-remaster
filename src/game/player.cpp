@@ -5,10 +5,16 @@
 
 #include "app/msgsource.h"
 #include "game/freqappearance.h"
+#include "gfx/hostframe.h"
 #include "msg/juiceamountmsg.h"
 #include "msg/phrasecapturedmsg.h"
 #include "msg/pointamountmsg.h"
 #include "msg/updatescorepacket.h"
+
+#ifdef RESONANCE_HOST
+#include "app/application.h" // the event log's song clock
+#include "sch/tickclock.h"
+#endif
 
 namespace {
 
@@ -144,6 +150,13 @@ void Player::AddScore(int nDelta, int bNotify) {
     if (mScore == nOldScore) {
         return;
     }
+#ifdef RESONANCE_HOST
+    HostEvent("score player=%d score=%d delta=%d songns=%lld",
+              mPlayerId,
+              mScore,
+              nDelta,
+              Application::shared()->GetSongClock()->Now());
+#endif
 
     PointAmountMsg message;
     message.mPlayer = this;
