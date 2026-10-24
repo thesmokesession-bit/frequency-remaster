@@ -24,7 +24,17 @@ char g_szFormatStringBuffer[kFormatStringBufferSize] = {};
 const char *Rnd::MakeString(const char *pszFormat, ...) {
     va_list args;
     va_start(args, pszFormat);
+#ifdef RESONANCE_HOST
+    // A caller may pass the buffer back in: TnlGemManager::AddMeshKind() formats "%s%d.mm" from the
+    // "gem_ghost%d" result. The console's newlib vsprintf copies a %s argument onto itself in place
+    // unharmed. glibc's vsprintf ends the destination string first, so the argument reads as empty
+    // ("0.mm"). The text is built aside and copied in.
+    char szFormatted[kFormatStringBufferSize];
+    vsnprintf(szFormatted, sizeof(szFormatted), pszFormat, args);
+    strcpy(g_szFormatStringBuffer, szFormatted);
+#else
     vsprintf(g_szFormatStringBuffer, pszFormat, args);
+#endif
     va_end(args);
     return g_szFormatStringBuffer;
 }
