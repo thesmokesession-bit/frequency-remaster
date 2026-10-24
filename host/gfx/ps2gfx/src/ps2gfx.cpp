@@ -426,7 +426,11 @@ extern "C" int ps2gfx_screenshot_output(const char* path)
 	if(!gs) return -1;
 	gs->capture = true;
 	gs->Flip(CGSHandler::FLIP_FLAG_FORCE | CGSHandler::FLIP_FLAG_WAIT);
-	if(gs->capture || gs->captured.IsEmpty()) return -1;
+	if(gs->capture || gs->captured.IsEmpty())
+	{
+		gs->capture = false;
+		return -1;
+	}
 	const auto& bmp = gs->captured;
 	return WritePng(path, bmp, bmp.GetWidth(), bmp.GetHeight(), true) ? 0 : -1;
 }
