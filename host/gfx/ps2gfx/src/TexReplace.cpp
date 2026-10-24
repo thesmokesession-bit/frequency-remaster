@@ -1,6 +1,7 @@
 #include "TexReplace.h"
 
 #include <algorithm>
+#include <bitset>
 #include <cstdio>
 #include <cstdlib>
 #include <mutex>
@@ -27,6 +28,7 @@ namespace
 		const char* kind;
 		uint32 psm, cpsm, width, height;
 		uint32 first, count = 0, lastPresent = ~0U;
+		uint64 texels;
 		std::vector<uint32> tbps;
 		std::string name;
 	};
@@ -35,6 +37,9 @@ namespace
 	std::unordered_map<uint64, Entry> g_entries;
 	uint32 g_present = 0;
 	bool g_indexDirty = false;
+	// The indices each indexed texture uses: a CLUT entry no texel uses is not part of a key, as
+	// the game leaves such entries holding whatever its memory held.
+	std::unordered_map<uint64, std::bitset<256>> g_usedIndices;
 
 	// Texel hashes the game drew, with their texture's name. Written on the game's thread.
 	std::mutex g_generatedLock;
@@ -184,19 +189,19 @@ namespace
 		int fd = open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
 		FILE* f = fd >= 0 ? fdopen(fd, "w") : nullptr;
 		if(!f) return;
-		fprintf(f, "# key\tkind\tpsm\tcpsm\twidth\theight\tfirst\tcount\ttbp0\tname\n");
+		fprintf(f, "# key\tkind\tpsm\tcpsm\twidth\theight\tfirst\tcount\ttbp0\tname\ttexels\n");
 		for(const auto& [key, e] : rows)
 		{
 			fprintf(f, "%016llx\t%s\t0x%02x\t0x%02x\t%u\t%u\t%u\t%u\t", static_cast<unsigned long long>(key), e->kind, e->psm, e->cpsm,
 			        e->width, e->height, e->first, e->count);
 			for(size_t i = 0; i < e->tbps.size(); i++) fprintf(f, i ? ",%u" : "%u", e->tbps[i]);
-			fprintf(f, "\t%s\n", e->name.empty() ? "-" : e->name.c_str());
+			fprintf(f, "\t%s\t%016llx\n", e->name.empty() ? "-" : e->name.c_str(), static_cast<unsigned long long>(e->texels));
 		}
 		fclose(f);
 		rename(tmp.c_str(), (std::string(g_dumpDir) + "/index.tsv").c_str());
 	}
 
-	Entry& Note(uint64 key, const char* kind, const TEX0& tex0, bool& isNew)
+	Entry& Note(uint64 key, uint64 texels, const char* kind, const TEX0& tex0, bool& isNew)
 	{
 		auto [it, inserted] = g_entries.try_emplace(key);
 		auto& e = it->second;
@@ -209,6 +214,7 @@ namespace
 			e.width = Width(tex0);
 			e.height = Height(tex0);
 			e.first = g_present;
+			e.texels = texels;
 			g_indexDirty = true;
 		}
 		if(e.lastPresent != g_present)
@@ -238,14 +244,25 @@ bool TexReplace::Active()
 
 uint64 TexReplace::HashTexels(uint8* ram, const TEX0& tex0)
 {
-	return HashUnits(tex0.nPsm, Width(tex0), Height(tex0), ReadUnits(ram, tex0));
+	auto units = ReadUnits(ram, tex0);
+	uint64 hash = HashUnits(tex0.nPsm, Width(tex0), Height(tex0), units);
+	if(CGsPixelFormats::IsPsmIDTEX(tex0.nPsm))
+	{
+		auto& used = g_usedIndices[hash];
+		for(uint8 index : units) used.set(index);
+	}
+	return hash;
 }
 
 uint64 TexReplace::Key(uint64 texelHash, const TEX0& tex0, const uint32* clut)
 {
 	if(!CGsPixelFormats::IsPsmIDTEX(tex0.nPsm)) return texelHash;
 	unsigned entries = CGsPixelFormats::IsPsmIDTEX4(tex0.nPsm) ? 16 : 256;
-	return XXH3_64bits_withSeed(clut, entries * sizeof(uint32), texelHash ^ (static_cast<uint64>(tex0.nCPSM) << 56));
+	uint32 usedClut[256] = {};
+	auto used = g_usedIndices.find(texelHash);
+	for(unsigned i = 0; i < entries; i++)
+		if(used == g_usedIndices.end() || used->second.test(i)) usedClut[i] = clut[i];
+	return XXH3_64bits_withSeed(usedClut, entries * sizeof(uint32), texelHash ^ (static_cast<uint64>(tex0.nCPSM) << 56));
 }
 
 bool TexReplace::Bind(uint64 key, uint64 texelHash, uint8* ram, const TEX0& tex0, const uint32* clut, Image& hd)
@@ -263,7 +280,7 @@ bool TexReplace::Bind(uint64 key, uint64 texelHash, uint8* ram, const TEX0& tex0
 			name = gen->second;
 		}
 	}
-	auto& e = Note(key, kind, tex0, isNew);
+	auto& e = Note(key, texelHash, kind, tex0, isNew);
 	if(isNew) e.name = name;
 	if(e.kind[0] == 'g') return false; // the game's own drawing stays as drawn
 	if(isNew)
@@ -292,7 +309,7 @@ void TexReplace::BindRenderTarget(const TEX0& tex0)
 {
 	uint64 where[] = {tex0.GetBufPtr(), tex0.nBufWidth, tex0.nPsm, Width(tex0), Height(tex0)};
 	bool isNew;
-	Note(XXH3_64bits_withSeed(where, sizeof(where), 0x7274), "rt", tex0, isNew);
+	Note(XXH3_64bits_withSeed(where, sizeof(where), 0x7274), 0, "rt", tex0, isNew);
 }
 
 void TexReplace::Present()
