@@ -123,6 +123,23 @@ struct BlockTrans {
     uint64_t nWritten = 0;
 };
 BlockTrans g_block;
+// sceSdBlockTransStatus()'s answer, kept up to date by whoever moves g_block, so the movie player
+// can poll it without waiting for the renderer's lock.
+std::atomic<int> g_nBlockStatus{0};
+
+// The IOP address the input's DMA fetches next. It has fetched the block playing, so it reports the
+// next one: the sample refills up to 1 KiB short of this, never over the block that plays. A
+// starved input has played all the sample wrote and reports where it waits, which the sample reads
+// as empty.
+void UpdateBlockStatus() {
+    const uint64_t nBlock = g_block.nPlayed & ~uint64_t{0x3ff};
+    const uint64_t nNext = g_block.nWritten > nBlock ? nBlock + 0x400 : nBlock;
+    g_nBlockStatus.store(g_block.nSize != 0 ?
+                             static_cast<int>(reinterpret_cast<uintptr_t>(g_block.pRing) +
+                                              (g_block.nFrom + nNext) % g_block.nSize) :
+                             0,
+                         std::memory_order_relaxed);
+}
 
 SDL_AudioDeviceID g_nDevice = 0;
 FILE *g_pWav = nullptr;
@@ -531,6 +548,7 @@ void RenderLocked(int16_t *pOut, int nFrames) {
             Iop::CSpuBase::MixSamples(aInput[0], g_pSpu->core1.m_inputVolL, &aCore1[2 * i]);
             Iop::CSpuBase::MixSamples(aInput[1], g_pSpu->core1.m_inputVolR, &aCore1[2 * i + 1]);
         }
+        UpdateBlockStatus();
         memcpy(pOut, aCore1, sizeof(int16_t) * 2 * nRun);
         pOut += 2 * nRun;
         nFrames -= nRun;
@@ -663,6 +681,7 @@ void HostIopWrite(void *pDest, const void *pSource, unsigned nSize) {
     if (g_block.nSize != 0 && pDestBytes >= g_block.pRing &&
         pDestBytes < g_block.pRing + g_block.nSize) {
         g_block.nWritten += nSize; // the movie's PCM, written in stream order
+        UpdateBlockStatus();
     }
     if (!g_bTicking || pDestBytes < pInput ||
         pDestBytes >= pInput + kMidiBuffers * kMidiBufferSize) {
@@ -893,6 +912,10 @@ int sceSdRemote(int nWait, ...) {
     va_list arguments;
     va_start(arguments, nWait);
     const int nCommand = va_arg(arguments, int);
+    if (nCommand == kSdBlockTransStatus) { // polled all through the movie: no lock
+        va_end(arguments);
+        return g_nBlockStatus.load(std::memory_order_relaxed);
+    }
     std::lock_guard<std::mutex> lock(g_iop);
     int nResult = 0;
     switch (nCommand) {
@@ -951,17 +974,7 @@ int sceSdRemote(int nWait, ...) {
             g_block.nStart = EeClock();
             g_block.nWritten = nSize;
         }
-        break;
-    }
-    case kSdBlockTransStatus: { // the IOP address the input's DMA fetches next
-        // The DMA has fetched the block playing, so it reports the next one: the sample refills
-        // up to 1 KiB short of this, never over the block that plays. A starved input has played
-        // all the sample wrote and reports where it waits, which the sample reads as empty.
-        const uint64_t nBlock = g_block.nPlayed & ~uint64_t{0x3ff};
-        const uint64_t nNext = g_block.nWritten > nBlock ? nBlock + 0x400 : nBlock;
-        nResult = g_block.nSize != 0 ? static_cast<int>(reinterpret_cast<uintptr_t>(g_block.pRing) +
-                                                        (g_block.nFrom + nNext) % g_block.nSize) :
-                                       0;
+        UpdateBlockStatus();
         break;
     }
     default:
