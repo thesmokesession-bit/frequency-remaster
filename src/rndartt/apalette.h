@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <vector>
 
+#include "os/eepointer.h"
 #include "os/mem.h"
 
 class NormalKey;
@@ -165,6 +166,6 @@ public:
      *
      * Nothing in the image was found to allocate or fill the table. +0x400
      */
-    unsigned char *mpRgb15ToIndex;
+    EePointer<unsigned char> mpRgb15ToIndex;
     int mEnd; /*!< One past the last entry written. +0x404 */
 };

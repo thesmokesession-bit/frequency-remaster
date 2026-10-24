@@ -1,5 +1,7 @@
 #pragma once
 
+#include "os/eepointer.h"
+
 class APalette;
 
 /**
@@ -296,7 +298,7 @@ public:
      */
     int Clone(ABitmap &source);
 
-    void *mPixels; /*!< The pixel rectangle, null until allocated. +0x00 */
+    EePointer<void> mPixels; /*!< The pixel rectangle, null until allocated. +0x00 */
     unsigned short mHasTransparentColor : 8; /*!< Whether mTransparentColor applies. +0x04 */
     unsigned short mFormat : 4;              /*!< The ABitmapFormat code. +0x05 bits 0 to 3 */
     unsigned short mOwnsPixels : 1;          /*!< Set when the constructor allocated. bit 4 */
@@ -307,5 +309,5 @@ public:
     short mBytesPerRow;                      /*!< The distance between two rows in bytes. +0x0a */
     unsigned int mTransparentColor;          /*!< The pixel value a copy skips. +0x0c */
     int mByteCount;                          /*!< The size of the pixel rectangle in bytes. +0x10 */
-    APalette *mPalette; /*!< The palette, null for a direct colour format. +0x14 */
+    EePointer<APalette> mPalette; /*!< The palette, null for a direct colour format. +0x14 */
 };

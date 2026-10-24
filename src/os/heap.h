@@ -2,6 +2,8 @@
 
 #include <stdint.h>
 
+#include "os/eepointer.h"
+
 /**
  * The number of bytes the header occupies at the front of the block.
  *
@@ -54,10 +56,10 @@ constexpr unsigned kHeapFlagOwnsBlock = 0x8000;
  * line calls these records nodes, the source of the name.
  */
 struct HeapNode {
-    uintptr_t mPrevAndFree; /*!< Preceding node, bit 0 set while free. +0x00 */
-    HeapNode *mNext;        /*!< The following node in address order, null at the tail. +0x04 */
-    HeapNode *mFreePrev;    /*!< The previous free node, valid only while free. +0x08 */
-    HeapNode *mFreeNext;    /*!< The next free node, valid only while free. +0x0c */
+    EeAddress mPrevAndFree;    /*!< Preceding node, bit 0 set while free. +0x00 */
+    EePointer<HeapNode> mNext; /*!< The following node in address order, null at the tail. +0x04 */
+    EePointer<HeapNode> mFreePrev; /*!< The previous free node, valid only while free. +0x08 */
+    EePointer<HeapNode> mFreeNext; /*!< The next free node, valid only while free. +0x0c */
 };
 
 /**
@@ -185,16 +187,16 @@ private:
     void PushFreeNode(HeapNode *pNode);
     void ReplaceFreeNode(HeapNode *pFrom, HeapNode *pTo);
 
-    HeapNode *mStart;    // +0x00 the first node, which follows this header
-    unsigned mLength;    // +0x04 usable bytes, excluding this header
-    HeapNode *mFreeList; // +0x08
-    unsigned mFlags;     // +0x0c
-    int mUsedNodes;      // +0x10
-    int mFreeNodes;      // +0x14
-    int mCallsAlloc;     // +0x18
-    int mCallsRealloc;   // +0x1c
-    int mCallsFree;      // +0x20
-    unsigned mBytes;     // +0x24 payload bytes handed out
+    EePointer<HeapNode> mStart;    // +0x00 the first node, which follows this header
+    unsigned mLength;              // +0x04 usable bytes, excluding this header
+    EePointer<HeapNode> mFreeList; // +0x08
+    unsigned mFlags;               // +0x0c
+    int mUsedNodes;                // +0x10
+    int mFreeNodes;                // +0x14
+    int mCallsAlloc;               // +0x18
+    int mCallsRealloc;             // +0x1c
+    int mCallsFree;                // +0x20
+    unsigned mBytes;               // +0x24 payload bytes handed out
 };
 
 /**
