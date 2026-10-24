@@ -64,6 +64,9 @@ pthread_mutex_t g_vblankLock = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t g_vblankSignal = PTHREAD_COND_INITIALIZER;
 pthread_once_t g_vblankOnce = PTHREAD_ONCE_INIT;
 unsigned g_nVblankCount = 0;
+// A GIF transfer ended since the last blank. Its completion interrupt runs after the blank's
+// handlers, as a transfer a blank handler starts finishes after the handler returns.
+bool g_bGifEnded = false;
 
 sceDmaEnv g_dmaEnv;
 
@@ -123,6 +126,9 @@ void *RunVblanks(void *) {
 
         HostRaiseIntc(INTC_VBLANK_S);
         HostRaiseIntc(INTC_VBLANK_E);
+        if (__atomic_exchange_n(&g_bGifEnded, false, __ATOMIC_RELAXED)) {
+            HostRaiseDmac(DMAC_GIF);
+        }
     }
     return nullptr;
 }
@@ -163,6 +169,9 @@ void RunTransfer(sceDmaChan *pChannel, uint32_t nChcrBits) {
                nChcr);
     Register(nBase + kHostDmaQwc) = 0;
     Register(nBase + kHostDmaChcr) = nChcr & ~kHostDmaStart;
+    if (ChannelOf(pChannel) == DMAC_GIF) {
+        __atomic_store_n(&g_bGifEnded, true, __ATOMIC_RELAXED);
+    }
 }
 
 } // namespace

@@ -20,7 +20,11 @@ extern "C" {
  */
 typedef struct {
     sceMpeg mpeg;              /*!< Decoder state. */
+#ifdef RESONANCE_HOST
+    unsigned char vibuf[0x70]; /*!< Input ring. A ViBuf with 64-bit pointers is 0x70 bytes. */
+#else
     unsigned char vibuf[0x60]; /*!< Input ring, treated as a ViBuf by the decoder unit. */
+#endif
     int state;                 /*!< Decoder state, such as VD_STATE_ABORT or VD_STATE_END. */
     int reserved;              /*!< Never read or written by the decoder unit. +0xac */
     int hid_endimage;          /*!< Identifier of the end-of-image interrupt handler. */
