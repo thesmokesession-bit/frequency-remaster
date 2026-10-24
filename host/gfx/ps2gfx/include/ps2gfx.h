@@ -73,6 +73,10 @@ void ps2gfx_set_crt(int interlaced, int mode, int frame_mode);
 void ps2gfx_io_write(uint32_t addr, uint32_t value);
 uint32_t ps2gfx_io_read(uint32_t addr);
 
+/* Reads n bytes of the local-to-host transfer (TRXDIR = 1) a GIF transfer just started into dst, as the
+   EE reads them from the VIF1 FIFO. */
+void ps2gfx_read_image(void* dst, size_t n);
+
 /* Vertical blank: flushes the GS, presents (config.present), sets CSR VSYNC and toggles CSR FIELD. */
 void ps2gfx_vsync(void);
 

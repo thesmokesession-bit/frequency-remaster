@@ -269,6 +269,9 @@ __attribute__((weak)) void HostGfxDma(int, uint32_t, uint32_t, uint32_t, uint32_
 __attribute__((weak)) void HostGfxVsync() {
 }
 
+__attribute__((weak)) void HostGfxReadImage(void *, unsigned) {
+}
+
 __attribute__((weak)) void HostGfxWaitPresented(unsigned) {
 }
 

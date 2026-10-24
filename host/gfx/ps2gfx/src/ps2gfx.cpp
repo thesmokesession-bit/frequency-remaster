@@ -404,6 +404,11 @@ extern "C" uint32_t ps2gfx_io_read(uint32_t addr)
 	return 0;
 }
 
+extern "C" void ps2gfx_read_image(void* dst, size_t n)
+{
+	g->gs->ReadImageData(dst, static_cast<uint32>(n));
+}
+
 extern "C" void ps2gfx_vsync(void)
 {
 	g->gs->SetVBlank();

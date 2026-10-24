@@ -496,11 +496,39 @@ int sceGsSetDefStoreImage(sceGsStoreImage *pStoreImage,
     return 7;
 }
 
-// ponytail: the null backend has no GS memory to read back, so pDest keeps its contents. A
-// renderer fills it from the rectangle the descriptor names.
+// Sends the descriptor's GIF packet (past its VIF codes), which starts the GS-to-host transfer, and
+// reads the rectangle into pDest through the renderer. The null backend leaves pDest as it was.
 int sceGsExecStoreImage(sceGsStoreImage *pStoreImage, void *pDest) {
-    (void)pStoreImage;
-    (void)pDest;
+    const unsigned long long *words = (const unsigned long long *)pStoreImage;
+    const unsigned int nPsm = (unsigned int)((words[4] >> 24) & 0x3FULL);
+    const unsigned int nPixels = (unsigned int)(words[8] & 0xFFFULL) * (unsigned int)((words[8] >> 32) & 0xFFFULL);
+    unsigned int nBits = 32;
+
+    switch (nPsm) {
+    case 0x01:
+    case 0x31:
+        nBits = 24;
+        break;
+    case 0x02:
+    case 0x0A:
+    case 0x32:
+    case 0x3A:
+        nBits = 16;
+        break;
+    case 0x13:
+    case 0x1B:
+        nBits = 8;
+        break;
+    case 0x14:
+    case 0x24:
+    case 0x2C:
+        nBits = 4;
+        break;
+    default:
+        break;
+    }
+    SendToGif(&words[2], 6U);
+    HostGfxReadImage(pDest, nPixels * nBits / 8U);
     return 0;
 }
 
