@@ -1,0 +1,3 @@
+# Press Start three seconds after the title screen takes input, which opens the main menu.
+after TITLE_SCREEN_REACHED
+180 START
