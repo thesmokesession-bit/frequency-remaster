@@ -72,6 +72,11 @@ long long HostFixedClockNs(void);
 
 /** Print "EVENT <HostFrameTick()> <fixed clock ns> <text>" when FREQ_EVENTLOG is set. */
 void HostEvent(const char *pszFormat, ...);
+/**
+ * Whether FREQ_WIDESCREEN=1 asks for a 16:9 picture. The game's cameras then see 4/3 wider, and
+ * the 640-pixel frame is presented stretched to 16:9.
+ */
+int HostWidescreen(void);
 
 #ifdef __cplusplus
 }

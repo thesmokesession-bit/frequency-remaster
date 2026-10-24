@@ -36,7 +36,18 @@ typedef struct ps2gfx_config
 	   May be NULL. */
 	void (*present)(void* user);
 	int window_width, window_height; /* presentation size for the default framebuffer, 0 = 640x448 */
+	/* OpenGL: the GS draws at res_factor times its resolution (0 or 1 = native). */
+	int res_factor;
+	/* Shape of the presented picture inside the window: 0 = the CRT's 640x448, 1 = 4:3, 2 = 16:9. */
+	int aspect;
 } ps2gfx_config;
+
+enum
+{
+	PS2GFX_ASPECT_CRT = 0,
+	PS2GFX_ASPECT_4_3 = 1,
+	PS2GFX_ASPECT_16_9 = 2,
+};
 
 /* Returns 0 on success. */
 int ps2gfx_init(const ps2gfx_config* config);
@@ -74,6 +85,9 @@ void ps2gfx_wait_frames(void);
 /* Writes the displayed framebuffer (DISPFB of the active read circuit, cropped to DISPLAY) as PNG.
    Returns 0 on success, -1 if nothing is displayed. */
 int ps2gfx_screenshot(const char* path);
+/* OpenGL: presents the displayed framebuffer again and writes the whole window, at the window's
+   size, as PNG. Call after ps2gfx_vsync. Returns 0 on success. */
+int ps2gfx_screenshot_output(const char* path);
 
 /* Debug/replay: loads a Play! state zip (VU1 + VIF1 + GIF + GS) as written by the trace capture. */
 int ps2gfx_load_state(const void* zip, size_t size);

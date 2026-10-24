@@ -202,6 +202,10 @@ CGSHandler::PRESENTATION_VIEWPORT CGSHandler::GetPresentationViewport() const
 	{
 		sourceSize = std::make_pair(1920, 1080);
 	}
+	else if(CAppConfig::GetInstance().GetPreferenceBoolean("ps2gfx.aspect43")) //libps2gfx: a TV's 4:3 instead of the CRT's pixel size
+	{
+		sourceSize = std::make_pair(4, 3);
+	}
 	switch(m_presentationParams.mode)
 	{
 	case PRESENTATION_MODE_FILL:

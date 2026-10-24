@@ -270,6 +270,14 @@ unsigned HostVblankCount() {
     return nCount;
 }
 
+int HostWidescreen() {
+    static const bool bWidescreen = [] {
+        const char *pszValue = getenv("FREQ_WIDESCREEN");
+        return pszValue != nullptr && strcmp(pszValue, "1") == 0;
+    }();
+    return bWidescreen;
+}
+
 int HostWaitVblank() {
     pthread_once(&g_vblankOnce, StartVblanks);
     pthread_mutex_lock(&g_vblankLock);

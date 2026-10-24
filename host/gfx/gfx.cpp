@@ -11,6 +11,10 @@
 // FREQ_FRAMEHASH=<BREADCRUMB>:<fields> logs "FRAMEHASH <tick> <ns> <hash>" for each frame presented
 // in that many fields from the breadcrumb: a hash of the displayed frame's PNG, and the fixed
 // clock's time (FREQ_CLOCK=fixed presents each tick's frame before the game goes on).
+//
+// FREQ_SCALE=<n> draws the GS at n times its resolution, FREQ_OUTPUT=<width>x<height> sizes the
+// window, and FREQ_WIDESCREEN=1 presents 16:9. With any of them, the picture keeps a TV's 4:3 (or
+// 16:9) inside the window, the window defaults to 448n pixels high, and a shot is the whole window.
 
 #include <algorithm>
 #include <atomic>
@@ -78,6 +82,8 @@ SDL_Window *g_pWindow = nullptr;
 SDL_GLContext g_context = nullptr;
 
 const char *g_pszShotDirectory = nullptr;
+// Whether shots save the window rather than the GS framebuffer.
+bool g_bOutputShots = false;
 std::string g_shotBreadcrumb;
 std::vector<unsigned> g_shotOffsets;
 // The blank count at the shot breadcrumb.
@@ -233,14 +239,29 @@ void Start() {
         }
         Fail("cannot open the display");
     }
+    const char *pszScale = getenv("FREQ_SCALE");
+    const char *pszOutput = getenv("FREQ_OUTPUT");
+    const int nScale = pszScale != nullptr ? std::max(atoi(pszScale), 1) : 1;
+    const bool bWidescreen = HostWidescreen() != 0;
+    g_bOutputShots = nScale > 1 || pszOutput != nullptr || bWidescreen;
+    int nWindowHeight = kScreenHeight * nScale;
+    int nWindowWidth = g_bOutputShots ?
+                           nWindowHeight * (bWidescreen ? 16 : 4) / (bWidescreen ? 9 : 3) :
+                           kScreenWidth;
+    if (pszOutput != nullptr && (sscanf(pszOutput, "%dx%d", &nWindowWidth, &nWindowHeight) != 2 ||
+                                 nWindowWidth <= 0 || nWindowHeight <= 0)) {
+        fprintf(stderr, "host: FREQ_OUTPUT is not <width>x<height>\n");
+        _exit(70);
+    }
+
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
     g_pWindow = SDL_CreateWindow("FreQuency",
                                  SDL_WINDOWPOS_UNDEFINED,
                                  SDL_WINDOWPOS_UNDEFINED,
-                                 kScreenWidth,
-                                 kScreenHeight,
+                                 nWindowWidth,
+                                 nWindowHeight,
                                  SDL_WINDOW_OPENGL);
     if (g_pWindow == nullptr || (g_context = SDL_GL_CreateContext(g_pWindow)) == nullptr ||
         SDL_GL_MakeCurrent(g_pWindow, nullptr) != 0) {
@@ -252,8 +273,12 @@ void Start() {
     config.renderer = PS2GFX_RENDERER_OPENGL;
     config.make_current = MakeCurrent;
     config.present = Present;
-    config.window_width = kScreenWidth;
-    config.window_height = kScreenHeight;
+    config.window_width = nWindowWidth;
+    config.window_height = nWindowHeight;
+    config.res_factor = nScale;
+    if (g_bOutputShots) {
+        config.aspect = bWidescreen ? PS2GFX_ASPECT_16_9 : PS2GFX_ASPECT_4_3;
+    }
     if (ps2gfx_init(&config) != 0) {
         Fail("cannot start ps2gfx");
     }
@@ -299,7 +324,8 @@ void TakeShots(unsigned nVblank) {
                  g_pszShotDirectory,
                  g_shotBreadcrumb.c_str(),
                  nOffset);
-        const int nResult = ps2gfx_screenshot(szPath);
+        const int nResult =
+            g_bOutputShots ? ps2gfx_screenshot_output(szPath) : ps2gfx_screenshot(szPath);
         timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);
         const double flSeconds = static_cast<double>(now.tv_sec - g_shotAnchorTime.tv_sec) +

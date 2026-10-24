@@ -19,6 +19,10 @@
 #include "rnd/transformable.h"
 #include "rndartt/apalette.h"
 
+#ifdef RESONANCE_HOST
+extern "C" int HostWidescreen(); // host/gfx-null/gfx.cpp
+#endif
+
 namespace Rnd {
 
 namespace {
@@ -441,6 +445,20 @@ void Cam::UpdateProjection() {
         mInvLocalProject[1].z = -flAspect / flScale;
         mInvLocalProject[2].y = 1.0f;
     }
+#ifdef RESONANCE_HOST
+    // A 16:9 display shows the 640-pixel frame 4/3 wider, so a camera that draws to it squeezes
+    // its x by 3/4 around the centre: 3D sees more to the sides, and flat views keep their shape.
+    if (HostWidescreen() != 0 && mpTargetTex == nullptr) {
+        constexpr float kWiden = 0.75f;
+        mLocalProject[0].x *= kWiden;
+        mLocalProject[3].x *= kWiden;
+        mInvLocalProject[0].x /= kWiden;
+        if (mFov != 0.0f) {
+            mLocalFrustum.Set(
+                mNearPlane, mFarPlane, 2.0f * atanf(tanf(mFov * 0.5f) / kWiden), flAspect * kWiden);
+        }
+    }
+#endif
     UpdateWorldProject();
 }
 
