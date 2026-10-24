@@ -1290,16 +1290,16 @@ void CGSH_Vulkan::Prim_Sprite()
 			st[0] <<= m_vtxBuffer[1].st;
 			st[1] <<= m_vtxBuffer[0].st;
 
-			float q1 = rgbaq[1].nQ;
-			float q2 = rgbaq[0].nQ;
-			if(q1 == 0) q1 = 1;
-			if(q2 == 0) q2 = 1;
+			//A sprite has one Q, its second vertex's, as on the GS. (resonance: the first vertex's
+			//Q used to divide the second vertex's S and T, as in GSH_OpenGL before the same fix.)
+			float q = rgbaq[1].nQ;
+			if(q == 0) q = 1;
 
-			s[0] = st[0].nS / q1;
-			s[1] = st[1].nS / q2;
+			s[0] = st[0].nS / q;
+			s[1] = st[1].nS / q;
 
-			t[0] = st[0].nT / q1;
-			t[1] = st[1].nT / q2;
+			t[0] = st[0].nT / q;
+			t[1] = st[1].nT / q;
 		}
 	}
 
