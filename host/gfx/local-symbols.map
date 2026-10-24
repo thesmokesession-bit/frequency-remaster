@@ -1,0 +1,11 @@
+/* The game defines these C library names for itself (src/os/filelog.cpp and the zlib it links).
+   They are not exported, and SDL2, D-Bus, and Mesa call the C library's. */
+{
+  local:
+    close;
+    fopen;
+    inflate;
+    isatty;
+    read;
+    write;
+};

@@ -169,10 +169,11 @@ void RunTransfer(sceDmaChan *pChannel, uint32_t nChcrBits) {
 
 extern "C" {
 
-void HostGfxDma(int, uint32_t, uint32_t, uint32_t, uint32_t) {
+// host/gfx/gfx.cpp replaces both when the build includes it.
+__attribute__((weak)) void HostGfxDma(int, uint32_t, uint32_t, uint32_t, uint32_t) {
 }
 
-void HostGfxVsync() {
+__attribute__((weak)) void HostGfxVsync() {
 }
 
 unsigned HostVblankCount() {
