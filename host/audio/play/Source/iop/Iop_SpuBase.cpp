@@ -213,6 +213,10 @@ void CSpuBase::Reset()
 	m_inputVolR = 0x7FFF;
 	m_extInputVolL = 0x7FFF;
 	m_extInputVolR = 0x7FFF;
+	m_reverbOutVolL = 0;
+	m_reverbOutVolR = 0;
+	m_reverbIn[0] = m_reverbIn[1] = 0;
+	m_reverbOut[0] = m_reverbOut[1] = 0;
 
 	memset(m_channel, 0, sizeof(m_channel));
 	memset(m_reverb, 0, sizeof(m_reverb));
@@ -864,29 +868,27 @@ uint32 CSpuBase::GetAdsrDelta(unsigned int index) const
 	return m_adsrLogTable[index + 32];
 }
 
-float CSpuBase::GetReverbSample(uint32 address) const
+//The work area address `delta` bytes from the buffer address plus a reverb register's offset,
+//wrapped into [start, end).
+uint32 CSpuBase::GetReverbAddress(uint32 address, int32 delta) const
 {
-	uint32 absoluteAddress = m_reverbCurrAddr + address;
-	while(absoluteAddress >= m_reverbWorkAddrEnd)
-	{
-		absoluteAddress -= m_reverbWorkAddrEnd;
-		absoluteAddress += m_reverbWorkAddrStart;
-	}
-	return static_cast<float>(*reinterpret_cast<int16*>(m_ram + absoluteAddress));
+	uint32 size = m_reverbWorkAddrEnd - m_reverbWorkAddrStart;
+	int64 relative = static_cast<int64>(m_reverbCurrAddr - m_reverbWorkAddrStart) + address + delta;
+	relative %= size;
+	if(relative < 0) relative += size;
+	return m_reverbWorkAddrStart + static_cast<uint32>(relative);
+}
+
+float CSpuBase::GetReverbSample(uint32 address, int32 delta) const
+{
+	return static_cast<float>(*reinterpret_cast<int16*>(m_ram + GetReverbAddress(address, delta)));
 }
 
 void CSpuBase::SetReverbSample(uint32 address, float value)
 {
-	uint32 absoluteAddress = m_reverbCurrAddr + address;
-	while(absoluteAddress >= m_reverbWorkAddrEnd)
-	{
-		absoluteAddress -= m_reverbWorkAddrEnd;
-		absoluteAddress += m_reverbWorkAddrStart;
-	}
 	value = std::max<float>(value, SHRT_MIN);
 	value = std::min<float>(value, SHRT_MAX);
-	int16 intValue = static_cast<int16>(value);
-	*reinterpret_cast<int16*>(m_ram + absoluteAddress) = intValue;
+	*reinterpret_cast<int16*>(m_ram + GetReverbAddress(address, 0)) = static_cast<int16>(value);
 }
 
 uint32 CSpuBase::GetReverbOffset(unsigned int registerId) const
@@ -1007,98 +1009,53 @@ void CSpuBase::UpdateAdsr(CHANNEL& channel)
 	channel.adsrVolume = static_cast<uint32>(currentAdsrLevel);
 }
 
+//The reverb as the PlayStation SPU documentation (psx-spx, "SPU Reverb Formula") gives it, which
+//the SPU2 runs per core: at half the output rate, on the mean of each pair of input samples, its
+//result held for the pair and scaled by the effect volume (EVOL). Register names are psx-spx's.
 void CSpuBase::UpdateReverb(int16 reverbSample[2], int16* samples)
 {
-	//Feed samples to FIR filter
-	if(m_reverbTicks & 1)
+	if((m_reverbTicks & 1) == 0)
 	{
-		//IIR_INPUT_A0 = buffer[IIR_SRC_A0] * IIR_COEF + INPUT_SAMPLE_L * IN_COEF_L;
-		//IIR_INPUT_A1 = buffer[IIR_SRC_A1] * IIR_COEF + INPUT_SAMPLE_R * IN_COEF_R;
-		//IIR_INPUT_B0 = buffer[IIR_SRC_B1] * IIR_COEF + INPUT_SAMPLE_L * IN_COEF_L;
-		//IIR_INPUT_B1 = buffer[IIR_SRC_B0] * IIR_COEF + INPUT_SAMPLE_R * IN_COEF_R;
+		m_reverbIn[0] = reverbSample[0];
+		m_reverbIn[1] = reverbSample[1];
+	}
+	else
+	{
+		const auto R = [&](unsigned int reg, int32 delta = 0) { return GetReverbSample(GetReverbOffset(reg), delta); };
+		const auto W = [&](unsigned int reg, float value) { SetReverbSample(GetReverbOffset(reg), value); };
+		const float vIIR = GetReverbCoef(IIR_ALPHA);
+		const float vWALL = GetReverbCoef(IIR_COEF);
+		const float vAPF1 = GetReverbCoef(FB_ALPHA);
+		const float vAPF2 = GetReverbCoef(FB_X);
+		const float Lin = GetReverbCoef(IN_COEF_L) * (m_reverbIn[0] + reverbSample[0]) * 0.5f;
+		const float Rin = GetReverbCoef(IN_COEF_R) * (m_reverbIn[1] + reverbSample[1]) * 0.5f;
 
-		float input_sample_l = static_cast<float>(reverbSample[0]) * 0.5f;
-		float input_sample_r = static_cast<float>(reverbSample[1]) * 0.5f;
+		//Same side and different side reflection: mLSAME, mRSAME, mLDIFF, mRDIFF
+		W(IIR_DEST_A0, (Lin + R(IIR_SRC_A0) * vWALL - R(IIR_DEST_A0, -2)) * vIIR + R(IIR_DEST_A0, -2));
+		W(IIR_DEST_A1, (Rin + R(IIR_SRC_A1) * vWALL - R(IIR_DEST_A1, -2)) * vIIR + R(IIR_DEST_A1, -2));
+		W(IIR_DEST_B0, (Lin + R(IIR_SRC_B1) * vWALL - R(IIR_DEST_B0, -2)) * vIIR + R(IIR_DEST_B0, -2));
+		W(IIR_DEST_B1, (Rin + R(IIR_SRC_B0) * vWALL - R(IIR_DEST_B1, -2)) * vIIR + R(IIR_DEST_B1, -2));
 
-		float irr_coef = GetReverbCoef(IIR_COEF);
-		float in_coef_l = GetReverbCoef(IN_COEF_L);
-		float in_coef_r = GetReverbCoef(IN_COEF_R);
-
-		float iir_input_a0 = GetReverbSample(GetReverbOffset(IIR_SRC_A0)) * irr_coef + input_sample_l * in_coef_l;
-		float iir_input_a1 = GetReverbSample(GetReverbOffset(IIR_SRC_A1)) * irr_coef + input_sample_r * in_coef_r;
-		float iir_input_b0 = GetReverbSample(GetReverbOffset(IIR_SRC_B1)) * irr_coef + input_sample_l * in_coef_l;
-		float iir_input_b1 = GetReverbSample(GetReverbOffset(IIR_SRC_B0)) * irr_coef + input_sample_r * in_coef_r;
-
-		//IIR_A0 = IIR_INPUT_A0 * IIR_ALPHA + buffer[IIR_DEST_A0] * (1.0 - IIR_ALPHA);
-		//IIR_A1 = IIR_INPUT_A1 * IIR_ALPHA + buffer[IIR_DEST_A1] * (1.0 - IIR_ALPHA);
-		//IIR_B0 = IIR_INPUT_B0 * IIR_ALPHA + buffer[IIR_DEST_B0] * (1.0 - IIR_ALPHA);
-		//IIR_B1 = IIR_INPUT_B1 * IIR_ALPHA + buffer[IIR_DEST_B1] * (1.0 - IIR_ALPHA);
-
-		float iir_alpha = GetReverbCoef(IIR_ALPHA);
-
-		float iir_a0 = iir_input_a0 * iir_alpha + GetReverbSample(GetReverbOffset(IIR_DEST_A0)) * (1.0f - iir_alpha);
-		float iir_a1 = iir_input_a1 * iir_alpha + GetReverbSample(GetReverbOffset(IIR_DEST_A1)) * (1.0f - iir_alpha);
-		float iir_b0 = iir_input_b0 * iir_alpha + GetReverbSample(GetReverbOffset(IIR_DEST_B0)) * (1.0f - iir_alpha);
-		float iir_b1 = iir_input_b1 * iir_alpha + GetReverbSample(GetReverbOffset(IIR_DEST_B1)) * (1.0f - iir_alpha);
-
-		//buffer[IIR_DEST_A0 + 1sample] = IIR_A0;
-		//buffer[IIR_DEST_A1 + 1sample] = IIR_A1;
-		//buffer[IIR_DEST_B0 + 1sample] = IIR_B0;
-		//buffer[IIR_DEST_B1 + 1sample] = IIR_B1;
-
-		SetReverbSample(GetReverbOffset(IIR_DEST_A0) + 2, iir_a0);
-		SetReverbSample(GetReverbOffset(IIR_DEST_A1) + 2, iir_a1);
-		SetReverbSample(GetReverbOffset(IIR_DEST_B0) + 2, iir_b0);
-		SetReverbSample(GetReverbOffset(IIR_DEST_B1) + 2, iir_b1);
-
-		//ACC0 = buffer[ACC_SRC_A0] * ACC_COEF_A +
-		//	   buffer[ACC_SRC_B0] * ACC_COEF_B +
-		//	   buffer[ACC_SRC_C0] * ACC_COEF_C +
-		//	   buffer[ACC_SRC_D0] * ACC_COEF_D;
-		//ACC1 = buffer[ACC_SRC_A1] * ACC_COEF_A +
-		//	   buffer[ACC_SRC_B1] * ACC_COEF_B +
-		//	   buffer[ACC_SRC_C1] * ACC_COEF_C +
-		//	   buffer[ACC_SRC_D1] * ACC_COEF_D;
-
-		float acc_coef_a = GetReverbCoef(ACC_COEF_A);
-		float acc_coef_b = GetReverbCoef(ACC_COEF_B);
-		float acc_coef_c = GetReverbCoef(ACC_COEF_C);
-		float acc_coef_d = GetReverbCoef(ACC_COEF_D);
-
-		float acc0 =
-		    GetReverbSample(GetReverbOffset(ACC_SRC_A0)) * acc_coef_a +
-		    GetReverbSample(GetReverbOffset(ACC_SRC_B0)) * acc_coef_b +
-		    GetReverbSample(GetReverbOffset(ACC_SRC_C0)) * acc_coef_c +
-		    GetReverbSample(GetReverbOffset(ACC_SRC_D0)) * acc_coef_d;
-
-		float acc1 =
-		    GetReverbSample(GetReverbOffset(ACC_SRC_A1)) * acc_coef_a +
-		    GetReverbSample(GetReverbOffset(ACC_SRC_B1)) * acc_coef_b +
-		    GetReverbSample(GetReverbOffset(ACC_SRC_C1)) * acc_coef_c +
-		    GetReverbSample(GetReverbOffset(ACC_SRC_D1)) * acc_coef_d;
-
-		//FB_A0 = buffer[MIX_DEST_A0 - FB_SRC_A];
-		//FB_A1 = buffer[MIX_DEST_A1 - FB_SRC_A];
-		//FB_B0 = buffer[MIX_DEST_B0 - FB_SRC_B];
-		//FB_B1 = buffer[MIX_DEST_B1 - FB_SRC_B];
-
-		float fb_a0 = GetReverbSample(GetReverbOffset(MIX_DEST_A0) - GetReverbOffset(FB_SRC_A));
-		float fb_a1 = GetReverbSample(GetReverbOffset(MIX_DEST_A1) - GetReverbOffset(FB_SRC_A));
-		float fb_b0 = GetReverbSample(GetReverbOffset(MIX_DEST_B0) - GetReverbOffset(FB_SRC_B));
-		float fb_b1 = GetReverbSample(GetReverbOffset(MIX_DEST_B1) - GetReverbOffset(FB_SRC_B));
-
-		//buffer[MIX_DEST_A0] = ACC0 - FB_A0 * FB_ALPHA;
-		//buffer[MIX_DEST_A1] = ACC1 - FB_A1 * FB_ALPHA;
-		//buffer[MIX_DEST_B0] = (FB_ALPHA * ACC0) - FB_A0 * (FB_ALPHA^0x8000) - FB_B0 * FB_X;
-		//buffer[MIX_DEST_B1] = (FB_ALPHA * ACC1) - FB_A1 * (FB_ALPHA^0x8000) - FB_B1 * FB_X;
-
-		float fb_alpha = GetReverbCoef(FB_ALPHA);
-		float fb_x = GetReverbCoef(FB_X);
-
-		SetReverbSample(GetReverbOffset(MIX_DEST_A0), acc0 - fb_a0 * fb_alpha);
-		SetReverbSample(GetReverbOffset(MIX_DEST_A1), acc1 - fb_a1 * fb_alpha);
-		SetReverbSample(GetReverbOffset(MIX_DEST_B0), (fb_alpha * acc0) - fb_a0 * -fb_alpha - fb_b0 * fb_x);
-		SetReverbSample(GetReverbOffset(MIX_DEST_B1), (fb_alpha * acc1) - fb_a1 * -fb_alpha - fb_b1 * fb_x);
+		//Early echo (comb filter): mLCOMB1-4, mRCOMB1-4
+		float out[2];
+		for(int c = 0; c < 2; c++)
+		{
+			out[c] = GetReverbCoef(ACC_COEF_A) * R(ACC_SRC_A0 + c) + GetReverbCoef(ACC_COEF_B) * R(ACC_SRC_B0 + c) +
+			         GetReverbCoef(ACC_COEF_C) * R(ACC_SRC_C0 + c) + GetReverbCoef(ACC_COEF_D) * R(ACC_SRC_D0 + c);
+			//Late reverb, two all pass filters: mLAPF1 (dAPF1), mLAPF2 (dAPF2)
+			const unsigned int apf[2] = {MIX_DEST_A0 + c, MIX_DEST_B0 + c};
+			const float coef[2] = {vAPF1, vAPF2};
+			const unsigned int delay[2] = {FB_SRC_A, FB_SRC_B};
+			for(int i = 0; i < 2; i++)
+			{
+				const float tap = R(apf[i], -static_cast<int32>(GetReverbOffset(delay[i])));
+				out[c] -= coef[i] * tap;
+				W(apf[i], out[c]);
+				out[c] = out[c] * coef[i] + tap;
+			}
+		}
+		m_reverbOut[0] = out[0] * m_reverbOutVolL / 32768.0f;
+		m_reverbOut[1] = out[1] * m_reverbOutVolR / 32768.0f;
 
 		m_reverbCurrAddr += 2;
 		if(m_reverbCurrAddr >= m_reverbWorkAddrEnd)
@@ -1107,26 +1064,10 @@ void CSpuBase::UpdateReverb(int16 reverbSample[2], int16* samples)
 		}
 	}
 
-	if(m_reverbWorkAddrStart != 0)
+	for(int c = 0; c < 2; c++)
 	{
-		float sampleL = 0.333f * (GetReverbSample(GetReverbOffset(MIX_DEST_A0)) + GetReverbSample(GetReverbOffset(MIX_DEST_B0)));
-		float sampleR = 0.333f * (GetReverbSample(GetReverbOffset(MIX_DEST_A1)) + GetReverbSample(GetReverbOffset(MIX_DEST_B1)));
-
-		{
-			int16* output = samples + 0;
-			int32 resultSample = static_cast<int32>(sampleL) + static_cast<int32>(*output);
-			resultSample = std::max<int32>(resultSample, SHRT_MIN);
-			resultSample = std::min<int32>(resultSample, SHRT_MAX);
-			*output = static_cast<int16>(resultSample);
-		}
-
-		{
-			int16* output = samples + 1;
-			int32 resultSample = static_cast<int32>(sampleR) + static_cast<int32>(*output);
-			resultSample = std::max<int32>(resultSample, SHRT_MIN);
-			resultSample = std::min<int32>(resultSample, SHRT_MAX);
-			*output = static_cast<int16>(resultSample);
-		}
+		int32 resultSample = static_cast<int32>(m_reverbOut[c]) + static_cast<int32>(samples[c]);
+		samples[c] = static_cast<int16>(std::clamp<int32>(resultSample, SHRT_MIN, SHRT_MAX));
 	}
 
 	m_reverbTicks++;

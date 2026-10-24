@@ -106,6 +106,41 @@ struct MidiDue {
 };
 std::vector<MidiDue> g_midiDue;
 
+// The movie player's PCM: sceSdBlockTrans() into core 1's sound data input, from a looping IOP
+// ring of 1 KiB blocks, each 256 left then 256 right 16-bit samples at 48 kHz. It starts at the
+// EE time the call came, as MIDI does. Positions count stream bytes from the start address: due by
+// the clock, played, and written by the sample (the ring is full when it starts the transfer).
+// On the console the sample always refills in time; a host that starves it for longer than the
+// ring (128 ms) would loop stale blocks and play the rest of the movie a ring late, so the input
+// plays silence rather than pass the writer, and skips ahead to the clock when data comes back.
+struct BlockTrans {
+    const uint8_t *pRing = nullptr;
+    uint32_t nSize = 0; // 0: stopped
+    uint32_t nFrom = 0;
+    uint64_t nStart = 0;
+    uint64_t nDue = 0;
+    uint64_t nPlayed = 0;
+    uint64_t nWritten = 0;
+};
+BlockTrans g_block;
+// sceSdBlockTransStatus()'s answer, kept up to date by whoever moves g_block, so the movie player
+// can poll it without waiting for the renderer's lock.
+std::atomic<int> g_nBlockStatus{0};
+
+// The IOP address the input's DMA fetches next. It has fetched the block playing, so it reports the
+// next one: the sample refills up to 1 KiB short of this, never over the block that plays. A
+// starved input has played all the sample wrote and reports where it waits, which the sample reads
+// as empty.
+void UpdateBlockStatus() {
+    const uint64_t nBlock = g_block.nPlayed & ~uint64_t{0x3ff};
+    const uint64_t nNext = g_block.nWritten > nBlock ? nBlock + 0x400 : nBlock;
+    g_nBlockStatus.store(g_block.nSize != 0 ?
+                             static_cast<int>(reinterpret_cast<uintptr_t>(g_block.pRing) +
+                                              (g_block.nFrom + nNext) % g_block.nSize) :
+                             0,
+                         std::memory_order_relaxed);
+}
+
 SDL_AudioDeviceID g_nDevice = 0;
 FILE *g_pWav = nullptr;
 uint64_t g_nWavFrames = 0;
@@ -419,17 +454,24 @@ unsigned SdGetCoreAttr(unsigned nEntry) {
     }
 }
 
-// sceSdInit(): both cores reset and enabled. Sound memory keeps its contents.
+// sceSdInit(): both cores reset and enabled, their effect work areas ending at the top of sound
+// memory as libsd leaves them (EEA 0x1dffff for core 0, 0x1fffff for core 1). Sound memory keeps
+// its contents. The movie player's cold init comes after the game has placed the work areas.
 void SdInit() {
     for (Iop::CSpuBase *pCore : {&g_pSpu->core0, &g_pSpu->core1}) {
         pCore->Reset();
         pCore->SetDestinationSamplingRate(kRate);
+        // FREQ_TEST_NO_REVERB=1, a test control: the mix without the effect processors.
+        if (getenv("FREQ_TEST_NO_REVERB") != nullptr) {
+            pCore->SetReverbEnabled(false);
+        }
     }
     memset(g_pSpu->shadow, 0, sizeof(g_pSpu->shadow));
     g_pSpu->cache.Clear();
     g_abEffectSet[0] = g_abEffectSet[1] = false;
     for (int nCore = 0; nCore < 2; ++nCore) {
         WriteRegister(CoreRegister(nCore, kAttrRegister), kAttrEnable);
+        WriteRegister(CoreRegister(nCore, 0x33c), 0xe + nCore);
     }
 }
 
@@ -484,6 +526,29 @@ void RenderLocked(int16_t *pOut, int nFrames) {
                 (i & 1) ? g_pSpu->core1.m_extInputVolR : g_pSpu->core1.m_extInputVolL;
             Iop::CSpuBase::MixSamples(aCore0[i], nVolume, &aCore1[i]);
         }
+        // Core 1's sound data input, at its BVOL, straight to its output (MMIX SINL/SINR).
+        for (int i = 0; i < nRun && g_block.nSize != 0; ++i) {
+            if ((g_nRendered + i) * kEeCyclesPerSample < g_block.nStart) {
+                continue;
+            }
+            BlockTrans &block = g_block;
+            block.nPlayed = std::min(std::max(block.nPlayed, block.nDue), block.nWritten);
+            block.nDue += 4;
+            if (block.nPlayed >= block.nWritten) {
+                continue;
+            }
+            const uint32_t nRead =
+                static_cast<uint32_t>((block.nFrom + block.nPlayed) % block.nSize);
+            block.nPlayed += 4;
+            const uint8_t *pBlock = block.pRing + (nRead & ~0x3ffu);
+            const unsigned nSample = (nRead & 0x3ffu) / 4;
+            int16_t aInput[2];
+            memcpy(&aInput[0], pBlock + 2 * nSample, 2);
+            memcpy(&aInput[1], pBlock + 0x200 + 2 * nSample, 2);
+            Iop::CSpuBase::MixSamples(aInput[0], g_pSpu->core1.m_inputVolL, &aCore1[2 * i]);
+            Iop::CSpuBase::MixSamples(aInput[1], g_pSpu->core1.m_inputVolR, &aCore1[2 * i + 1]);
+        }
+        UpdateBlockStatus();
         memcpy(pOut, aCore1, sizeof(int16_t) * 2 * nRun);
         pOut += 2 * nRun;
         nFrames -= nRun;
@@ -613,6 +678,11 @@ void HostMidiQueued(unsigned nOffset, long long nLateNs) {
 void HostIopWrite(void *pDest, const void *pSource, unsigned nSize) {
     uint8_t *pInput = static_cast<uint8_t *>(HostHsynInput());
     uint8_t *pDestBytes = static_cast<uint8_t *>(pDest);
+    if (g_block.nSize != 0 && pDestBytes >= g_block.pRing &&
+        pDestBytes < g_block.pRing + g_block.nSize) {
+        g_block.nWritten += nSize; // the movie's PCM, written in stream order
+        UpdateBlockStatus();
+    }
     if (!g_bTicking || pDestBytes < pInput ||
         pDestBytes >= pInput + kMidiBuffers * kMidiBufferSize) {
         memcpy(pDest, pSource, nSize);
@@ -832,10 +902,20 @@ int sceSdRemoteInit() {
     return 0;
 }
 
+// libsdr's commands for sceSdBlockTrans() and sceSdBlockTransStatus(), and its transfer modes.
+constexpr int kSdBlockTrans = 0x80e0;
+constexpr int kSdBlockTransStatus = 0x8100;
+constexpr int kSdTransStop = 2;
+constexpr int kSdTransWriteFrom = 3;
+
 int sceSdRemote(int nWait, ...) {
     va_list arguments;
     va_start(arguments, nWait);
     const int nCommand = va_arg(arguments, int);
+    if (nCommand == kSdBlockTransStatus) { // polled all through the movie: no lock
+        va_end(arguments);
+        return g_nBlockStatus.load(std::memory_order_relaxed);
+    }
     std::lock_guard<std::mutex> lock(g_iop);
     int nResult = 0;
     switch (nCommand) {
@@ -879,9 +959,27 @@ int sceSdRemote(int nWait, ...) {
         SdSetEffectAttr(nCore & 1, *va_arg(arguments, const EffectAttr *));
         break;
     }
+    case kSdBlockTrans: { // (core, mode, IOP ring, size, start address); only core 1's input
+        va_arg(arguments, int);
+        const int nMode = va_arg(arguments, int);
+        const uintptr_t nRing = va_arg(arguments, unsigned);
+        const uint32_t nSize = va_arg(arguments, unsigned) & ~0x3ffu;
+        const uintptr_t nFrom = va_arg(arguments, unsigned);
+        g_block = {};
+        if ((nMode & 3) != kSdTransStop && nSize != 0) {
+            g_block.pRing = reinterpret_cast<const uint8_t *>(nRing);
+            g_block.nSize = nSize;
+            g_block.nFrom =
+                (nMode & 3) == kSdTransWriteFrom ? static_cast<uint32_t>(nFrom - nRing) : 0;
+            g_block.nStart = EeClock();
+            g_block.nWritten = nSize;
+        }
+        UpdateBlockStatus();
+        break;
+    }
     default:
-        // ponytail: the block transfers of the movie player's PCM (0x80d0, 0x80e0, 0x8100) are
-        // not served; they would feed Play!'s core input reader (CSpuBase's block reader).
+        // ponytail: sceSdVoiceTrans (0x80d0), which the movie player sends a block of zeros with
+        // as it stops, is not served.
         break;
     }
     va_end(arguments);

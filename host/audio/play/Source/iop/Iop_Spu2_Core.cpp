@@ -285,6 +285,12 @@ uint32 CCore::WriteRegisterCore(unsigned int channelId, uint32 address, uint32 v
 		case P_AVOLR:
 			m_spuBase.m_extInputVolR = value;
 			break;
+		case P_EVOLL:
+			m_spuBase.m_reverbOutVolL = static_cast<int16>(value);
+			break;
+		case P_EVOLR:
+			m_spuBase.m_reverbOutVolR = static_cast<int16>(value);
+			break;
 		case P_BVOLL:
 			m_spuBase.m_inputVolL = value;
 			break;

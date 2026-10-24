@@ -8,12 +8,10 @@
 //
 // ponytail: one movie at a time (one decoder, one input ring), which is all the game plays.
 
-#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include <unistd.h>
 
 extern "C" {
@@ -24,13 +22,13 @@ extern "C" {
 #include <ezmpeg.h>
 #include <ezmpeg/vibuf.h>
 #include <libmpeg.h>
-#include <libsdr.h>
 
 #include "../gfx-null/gfxnull.h"
 #include "ezmpeg/vobuf.h"
 
 extern "C" void HostUseSystemHeap(int bOn); // host/core/heap.c
 void HostBreadcrumb(const char *pszName);   // host/io/pad.cpp
+extern "C" uint64_t HostAudioCycles();      // host/audio/audio.cpp
 extern "C" VoBuf voBuf;                     // src/app/cutscene.c
 
 static_assert(sizeof(ViBuf) <= sizeof(VideoDec::vibuf), "the input ring overruns VideoDec");
@@ -600,6 +598,8 @@ int MovieClockHandler(int) {
     if (g_decoder.nStartVblank == 0 && pHead != nullptr && *pHead == kTagFirstFieldShown) {
         g_decoder.nStartVblank = HostVblankCount() - 2; // Picture n is due at start + 2 + 2n.
         HostBreadcrumb("INTRO_MOVIE_STARTED");
+        // Where picture 0 falls in the sound (FREQ_WAV time), for the movie's audio sync check.
+        fprintf(stderr, "INTRO_MOVIE_STARTED_SOUND %.4f\n", HostAudioCycles() / 294912000.0);
     }
     ExitHandler();
     return 0;
@@ -632,53 +632,6 @@ void *HostMovieAllocIop(unsigned nSize) {
 int HostMovieFreeIop(void *) {
     HostMovieAllocIop(0);
     return 0;
-}
-
-// The movie's sound driver calls (audiodec.c is compiled with sceSdRemote renamed to this).
-// Movie audio is silent: the PCM the sample sends with sceSifSetDma() is dropped by
-// host/kernel/iop.cpp. The SPU2 block transfer the sample starts is modelled only as a clock, so
-// that the sample's ring drains at 48 kHz stereo 16-bit (192000 bytes a second) as on the console:
-//   0x80e0 sceSdBlockTrans(core, mode, IOP buffer, size, start)  starts or (mode 2) stops it,
-//   0x8100 sceSdBlockTransStatus(core) returns the IOP address the SPU2 reads now.
-// To hear it, keep the SIF DMA bytes per IOP address and play the ring from that read position.
-int HostMovieSdRemote(int nBlocking, int nCommand, ...) {
-    static timespec start;
-    static unsigned nBuffer, nSize, nOffset;
-    va_list arguments;
-    va_start(arguments, nCommand);
-    int aArguments[5];
-    for (int &nArgument : aArguments) {
-        nArgument = va_arg(arguments, int);
-    }
-    va_end(arguments);
-    if (nCommand == 0x80e0 && aArguments[1] != 2) {
-        clock_gettime(CLOCK_MONOTONIC, &start);
-        nBuffer = aArguments[2];
-        nSize = aArguments[3];
-        nOffset = aArguments[4] - nBuffer;
-        return 0;
-    }
-    if (nCommand == 0x80e0) {
-        nSize = 0;
-        return 0;
-    }
-    if (nCommand == 0x8100) {
-        if (nSize == 0) {
-            return 0;
-        }
-        timespec now;
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        const long long llBytes = ((now.tv_sec - start.tv_sec) * 1000000000LL +
-                                   (now.tv_nsec - start.tv_nsec)) * 192000 / 1000000000LL;
-        return static_cast<int>(nBuffer + (nOffset + llBytes) % nSize);
-    }
-    return sceSdRemote(nBlocking,
-                       nCommand,
-                       aArguments[0],
-                       aArguments[1],
-                       aArguments[2],
-                       aArguments[3],
-                       aArguments[4]);
 }
 
 } // extern "C"
