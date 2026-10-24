@@ -790,8 +790,8 @@ void GfxDevice::SetClearColor(const Color &color) {
 }
 
 #ifdef RESONANCE_HOST
-// The feedback fades and zooms the last frame once a frame. At 120 Hz it does so by the frame's part
-// of a field, so the trail lasts as long as at 60 Hz.
+// The feedback fades and zooms the last frame once a frame. At 120 Hz it does so by the frame's
+// part of a field, so the trail lasts as long as at 60 Hz.
 #define FEEDBACK_ALPHA (std::pow(mFeedbackAlpha, HostFrameFields()))
 #define FEEDBACK_INSET (static_cast<int>(HOST_PER_FIELD(static_cast<float>(mFeedbackInset))))
 #else

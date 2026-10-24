@@ -185,7 +185,8 @@ void Renderer::DispatchPriv(Message *pMsg) {
 void Renderer::PollMessages() {
     mSongTick = static_cast<float>(mSongClock->SongTick());
 #ifdef RESONANCE_HOST
-    HostEvent("frame songtick=%d songns=%lld rng=%d", mSongClock->SongTick(), mSongClock->Now(), gRandom);
+    HostEvent(
+        "frame songtick=%d songns=%lld rng=%d", mSongClock->SongTick(), mSongClock->Now(), gRandom);
 #endif
     RendererBase::PollMessages();
 }

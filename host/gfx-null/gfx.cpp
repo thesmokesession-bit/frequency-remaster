@@ -12,8 +12,8 @@
 // a tick comes as soon as the game waits for one, so a run is independent of the host's speed.
 
 #include <atomic>
-#include <stdarg.h>
 #include <pthread.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -131,7 +131,8 @@ void AwaitTick(timespec &next, unsigned nTick) {
                pthread_cond_timedwait(&g_gameWaitsSignal, &g_vblankLock, &limit) == 0) {
         }
         pthread_mutex_unlock(&g_vblankLock);
-        g_nFixedNs = static_cast<long long>(static_cast<double>(TickNs(nTick)) * g_flTestClockScale);
+        g_nFixedNs =
+            static_cast<long long>(static_cast<double>(TickNs(nTick)) * g_flTestClockScale);
         return;
     }
     next.tv_nsec += kFieldsNs / 60 / g_nTicksPerField;

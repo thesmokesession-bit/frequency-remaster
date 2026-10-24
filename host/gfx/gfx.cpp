@@ -13,8 +13,8 @@
 // clock's time (FREQ_CLOCK=fixed presents each tick's frame before the game goes on).
 
 #include <algorithm>
-#include <fcntl.h>
 #include <atomic>
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
