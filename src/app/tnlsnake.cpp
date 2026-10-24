@@ -6,6 +6,7 @@
 
 #include "app/tnlname.h"
 #include "app/tunnelcache.h"
+#include "gfx/hostframe.h"
 #include "math/transform.h"
 #include "math/vector3.h"
 #include "os/hxstr.h"
@@ -125,7 +126,7 @@ void TnlSnake::Update(float flFrame) {
                           std::min(mGlow[i] + mColor.b, 1.0f),
                           1.0f};
         mString->SetPointColor(i, color);
-        mGlow[i] -= kGlowDecay;
+        mGlow[i] -= HOST_PER_FIELD(kGlowDecay);
         if (mGlow[i] < 0.0f) {
             mGlow[i] = 0.0f;
         }
@@ -138,7 +139,11 @@ void TnlSnake::Update(float flFrame) {
     trans.mDirty = 1;
     mHead->UpdateWorldXfm(nullptr, 0);
 
+#ifdef RESONANCE_HOST
+    if (HostFrameEndsField() && RandomFloat() < kPulseChance) {
+#else
     if (RandomFloat() < kPulseChance) {
+#endif
         const int nPulse = RandomInt(0, nPoints - kPulseWidth);
         mGlow[nPulse] += kPulseEdge;
         mGlow[nPulse + 1] += kPulseCentre;

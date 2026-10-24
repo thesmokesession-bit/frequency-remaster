@@ -2,6 +2,9 @@
 
 #include <cstdint>
 #include <cstring>
+#ifdef RESONANCE_HOST
+#include <cmath>
+#endif
 
 #include <eekernel.h>
 #include <eeregs.h>
@@ -786,12 +789,22 @@ void GfxDevice::SetClearColor(const Color &color) {
     FlushCache(kFlushCacheWriteBackData);
 }
 
+#ifdef RESONANCE_HOST
+// The feedback fades and zooms the last frame once a frame. At 120 Hz it does so by the frame's part
+// of a field, so the trail lasts as long as at 60 Hz.
+#define FEEDBACK_ALPHA (std::pow(mFeedbackAlpha, HostFrameFields()))
+#define FEEDBACK_INSET (static_cast<int>(HOST_PER_FIELD(static_cast<float>(mFeedbackInset))))
+#else
+#define FEEDBACK_ALPHA mFeedbackAlpha
+#define FEEDBACK_INSET mFeedbackInset
+#endif
+
 void GfxDevice::SetupGsDrawContext() {
     SetGsReg(kGsRegTest1, kTestZTestAlways, kTestZTestMask);
     SetGsReg(kGsRegZbuf1, kZbufZmsk, kZbufZmsk);
     SetGsReg(
         kGsRegAlpha1,
-        (static_cast<unsigned long long>(mFeedbackAlpha * kRgbaqAlphaScale) << kAlphaFixShift) |
+        (static_cast<unsigned long long>(FEEDBACK_ALPHA * kRgbaqAlphaScale) << kAlphaFixShift) |
             kAlphaBlendByFix,
         kAlphaMask);
     SetGsReg(kGsRegDimX, kDimXMatrix, kAllBits);
@@ -831,8 +844,8 @@ void GfxDevice::SetupGsDrawContext() {
     const int nNearX = static_cast<int>(mFeedbackRect.x * flWidth) << kGsSubpixelShift;
     GifQuadword *pNear = mpWrite;
     mpWrite = pNear + 1;
-    pNear->mLo = PackCoordinates(nNearX + mFeedbackInset + kTexelCentre,
-                                 nNearY + mFeedbackInset + kTexelCentre);
+    pNear->mLo = PackCoordinates(nNearX + FEEDBACK_INSET + kTexelCentre,
+                                 nNearY + FEEDBACK_INSET + kTexelCentre);
     pNear->mHi = PackCoordinates(nLeft + nNearX, nTop + nNearY) | kFeedbackZ;
 
     const int nFarY = static_cast<int>((mFeedbackRect.y + mFeedbackRect.h) * flHeight)
@@ -842,8 +855,8 @@ void GfxDevice::SetupGsDrawContext() {
     GifQuadword *pFar = mpWrite;
     mpWrite = pFar + 1;
     pFar->mHi = PackCoordinates(nLeft + nFarX, nTop + nFarY) | kFeedbackZ;
-    pFar->mLo = PackCoordinates(nFarX - mFeedbackInset + kTexelCentre,
-                                nFarY - mFeedbackInset + kTexelCentre);
+    pFar->mLo = PackCoordinates(nFarX - FEEDBACK_INSET + kTexelCentre,
+                                nFarY - FEEDBACK_INSET + kTexelCentre);
     FlushGifPacket(0, 1);
 }
 

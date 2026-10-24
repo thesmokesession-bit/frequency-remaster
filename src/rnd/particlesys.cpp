@@ -4,6 +4,7 @@
 #include <math.h>
 #include <vector>
 
+#include "gfx/hostframe.h"
 #include "math/color.h"
 #include "math/plane.h"
 #include "math/transformops.h"
@@ -699,6 +700,12 @@ void ParticleSys::SetNumParticles(int nCount) {
 }
 
 void ParticleSys::SetFrameSelf(float flFrame) {
+#ifdef RESONANCE_HOST
+    // The spawns draw random numbers, which the game's own draws share.
+    if (!HostFrameEndsField()) {
+        return;
+    }
+#endif
     if (mLastFrame != kUnsetFrame) {
         const float flDeltaFrames = flFrame - mLastFrame;
         UpdateParticles(flDeltaFrames);

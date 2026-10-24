@@ -30,6 +30,7 @@
 #include "game/leveldata.h"
 #include "game/nullplayer.h"
 #include "game/player.h"
+#include "gfx/hostframe.h"
 #include "game/playmap.h"
 #include "math/color.h"
 #include "math/transform.h"
@@ -288,7 +289,7 @@ inline void AppTunnel::GemFlash::Update() {
         mSystem->FreeParticle(mParticle);
         mParticle = nullptr;
     } else {
-        mParticle->mSize -= kGemFlashShrink;
+        mParticle->mSize -= HOST_PER_FIELD(kGemFlashShrink);
     }
 }
 
@@ -1116,7 +1117,7 @@ void AppTunnel::UpdateGhostFades() {
         if (mGhostFadeRates[i] == 0.0f) {
             continue;
         }
-        float flAlpha = pMat->mDiffuse.a + mGhostFadeRates[i];
+        float flAlpha = pMat->mDiffuse.a + HOST_PER_FIELD(mGhostFadeRates[i]);
         if (flAlpha < 0.0f) {
             flAlpha = 0.0f;
             mGhostFadeRates[i] = 0.0f;
@@ -1133,7 +1134,7 @@ void AppTunnel::SetFrame(float flFrame) {
     const float flScaledFrame = flFrame * mTempoRate;
     for (Rnd::Particle *pParticle = mStringFlare->GetLiveParticles(); pParticle != nullptr;
          pParticle = pParticle->mNext) {
-        pParticle->mCol.a -= kStringFlareFade;
+        pParticle->mCol.a -= HOST_PER_FIELD(kStringFlareFade);
         if (pParticle->mCol.a < 0.0f) {
             pParticle->mCol.a = 0.0f;
         }

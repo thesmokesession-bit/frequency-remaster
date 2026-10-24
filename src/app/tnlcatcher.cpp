@@ -1,5 +1,6 @@
 #include "app/tnlcatcher.h"
 
+#include "gfx/hostframe.h"
 #include "os/formatstring.h"
 #include "rnd/animatable.h"
 #include "rnd/manager.h"
@@ -90,10 +91,16 @@ void TnlCatcher::Update(float flFrame) {
     if (mMultiplied) {
         mMultMovie->SetFrame(flFrame);
     }
-    ++mUpdateCount;
-    if (++mHitCount == kResetHitCount) {
-        ResetTargets();
+#ifdef RESONANCE_HOST
+    if (HostFrameEndsField()) {
+#endif
+        ++mUpdateCount;
+        if (++mHitCount == kResetHitCount) {
+            ResetTargets();
+        }
+#ifdef RESONANCE_HOST
     }
+#endif
     if (0.0f <= flFrame) {
         int nHitFrame = mHitCount * kHitFramesPerUpdate;
         if (kFramesPerTarget <= nHitFrame) {

@@ -4,6 +4,7 @@
 #include <list>
 #include <string.h>
 
+#include "gfx/hostframe.h"
 #include "os/dbg.h"
 #include "os/hxstr.h"
 #include "rnd/drawable.h"
@@ -299,7 +300,14 @@ int Blur::DrawShowing() {
         }
     }
 
+#ifdef RESONANCE_HOST
+    // The trail records once a field, so it lasts as long at 120 Hz.
+    if (HostFrameEndsField()) {
+        --mCountdown;
+    }
+#else
     --mCountdown;
+#endif
     Transformable *pXfm = mpText != nullptr ? static_cast<Transformable *>(mpText) : mpMesh;
     Xfm savedLocal;
     Xfm savedWorld;

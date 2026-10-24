@@ -9,6 +9,7 @@
 #include "app/tnlutil.h"
 #include "app/tunnelcache.h"
 #include "game/grooveworld.h"
+#include "gfx/hostframe.h"
 #include "math/vector3.h"
 #include "os/formatstring.h"
 #include "rnd/cam.h"
@@ -97,7 +98,7 @@ void TnlActivator::Update(float flFrame, float flScaledFrame) {
             flDelta += kTwoPi;
         }
         flDelta -= kPi;
-        const float flStep = (0.0f < flDelta) ? kTurnStep : -kTurnStep;
+        const float flStep = HOST_PER_FIELD((0.0f < flDelta) ? kTurnStep : -kTurnStep);
         if (std::fabs(flDelta) < std::fabs(flStep)) {
             mAngle = mTargetAngle;
         } else {

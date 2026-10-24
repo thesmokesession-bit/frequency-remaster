@@ -3,6 +3,7 @@
 #include <cstring>
 
 #include "app/overlay.h"
+#include "gfx/hostframe.h"
 #include "math/color.h"
 #include "math/vector3.h"
 #include "met/metstrings.h"
@@ -90,11 +91,11 @@ void HudPoints::SetFrame(float flTime) {
 
     mMultiplierText->SetColor(mHot != 0 ? mHotMat->mEmissive : mPlainMat->mEmissive);
 
-    mFlash -= kFlashDecay;
+    mFlash -= HOST_PER_FIELD(kFlashDecay);
     if (mFlash < 0.0f) {
         mFlash = 0.0f;
     }
-    mPulse -= kPulseDecay;
+    mPulse -= HOST_PER_FIELD(kPulseDecay);
     if (mPulse < mPulseRest) {
         mPulse = mPulseRest;
     }
