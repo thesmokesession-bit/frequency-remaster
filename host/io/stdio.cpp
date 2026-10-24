@@ -76,7 +76,8 @@ extern "C" FILE *fopen(const char *pszPath, const char *pszMode) {
     }
 
     // A stream to read is a copy of the file in a memory file, so that fileno() and fstat() work
-    // on it as Python's import expects.
+    // on it as Python's import expects. ponytail: the open copies the whole file, which suits the
+    // scripts and tables the game reads this way; a large file would want a streamed copy.
     const int nCopy = memfd_create("resonance-file", MFD_CLOEXEC);
     char abBuffer[0x10000];
     off_t nSize = 0;
