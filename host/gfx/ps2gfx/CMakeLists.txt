@@ -8,9 +8,9 @@ find_package(ZLIB REQUIRED)
 find_package(PNG REQUIRED)
 find_package(Threads REQUIRED)
 
-add_library(ps2gfx STATIC src/ps2gfx.cpp src/AppConfig.cpp ${PLAY_SOURCES})
+add_library(ps2gfx STATIC src/ps2gfx.cpp src/AppConfig.cpp src/TexReplace.cpp ${PLAY_SOURCES})
 target_include_directories(ps2gfx PUBLIC include)
-target_include_directories(ps2gfx PRIVATE src/shim ${P}/Source ${P}/Source/app_shared ${P}/deps/Framework/include
+target_include_directories(ps2gfx PRIVATE src src/shim ${P}/Source ${P}/Source/app_shared ${P}/deps/Framework/include
 	${P}/deps/CodeGen/include ${P}/deps/Dependencies/glew-2.0.0/include ${P}/deps/Dependencies/xxHash)
 target_compile_definitions(ps2gfx PRIVATE GLEW_STATIC USE_GLEW NDEBUG)
 target_compile_options(ps2gfx PRIVATE -msse -msse2 -mssse3 -w -g0)

@@ -93,6 +93,10 @@ int ps2gfx_screenshot_output(const char* path);
 int ps2gfx_load_state(const void* zip, size_t size);
 /* Debug: 0 disables VU1 microprogram execution (negative control). */
 void ps2gfx_set_vu1_enabled(int enabled);
+/* HD textures (FREQ_TEX_DUMP / FREQ_TEX_REPLACE, see src/TexReplace.h): the game drew these texels at
+   run time, so a texture with them is never dumped or replaced. psm is the GS format of the upload,
+   pixels its rows, stride bytes apart. Any thread. */
+void ps2gfx_tex_generated(const char* name, int psm, int width, int height, const void* pixels, int stride);
 
 #ifdef __cplusplus
 }

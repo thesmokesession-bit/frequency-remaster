@@ -18,11 +18,13 @@ public:
 			m_live = false;
 			m_textureHandle = TextureHandleType();
 			m_cachedArea.ClearDirtyPages();
+			m_contentHash = 0;
 		}
 
 		uint64 m_tex0 = 0;
 		bool m_live = false;
 		CGsCachedArea m_cachedArea;
+		uint64 m_contentHash = 0; // TexReplace: hash of the texels, kept while the pages stay clean
 
 		//Platform specific
 		TextureHandleType m_textureHandle;

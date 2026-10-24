@@ -7,6 +7,7 @@
 #include "../GsPixelFormats.h"
 #include "../GsTransferRange.h"
 #include "GSH_OpenGL.h"
+#include "TexReplace.h"
 
 #ifdef USE_DUALSOURCE_BLENDING
 //Dual source blending constants
@@ -1240,6 +1241,7 @@ void CGSH_OpenGL::SetupTexture(uint64 primReg, uint64 tex0Reg, uint64 tex1Reg, u
 	m_renderState.texture0MagFilter = GL_NEAREST;
 	m_renderState.texture0WrapS = GL_CLAMP_TO_EDGE;
 	m_renderState.texture0WrapT = GL_CLAMP_TO_EDGE;
+	m_renderState.texture0Replaced = false;
 	m_validGlState &= ~GLSTATE_TEXTURE;
 
 	auto prim = make_convertible<PRMODE>(primReg);
@@ -1294,6 +1296,8 @@ void CGSH_OpenGL::SetupTexture(uint64 primReg, uint64 tex0Reg, uint64 tex1Reg, u
 		m_renderState.texture0MagFilter = GL_LINEAR;
 		m_renderState.texture0MinFilter = GL_LINEAR;
 	}
+	GLint replacementMinFilter = (m_renderState.texture0MinFilter == GL_LINEAR) ? GL_LINEAR_MIPMAP_LINEAR : GL_NEAREST_MIPMAP_NEAREST;
+	GLint replacementMagFilter = m_renderState.texture0MagFilter;
 
 	unsigned int clampMin[2] = {0, 0};
 	unsigned int clampMax[2] = {0, 0};
@@ -1348,6 +1352,42 @@ void CGSH_OpenGL::SetupTexture(uint64 primReg, uint64 tex0Reg, uint64 tex1Reg, u
 	if(CGsPixelFormats::IsPsmIDTEX(tex0.nPsm))
 	{
 		m_renderState.texture1Handle = PreparePalette(tex0);
+	}
+
+	if(TexReplace::Active() && texInfo.contentHash == 0)
+	{
+		TexReplace::BindRenderTarget(tex0);
+	}
+	else if(TexReplace::Active())
+	{
+		// The key's CLUT is the one this draw looks its indices up in.
+		std::array<uint32, 256> clut;
+		bool indexed = CGsPixelFormats::IsPsmIDTEX(tex0.nPsm);
+		if(indexed) MakeLinearCLUT(tex0, clut);
+		uint64 key = TexReplace::Key(texInfo.contentHash, tex0, clut.data());
+		TexReplace::Image hd;
+		if(TexReplace::Bind(key, texInfo.contentHash, m_pRAM, tex0, indexed ? clut.data() : nullptr, hd))
+		{
+			GLuint& handle = m_replacementTextures[key];
+			if(!hd.rgba.empty())
+			{
+				GLsizei levels = 1;
+				while((std::max(hd.width, hd.height) >> levels) != 0) levels++;
+				glGenTextures(1, &handle);
+				glBindTexture(GL_TEXTURE_2D, handle);
+				glTexStorage2D(GL_TEXTURE_2D, levels, GL_RGBA8, hd.width, hd.height);
+				glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, hd.width, hd.height, GL_RGBA, GL_UNSIGNED_BYTE, hd.rgba.data());
+				glGenerateMipmap(GL_TEXTURE_2D);
+				CHECKGLERROR();
+			}
+			// Same UVs, clamp and texture size uniforms: only the texels are finer.
+			m_renderState.texture0Handle = handle;
+			m_renderState.texture0AlphaAsIndex = false;
+			m_renderState.texture1Handle = 0;
+			m_renderState.texture0MinFilter = replacementMinFilter;
+			m_renderState.texture0MagFilter = replacementMagFilter;
+			m_renderState.texture0Replaced = true;
+		}
 	}
 
 	memset(m_vertexParams.texMatrix, 0, sizeof(m_vertexParams.texMatrix));
@@ -1713,7 +1753,14 @@ void CGSH_OpenGL::FlushVertexBuffer()
 
 	assert(m_renderState.isValid == true);
 
-	auto shader = GetShaderFromCaps(m_renderState.shaderCaps);
+	auto shaderCaps = m_renderState.shaderCaps;
+	if(m_renderState.texture0Replaced && shaderCaps.texSourceMode != TEXTURE_SOURCE_MODE_NONE)
+	{
+		// TexReplace: the HD texture holds the colours an indexed texture would look up
+		shaderCaps.texSourceMode = TEXTURE_SOURCE_MODE_STD;
+		shaderCaps.texBilinearFilter = 0;
+	}
+	auto shader = GetShaderFromCaps(shaderCaps);
 	if(*shader != m_renderState.shaderHandle)
 	{
 		m_renderState.shaderHandle = *shader;

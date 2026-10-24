@@ -137,6 +137,7 @@ private:
 		GLint texture0WrapS;
 		GLint texture0WrapT;
 		bool texture0AlphaAsIndex;
+		bool texture0Replaced; // TexReplace: an RGBA8 HD texture, drawn as a direct-colour texture
 		GLuint texture1Handle;
 		GLsizei viewportWidth;
 		GLsizei viewportHeight;
@@ -273,6 +274,7 @@ private:
 		float scaleRatioX = 1;
 		float scaleRatioY = 1;
 		bool alphaAsIndex = false;
+		uint64 contentHash = 0; // TexReplace: texel hash of a cached texture, 0 for a framebuffer
 	};
 
 	struct TEXTUREFORMAT_INFO
@@ -429,6 +431,7 @@ private:
 	GLint m_copyToFbSrcSizeUniform = -1;
 
 	TextureCache m_textureCache;
+	std::unordered_map<uint64, GLuint> m_replacementTextures; // TexReplace key -> HD texture, kept for the run
 	PaletteList m_paletteCache;
 	FramebufferList m_framebuffers;
 	DepthbufferList m_depthbuffers;
