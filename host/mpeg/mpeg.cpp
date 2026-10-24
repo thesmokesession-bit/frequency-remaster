@@ -610,6 +610,30 @@ void HostMovieStarted(void) {
     g_decoder.nClockHandler = AddIntcHandler(INTC_VBLANK_S, MovieClockHandler, 0);
 }
 
+// The movie's IOP buffers (audiodec.c is compiled with sceSifAllocIopHeap and sceSifFreeIopHeap
+// renamed to these). The sample keeps the low 24 bits of the SPU2 read position, as IOP addresses
+// are on the console, and subtracts its buffer's address, so the buffers must sit below 16 MiB.
+// They come from a static pool here (the executable's .bss ends below 16 MiB), freed all at once.
+void *HostMovieAllocIop(unsigned nSize) {
+    alignas(64) static unsigned char abPool[0x6000 + 0x800 + 64];
+    static unsigned nUsed;
+    unsigned char *pBlock = abPool + nUsed;
+    nUsed += (nSize + 63) & ~63u;
+    if (nUsed > sizeof(abPool) || reinterpret_cast<uintptr_t>(abPool + nUsed) > 0x1000000) {
+        fprintf(stderr, "FATAL: movie IOP buffer does not fit below 16 MiB\n");
+        abort();
+    }
+    if (nSize == 0) { // HostMovieFreeIop() passes 0 to empty the pool.
+        nUsed = 0;
+    }
+    return pBlock;
+}
+
+int HostMovieFreeIop(void *) {
+    HostMovieAllocIop(0);
+    return 0;
+}
+
 // The movie's sound driver calls (audiodec.c is compiled with sceSdRemote renamed to this).
 // Movie audio is silent: the PCM the sample sends with sceSifSetDma() is dropped by
 // host/kernel/iop.cpp. The SPU2 block transfer the sample starts is modelled only as a clock, so

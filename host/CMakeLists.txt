@@ -19,9 +19,12 @@ add_library(
   "${RESONANCE_EZMPEG_SAMPLE_DIR}/videodec.c"
   "${RESONANCE_EZMPEG_SAMPLE_DIR}/vobuf.c")
 target_link_libraries(resonance_ezmpeg PRIVATE resonance_common)
-# The movie's sound driver calls go to host/mpeg/mpeg.cpp, which keeps the SPU2's transfer clock.
-set_source_files_properties("${RESONANCE_EZMPEG_SAMPLE_DIR}/audiodec.c"
-                            PROPERTIES COMPILE_DEFINITIONS sceSdRemote=HostMovieSdRemote)
+# The movie's sound driver calls and its IOP buffers go to host/mpeg/mpeg.cpp, which keeps the
+# SPU2's transfer clock.
+set_source_files_properties(
+  "${RESONANCE_EZMPEG_SAMPLE_DIR}/audiodec.c"
+  PROPERTIES COMPILE_DEFINITIONS
+             "sceSdRemote=HostMovieSdRemote;sceSifAllocIopHeap=HostMovieAllocIop;sceSifFreeIopHeap=HostMovieFreeIop")
 
 # The Sony library units that are plain C with no hardware access (the VU0 arithmetic, the packet
 # builders, and the MIDI input stream) link unchanged.
