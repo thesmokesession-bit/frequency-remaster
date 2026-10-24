@@ -25,8 +25,12 @@ extern "C" {
 #include <libmpeg.h>
 #include <libsdr.h>
 
+#include "../gfx-null/gfxnull.h"
+#include "ezmpeg/vobuf.h"
+
 extern "C" void HostUseSystemHeap(int bOn); // host/core/heap.c
 void HostBreadcrumb(const char *pszName);   // host/io/pad.cpp
+extern "C" VoBuf voBuf;                     // src/app/cutscene.c
 
 static_assert(sizeof(ViBuf) <= sizeof(VideoDec::vibuf), "the input ring overruns VideoDec");
 
@@ -36,6 +40,13 @@ constexpr int kSectorShift = 11;
 constexpr int kSectorSize = 1 << kSectorShift;
 constexpr int kMacroblock = 16;
 constexpr unsigned char kCscAlpha = 0x80;
+// disp.c's state of a queued picture that has had its field 0 blank.
+constexpr int kTagFirstFieldShown = 1;
+// Time stamps held between the input ring and the parser, and the stamp of one picture at 29.97 Hz.
+constexpr int kStampCount = 256;
+constexpr long long kPtsPerPicture = 3003;
+// Blanks late past which the decoder skips the pictures nothing refers to (B pictures).
+constexpr long kSkipLate = 6;
 
 // sceMpegSetCallbackSlot() slots: no data (yield to the reader), and how many there are.
 constexpr int kSlotNoData = 1;
@@ -81,10 +92,29 @@ struct Decoder {
     bool bEnd;
     bool bReset;
     int nPictures;
+    // The blank of the INTRO_MOVIE_STARTED breadcrumb, or 0 before the display starts.
+    unsigned nStartVblank;
     unsigned char *pLastPicture;
     unsigned char abInput[0x10000];
     int nInput;
     int nInputUsed;
+    // Stream position of abInput[0], and of the next byte TakeInput() takes.
+    long long llInputPos;
+    long long llTakenPos;
+    // The PES time stamps not yet handed to the parser: where each packet's data starts in the
+    // stream, and its PTS. A ring, oldest at nStampHead.
+    struct {
+        long long llPos;
+        long long llPts;
+    } aStamps[kStampCount];
+    int nStampHead;
+    int nStamps;
+    // The PTS of picture 0 and of the last picture, in 90 kHz units.
+    long long llFirstPts;
+    long long llLastPts;
+    // Pictures dropped late and turns spent holding early ones, reported at the end.
+    int nDropped;
+    int nHeld;
 };
 
 Decoder g_decoder;
@@ -118,7 +148,24 @@ int TakeInput(unsigned char *pOut, int nMax) {
     memcpy(pOut + nFirst, pInput->mData, nTake - nFirst);
     pInput->mReadSectors += nTake >> kSectorShift;
     pInput->mBufferedBytes -= nTake; // A flushed tail leaves a part sector unread; nothing follows.
-    pInput->mTimeStampCount = 0; // ponytail: time stamps are not used; the display paces.
+    // The stamps of the packets whose data starts in what was taken move to the parser's side.
+    Decoder &decoder = g_decoder;
+    while (pInput->mTimeStampCount > 0) {
+        const int nOldest = (pInput->mTimeStampIndex - pInput->mTimeStampCount +
+                             pInput->mTimeStampCapacity) % pInput->mTimeStampCapacity;
+        const ViTimeStamp &stamp = pInput->mTimeStamps[nOldest];
+        const int nDelta = (stamp.mOffset - nOffset + pInput->mSize) % pInput->mSize;
+        if (nDelta >= nTake) {
+            break;
+        }
+        if (decoder.nStamps < kStampCount && stamp.mFirst >= 0) {
+            auto &entry = decoder.aStamps[(decoder.nStampHead + decoder.nStamps++) % kStampCount];
+            entry.llPos = decoder.llTakenPos + nDelta;
+            entry.llPts = stamp.mFirst;
+        }
+        --pInput->mTimeStampCount;
+    }
+    decoder.llTakenPos += nTake;
     SignalSema(pInput->mSemaId);
     return nTake;
 }
@@ -149,6 +196,44 @@ void ConvertPicture(const AVFrame *pFrame, unsigned char *pOut) {
             }
         }
     }
+}
+
+// The movie clock, as the console player keeps it: picture n (its PTS less the first picture's,
+// over one picture's 3003 ticks) is due at blank start + 2 + 2n, and disp.c puts a picture up at
+// a field 0 blank and holds it for the field 1 blank. A picture made now goes up after every
+// queued picture not yet shown, so its blank follows from the queue and the field. Returns how
+// many blanks after its due blank picture n would go up, negative when early, 0 before the display
+// starts.
+long Lateness(int nPicture) {
+    const unsigned nStart = g_decoder.nStartVblank;
+    if (nStart == 0) {
+        return 0; // Still filling the queue before the display starts.
+    }
+    const long nNow = HostVblankCount();
+    const long nNextField0 = nNow + (((*HOST_GS_CSR & HOST_GS_CSR_FIELD) != 0) ? 1 : 2);
+    const int nQueued = voBuf.count;
+    const int *pHead = static_cast<const int *>(voBufGetTag(&voBuf));
+    long nShown;
+    if (pHead != nullptr && *pHead == kTagFirstFieldShown) {
+        nShown = nNow + 2 * nQueued; // The head is up now and leaves after this field 1.
+    } else {
+        nShown = nNextField0 + 2L * nQueued;
+    }
+    return nShown - (static_cast<long>(nStart) + 2 + 2L * nPicture);
+}
+
+// The picture number of a decoded frame, from its PTS.
+int PictureNumber(const AVFrame *pFrame) {
+    Decoder &decoder = g_decoder;
+    long long llPts = pFrame->pts != AV_NOPTS_VALUE ? pFrame->pts : pFrame->best_effort_timestamp;
+    if (llPts == AV_NOPTS_VALUE) {
+        llPts = decoder.nPictures == 0 ? 0 : decoder.llLastPts + kPtsPerPicture;
+    }
+    if (decoder.nPictures++ == 0) {
+        decoder.llFirstPts = llPts;
+    }
+    decoder.llLastPts = llPts;
+    return static_cast<int>((llPts - decoder.llFirstPts + kPtsPerPicture / 2) / kPtsPerPicture);
 }
 
 int InvokeSlot(sceMpeg *pMpeg, int nSlot) {
@@ -208,6 +293,11 @@ void *sceMpegCreateDecoderContext(void *pDecoder, void *pWork, int) {
 
 int sceMpegDelete(void *) {
     Decoder &decoder = g_decoder;
+    fprintf(stderr,
+            "host: movie decoded %d pictures, dropped %d late, held early ones %d turns\n",
+            decoder.nPictures,
+            decoder.nDropped,
+            decoder.nHeld);
     const SystemHeap systemHeap;
     av_parser_close(decoder.pParser);
     avcodec_free_context(&decoder.pCodec);
@@ -316,11 +406,24 @@ int sceMpegGetPicture(void *pDecoder, void *pPicture, int) {
     sceMpeg *pMpeg = static_cast<sceMpeg *>(pDecoder);
     Decoder &decoder = g_decoder;
     unsigned char *pOut = static_cast<unsigned char *>(pPicture);
+    int nPicture = 0;
     for (;;) {
         int nResult;
         {
             const SystemHeap systemHeap;
             nResult = avcodec_receive_frame(decoder.pCodec, decoder.pFrame);
+            if (nResult == 0) {
+                nPicture = PictureNumber(decoder.pFrame);
+                // A picture more than a blank late is dropped, and the display holds the last
+                // one. Far behind, the pictures nothing refers to are not even decoded.
+                const long nLate = Lateness(nPicture);
+                decoder.pCodec->skip_frame = nLate > kSkipLate ? AVDISCARD_NONREF : AVDISCARD_DEFAULT;
+                if (nLate > 1) {
+                    ++decoder.nDropped;
+                    av_frame_unref(decoder.pFrame);
+                    continue;
+                }
+            }
             if (nResult == 0) {
                 ConvertPicture(decoder.pFrame, pOut);
                 pMpeg->width = decoder.pFrame->width;
@@ -332,22 +435,41 @@ int sceMpegGetPicture(void *pDecoder, void *pPicture, int) {
                 }
                 continue;
             } else if (nResult == AVERROR(EAGAIN) && decoder.nInputUsed < decoder.nInput) {
+                // Each run of bytes up to the next stamped packet goes in with its packet's PTS.
+                const long long llPos = decoder.llInputPos + decoder.nInputUsed;
+                long long llPts = AV_NOPTS_VALUE;
+                while (decoder.nStamps > 0 && decoder.aStamps[decoder.nStampHead].llPos <= llPos) {
+                    llPts = decoder.aStamps[decoder.nStampHead].llPts;
+                    decoder.nStampHead = (decoder.nStampHead + 1) % kStampCount;
+                    --decoder.nStamps;
+                }
+                int nRun = decoder.nInput - decoder.nInputUsed;
+                if (decoder.nStamps > 0) {
+                    nRun = std::min<long long>(nRun, decoder.aStamps[decoder.nStampHead].llPos - llPos);
+                }
                 decoder.nInputUsed += av_parser_parse2(decoder.pParser,
                                                        decoder.pCodec,
                                                        &decoder.pPacket->data,
                                                        &decoder.pPacket->size,
                                                        decoder.abInput + decoder.nInputUsed,
-                                                       decoder.nInput - decoder.nInputUsed,
+                                                       nRun,
+                                                       llPts,
                                                        AV_NOPTS_VALUE,
-                                                       AV_NOPTS_VALUE,
-                                                       0);
+                                                       llPos);
+                decoder.pPacket->pts = decoder.pParser->pts;
+                decoder.pPacket->dts = decoder.pParser->dts;
                 decoder.bPacketPending = decoder.pPacket->size > 0;
                 continue;
             }
         }
         if (nResult == 0) {
+            // An early picture waits for its blank, and the display holds the last one meanwhile.
+            while (Lateness(nPicture) < -1) {
+                ++decoder.nHeld;
+                InvokeSlot(pMpeg, kSlotNoData);
+            }
             decoder.pLastPicture = pOut;
-            pMpeg->frameCount = decoder.nPictures++;
+            pMpeg->frameCount = nPicture;
             return 1;
         }
         if (nResult != AVERROR(EAGAIN)) { // The end, or an error the decoder cannot pass.
@@ -357,6 +479,7 @@ int sceMpegGetPicture(void *pDecoder, void *pPicture, int) {
             decoder.bEnd = true;
             return 0;
         }
+        decoder.llInputPos = decoder.llTakenPos;
         decoder.nInput = TakeInput(decoder.abInput, sizeof(decoder.abInput));
         decoder.nInputUsed = 0;
         if (decoder.nInput > 0) {
@@ -465,6 +588,7 @@ void HostMovieIdle(void) {
 
 // The first frame of the intro movie goes up at the second blank after this.
 void HostMovieStarted(void) {
+    g_decoder.nStartVblank = HostVblankCount();
     HostBreadcrumb("INTRO_MOVIE_STARTED");
 }
 
