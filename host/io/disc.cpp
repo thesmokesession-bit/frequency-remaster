@@ -150,6 +150,15 @@ bool FindFile(const char *pszPath, unsigned *pnLsn, unsigned *pnSize, bool *pbDi
     return true;
 }
 
+// With FREQ_LOG_MISSING=1, every disc file the game asks for and does not get is reported.
+int Missing(const char *pszCall, const char *pszPath) {
+    static const bool bLog = getenv("FREQ_LOG_MISSING") != nullptr;
+    if (bLog) {
+        fprintf(stderr, "MISSING %s %s\n", pszCall, pszPath);
+    }
+    return kNoEntry;
+}
+
 void Complete(int nFunction) {
     if (g_pfnCallback != nullptr) {
         g_pfnCallback(nFunction);
@@ -236,6 +245,7 @@ int sceCdSearchFile(sceCdlFILE *pFile, const char *pszName) {
     unsigned nSize;
     bool bDirectory;
     if (!FindFile(pszName, &nLsn, &nSize, &bDirectory)) {
+        Missing("sceCdSearchFile", pszName);
         return 0;
     }
     pFile->lsn = nLsn;
@@ -273,13 +283,13 @@ void sceScfGetLocalTimefromRTC(sceCdCLOCK *) {
 int sceOpen(const char *pszPath, int nFlags, ...) {
     static const char kDisc[] = "cdrom0:";
     if (strncmp(pszPath, kDisc, sizeof(kDisc) - 1) != 0 || (nFlags & SCE_WRONLY) != 0) {
-        return kNoEntry;
+        return Missing("sceOpen", pszPath);
     }
     unsigned nLsn;
     unsigned nSize;
     bool bDirectory;
     if (!FindFile(pszPath + sizeof(kDisc) - 1, &nLsn, &nSize, &bDirectory) || bDirectory) {
-        return kNoEntry;
+        return Missing("sceOpen", pszPath);
     }
     for (int i = 1; i < kFileCount; ++i) {
         if (!g_aFiles[i].bOpen) {

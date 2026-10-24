@@ -30,6 +30,7 @@ namespace {
 constexpr int kHoldFrames = 10;
 constexpr int kReportSize = 32;
 constexpr int kAliveSeconds = 60;
+constexpr int kDemoAliveSeconds = 120;
 
 // The controller identifies as a DualShock 2 with two motors and pressure-sensitive buttons.
 constexpr int kDualShockId = 7;
@@ -159,9 +160,21 @@ unsigned short HeldButtons() {
     return nButtons;
 }
 
-void *ReportAlive(void *) {
-    sleep(kAliveSeconds);
-    fprintf(stderr, "ALIVE_60S_AFTER_MENU\n");
+struct AliveReport {
+    const char *pszAnchor;
+    int nSeconds;
+    const char *pszReport;
+};
+
+AliveReport g_aliveReports[] = {
+    {"MAIN_MENU_REACHED", kAliveSeconds, "ALIVE_60S_AFTER_MENU"},
+    {"DEMO_STARTED", kDemoAliveSeconds, "ALIVE_120S_AFTER_DEMO"},
+};
+
+void *ReportAlive(void *pReport) {
+    const auto *pAlive = static_cast<const AliveReport *>(pReport);
+    sleep(pAlive->nSeconds);
+    fprintf(stderr, "%s\n", pAlive->pszReport);
     return nullptr;
 }
 
@@ -181,15 +194,19 @@ int StartRequest() {
 } // namespace
 
 // Reports a milestone of the game on stderr. The input script can time its entries from it, and
-// MAIN_MENU_REACHED starts a report 60 seconds later that the program is still running.
+// MAIN_MENU_REACHED and DEMO_STARTED start a report 60 and 120 seconds later that the program is
+// still running.
 void HostBreadcrumb(const char *pszName) {
     fprintf(stderr, "%s\n", pszName);
     pthread_mutex_lock(&g_inputLock);
     g_anchors.push_back(Anchor{pszName, HostVblankCount()});
     pthread_mutex_unlock(&g_inputLock);
-    if (strcmp(pszName, "MAIN_MENU_REACHED") == 0) {
+    for (AliveReport &report : g_aliveReports) {
         pthread_t thread;
-        if (pthread_create(&thread, nullptr, ReportAlive, nullptr) == 0) {
+        if (strcmp(pszName, report.pszAnchor) != 0) {
+            continue;
+        }
+        if (pthread_create(&thread, nullptr, ReportAlive, &report) == 0) {
             pthread_detach(thread);
         }
     }

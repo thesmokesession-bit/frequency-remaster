@@ -76,7 +76,13 @@ int sceFsReset() {
     return 0;
 }
 
-int sceSifLoadModule(const char *, int, const char *) {
+// No module runs, but its file is opened and closed, so that a module missing from the disc shows
+// in the FREQ_LOG_MISSING report as it would fail to load on the console.
+int sceSifLoadModule(const char *pszPath, int, const char *) {
+    const int nFile = sceOpen(pszPath, SCE_RDONLY);
+    if (nFile >= 0) {
+        sceClose(nFile);
+    }
     return g_nNextModuleId++;
 }
 

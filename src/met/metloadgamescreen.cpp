@@ -198,6 +198,10 @@ void MetLoadGameScreen::OnFadeInDone() {
         GameManagerDoPlaybackMsg msg;
         Application::shared()->GetGameManager()->QueueMessage(&msg);
         mDemoPlayback = 0;
+#ifdef RESONANCE_HOST
+        void HostBreadcrumb(const char *pszName); // host/io/pad.cpp
+        HostBreadcrumb("DEMO_STARTED");
+#endif
     } else {
         BeginGameLocalMsg msg;
         Application::shared()->GetGameManager()->QueueMessage(&msg);
