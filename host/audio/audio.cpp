@@ -108,12 +108,19 @@ std::vector<MidiDue> g_midiDue;
 
 // The movie player's PCM: sceSdBlockTrans() into core 1's sound data input, from a looping IOP
 // ring of 1 KiB blocks, each 256 left then 256 right 16-bit samples at 48 kHz. It starts at the
-// EE time the call came, as MIDI does, and nRead is where the SPU2 plays.
+// EE time the call came, as MIDI does. Positions count stream bytes from the start address: due by
+// the clock, played, and written by the sample (the ring is full when it starts the transfer).
+// On the console the sample always refills in time; a host that starves it for longer than the
+// ring (128 ms) would loop stale blocks and play the rest of the movie a ring late, so the input
+// plays silence rather than pass the writer, and skips ahead to the clock when data comes back.
 struct BlockTrans {
     const uint8_t *pRing = nullptr;
     uint32_t nSize = 0; // 0: stopped
-    uint32_t nRead = 0;
+    uint32_t nFrom = 0;
     uint64_t nStart = 0;
+    uint64_t nDue = 0;
+    uint64_t nPlayed = 0;
+    uint64_t nWritten = 0;
 };
 BlockTrans g_block;
 
@@ -507,14 +514,22 @@ void RenderLocked(int16_t *pOut, int nFrames) {
             if ((g_nRendered + i) * kEeCyclesPerSample < g_block.nStart) {
                 continue;
             }
-            const uint8_t *pBlock = g_block.pRing + (g_block.nRead & ~0x3ffu);
-            const unsigned nSample = (g_block.nRead & 0x3ffu) / 4;
+            BlockTrans &block = g_block;
+            block.nPlayed = std::min(std::max(block.nPlayed, block.nDue), block.nWritten);
+            block.nDue += 4;
+            if (block.nPlayed >= block.nWritten) {
+                continue;
+            }
+            const uint32_t nRead =
+                static_cast<uint32_t>((block.nFrom + block.nPlayed) % block.nSize);
+            block.nPlayed += 4;
+            const uint8_t *pBlock = block.pRing + (nRead & ~0x3ffu);
+            const unsigned nSample = (nRead & 0x3ffu) / 4;
             int16_t aInput[2];
             memcpy(&aInput[0], pBlock + 2 * nSample, 2);
             memcpy(&aInput[1], pBlock + 0x200 + 2 * nSample, 2);
             Iop::CSpuBase::MixSamples(aInput[0], g_pSpu->core1.m_inputVolL, &aCore1[2 * i]);
             Iop::CSpuBase::MixSamples(aInput[1], g_pSpu->core1.m_inputVolR, &aCore1[2 * i + 1]);
-            g_block.nRead = (g_block.nRead + 4) % g_block.nSize;
         }
         memcpy(pOut, aCore1, sizeof(int16_t) * 2 * nRun);
         pOut += 2 * nRun;
@@ -645,6 +660,10 @@ void HostMidiQueued(unsigned nOffset, long long nLateNs) {
 void HostIopWrite(void *pDest, const void *pSource, unsigned nSize) {
     uint8_t *pInput = static_cast<uint8_t *>(HostHsynInput());
     uint8_t *pDestBytes = static_cast<uint8_t *>(pDest);
+    if (g_block.nSize != 0 && pDestBytes >= g_block.pRing &&
+        pDestBytes < g_block.pRing + g_block.nSize) {
+        g_block.nWritten += nSize; // the movie's PCM, written in stream order
+    }
     if (!g_bTicking || pDestBytes < pInput ||
         pDestBytes >= pInput + kMidiBuffers * kMidiBufferSize) {
         memcpy(pDest, pSource, nSize);
@@ -925,21 +944,26 @@ int sceSdRemote(int nWait, ...) {
         const uintptr_t nFrom = va_arg(arguments, unsigned);
         g_block = {};
         if ((nMode & 3) != kSdTransStop && nSize != 0) {
-            g_block = {reinterpret_cast<const uint8_t *>(nRing),
-                       nSize,
-                       (nMode & 3) == kSdTransWriteFrom ? static_cast<uint32_t>(nFrom - nRing) : 0,
-                       EeClock()};
+            g_block.pRing = reinterpret_cast<const uint8_t *>(nRing);
+            g_block.nSize = nSize;
+            g_block.nFrom =
+                (nMode & 3) == kSdTransWriteFrom ? static_cast<uint32_t>(nFrom - nRing) : 0;
+            g_block.nStart = EeClock();
+            g_block.nWritten = nSize;
         }
         break;
     }
-    case kSdBlockTransStatus: // the IOP address the input's DMA fetches next
-        // The input's DMA has fetched the block playing, so it reports the next one: the sample
-        // refills up to 1 KiB short of this, never over the block that plays.
-        nResult = g_block.nSize != 0 ?
-                      static_cast<int>(reinterpret_cast<uintptr_t>(g_block.pRing) +
-                                       ((g_block.nRead & ~0x3ffu) + 0x400) % g_block.nSize) :
-                      0;
+    case kSdBlockTransStatus: { // the IOP address the input's DMA fetches next
+        // The DMA has fetched the block playing, so it reports the next one: the sample refills
+        // up to 1 KiB short of this, never over the block that plays. A starved input has played
+        // all the sample wrote and reports where it waits, which the sample reads as empty.
+        const uint64_t nBlock = g_block.nPlayed & ~uint64_t{0x3ff};
+        const uint64_t nNext = g_block.nWritten > nBlock ? nBlock + 0x400 : nBlock;
+        nResult = g_block.nSize != 0 ? static_cast<int>(reinterpret_cast<uintptr_t>(g_block.pRing) +
+                                                        (g_block.nFrom + nNext) % g_block.nSize) :
+                                       0;
         break;
+    }
     default:
         // ponytail: sceSdVoiceTrans (0x80d0), which the movie player sends a block of zeros with
         // as it stops, is not served.
