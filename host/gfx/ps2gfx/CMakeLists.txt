@@ -16,3 +16,9 @@ target_compile_definitions(ps2gfx PRIVATE GLEW_STATIC USE_GLEW NDEBUG)
 target_compile_options(ps2gfx PRIVATE -msse -msse2 -mssse3 -w -g0)
 set_target_properties(ps2gfx PROPERTIES CXX_STANDARD 17 CXX_EXTENSIONS ON)
 target_link_libraries(ps2gfx PUBLIC OpenGL::GL ZLIB::ZLIB PNG::PNG Threads::Threads)
+
+# Self-check of the HD texture key (src/TexReplaceCheck.cpp); built on request only.
+add_executable(texreplace_check EXCLUDE_FROM_ALL src/TexReplaceCheck.cpp)
+target_include_directories(texreplace_check PRIVATE src ${P}/Source ${P}/deps/Framework/include ${P}/deps/Dependencies/xxHash)
+target_link_libraries(texreplace_check PRIVATE ps2gfx)
+set_target_properties(texreplace_check PROPERTIES CXX_STANDARD 17 CXX_EXTENSIONS ON)
