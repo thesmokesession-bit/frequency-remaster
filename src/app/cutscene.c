@@ -20,6 +20,7 @@
 // host/mpeg/mpeg.cpp
 void HostMovieIdle(void);
 void HostMovieStarted(void);
+long long HostFixedClockNs(void); // host/gfx-null/gfx.cpp
 #endif
 #ifndef RESONANCE_HOST
 #line 17
@@ -428,6 +429,13 @@ static void free_all(void) {
 
 void play_cutscene(const char *name, int with_audio) {
     const char *path = strchr(name, ':');
+#ifdef RESONANCE_HOST
+    // The fixed test clock (FREQ_CLOCK=fixed) moves on when the game waits, and a movie never
+    // waits: its threads rotate the ready queue. Those runs test the game, so they skip movies.
+    if (HostFixedClockNs() >= 0) {
+        return;
+    }
+#endif
     if (path != NULL) {
         FILE *probe = fopen(path + 1, "rb");
         if (probe == NULL) {
