@@ -53,8 +53,7 @@ void MarkNodeUsed(HeapNode *pNode) {
 // The extent spans the prologue and the payload, so it exceeds the payload by
 // kHeapNodePrologueSize.
 unsigned NodeExtent(const HeapNode *pNode) {
-    return reinterpret_cast<const char *>(static_cast<const HeapNode *>(pNode->mNext)) -
-           reinterpret_cast<const char *>(pNode);
+    return reinterpret_cast<const char *>(+pNode->mNext) - reinterpret_cast<const char *>(pNode);
 }
 
 void *NodePayload(HeapNode *pNode) {
