@@ -13,6 +13,7 @@
 // clock's time (FREQ_CLOCK=fixed presents each tick's frame before the game goes on).
 
 #include <algorithm>
+#include <fcntl.h>
 #include <atomic>
 #include <pthread.h>
 #include <stdint.h>
@@ -20,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <string>
+#include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
 #include <vector>
@@ -89,17 +91,27 @@ unsigned g_nHashAnchor = 0;
 void HashFrame(unsigned nTick) {
     char szPath[64];
     snprintf(szPath, sizeof(szPath), "/dev/shm/freq-framehash-%d.png", static_cast<int>(getpid()));
-    unsigned long long nHash = 1469598103934665603ULL; // FNV-1a
-    if (ps2gfx_screenshot(szPath) == 0) {
-        if (FILE *pFile = fopen(szPath, "rb")) {
-            for (int c; (c = fgetc(pFile)) != EOF;) {
-                nHash = (nHash ^ static_cast<unsigned char>(c)) * 1099511628211ULL;
-            }
-            fclose(pFile);
+    unsigned long long nHash = 14695981039346656037ULL; // FNV-1a
+    const int nResult = ps2gfx_screenshot(szPath);
+    // fopen(), read() and close() are the game's (host/io/stdio.cpp), so the host file goes
+    // through the system calls.
+    const long nFile = syscall(SYS_openat, AT_FDCWD, szPath, O_RDONLY);
+    unsigned char aBuffer[65536];
+    for (long n; nFile >= 0 && (n = syscall(SYS_read, nFile, aBuffer, sizeof(aBuffer))) > 0;) {
+        for (long i = 0; i < n; ++i) {
+            nHash = (nHash ^ aBuffer[i]) * 1099511628211ULL;
         }
-        unlink(szPath);
     }
-    fprintf(stderr, "FRAMEHASH %u %lld %016llx\n", nTick, HostFixedClockNs(), nHash);
+    if (nFile >= 0) {
+        syscall(SYS_close, nFile);
+    }
+    syscall(SYS_unlinkat, AT_FDCWD, szPath, 0);
+    fprintf(stderr,
+            "FRAMEHASH %u %lld %016llx%s\n",
+            nTick,
+            HostFixedClockNs(),
+            nHash,
+            nResult == 0 ? "" : " FAILED");
 }
 
 void TakeShots(unsigned nVblank);
