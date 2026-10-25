@@ -73,6 +73,16 @@
 #include "synth/midi_main.h"
 #include "synth/ps2hardsynth.h"
 
+#ifdef RESONANCE_HOST
+// host/audio/audio.cpp: practice mode (FREQ_PRACTICE...).
+extern "C" int HostPracticeArmed(void);
+extern "C" void HostPracticeSpeed(int bOn);
+extern "C" void HostPracticeEnd(void);
+#endif
+#ifndef RESONANCE_HOST
+#line 74
+#endif
+
 namespace {
 
 // Configuration identifiers the load path queries.
@@ -345,6 +355,18 @@ void GrooveWorld::StartPlay() {
     StartNoteDestroyer();
     mState = kStatePlaying;
     mApp->GetSynth()->OnPlayStarted();
+#ifdef RESONANCE_HOST
+    // A practice run is the game's own practice mode (its cheat): no juice drain, and a cheated
+    // run saves no score or progress. Then the practice speed.
+    if (HostPracticeArmed() != 0) {
+        mGamer->mJuiceFrozen = 1;
+        mGamer->mCheated = 1;
+        HostPracticeSpeed(1);
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 347
+#endif
     std::for_each(
         mIntroGraphs.begin(), mIntroGraphs.end(), std::mem_fn(&BGTrackGraph::CallBuildSequencer));
 
@@ -388,6 +410,17 @@ void GrooveWorld::OnControllerReading(int nTag, int nPadIndex, int nButton, floa
     if (mIsTutorial == 0) {
         mCheatDetector->OnControllerReading(nTag, nPadIndex, nButton, flValue);
     }
+#ifdef RESONANCE_HOST
+    // Select restarts a practice run at once.
+    if (HostPracticeArmed() != 0 && nTag == kReadingTypeJoy && flValue > 0.0f &&
+        nButton == kPauseButton - 1) {
+        PostRestart();
+        return;
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 390
+#endif
     if (mApp->IsJukeboxMode()) {
         if (nTag == kReadingTypeJoy && flValue > 0.0f && nButton == kPauseButton) {
             mContinueJukebox = 0;
@@ -490,6 +523,14 @@ void GrooveWorld::Exit(int nMode, int bContinueJukebox, int bRestart) {
     FuncCmd *pFinish = new FuncCmd(this, &GrooveWorld::FinishSong);
     [[maybe_unused]] Sch::CmdID id;
     id.mValue = kUnallocatedCommand; // Yes, the binary prepares this handle and never passes it.
+#ifdef RESONANCE_HOST
+    if (HostPracticeArmed() != 0 && bRestart != 0) {
+        mApp->GetWatchdogTimer()->PostIn(pFinish, Sch::Time{0}); // a practice restart: at once
+    } else
+#endif
+#ifndef RESONANCE_HOST
+#line 492
+#endif
     mApp->GetWatchdogTimer()->PostIn(
         pFinish, Sch::Time{static_cast<long long>(nFadeMs + kExitFinishDelayMs) * kNsPerMs});
     Attachment::ReleaseIfSet(pFinish);
@@ -788,6 +829,12 @@ void GrooveWorld::StartSequencers() {
 }
 
 void GrooveWorld::FinishSong() {
+#ifdef RESONANCE_HOST
+    HostPracticeEnd();
+#endif
+#ifndef RESONANCE_HOST
+#line 790
+#endif
     if (QueryConfigFlag(kStreamedAudioQuery) != 0) {
         StopSoundBankMovie();
     }

@@ -295,6 +295,14 @@ protected:
      */
     int WindowIndex(int nBar);
 
+#ifdef RESONANCE_HOST
+    // The bar a practice loop (FREQ_PRACTICE_LOOP) plays at time bar nBar.
+    int PracticeBar(int nBar);
+#endif
+
+#ifndef RESONANCE_HOST
+#line 297
+#endif
     /**
      * Recompute the start of every window entry from an index onward.
      *

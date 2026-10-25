@@ -6,10 +6,26 @@
 #include "os/hxstr.h"
 #include "script/testregistry.h"
 
+#ifdef RESONANCE_HOST
+extern "C" int HostPracticeLoop(int *pFirst, int *pEnd); // host/audio/audio.cpp
+extern "C" void HostPracticeLoopBars(int nFirst, int nEnd);
+#endif
+
+#ifndef RESONANCE_HOST
+#line 8
+#endif
 namespace {
 
 // The capacity the constructor reserves in the window vectors.
 constexpr std::vector<int>::size_type kInitialCapacity = 8;
+
+#ifdef RESONANCE_HOST
+// The end GetEndBar() reports while a practice loop repeats: never reached, so the song plays on.
+constexpr int kPracticeEndBar = 1 << 19;
+#endif
+#ifndef RESONANCE_HOST
+#line 12
+#endif
 
 // The name SelfTest() registers under, and the label it gives every step.
 static const char *const kTestName = "PlayMapLinear";
@@ -89,6 +105,20 @@ inline void PlayMapLinear::RestartFrom(std::vector<int>::size_type nFirst) {
 std::vector<int> &PlayMapLinear::FindBarsPlaying(int nStart, int nMin, int nEnd) {
     GrowPastLimit(nEnd);
     mFoundBars.clear();
+#ifdef RESONANCE_HOST
+    int nLoopFirst, nLoopEnd;
+    if (HostPracticeLoop(&nLoopFirst, &nLoopEnd) != 0) {
+        for (int nBar = nMin; nBar < nEnd; ++nBar) {
+            if (MapBar(nBar) == nStart) {
+                mFoundBars.push_back(nBar);
+            }
+        }
+        return mFoundBars;
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 91
+#endif
     const int nStep = FindStepIndex(nStart);
     const int nLength = mSectionLengths[nStep];
     const int nOffset = nStart - mSteps[nStep];
@@ -173,6 +203,15 @@ void PlayMapLinear::RecordPattern() {
 }
 
 int PlayMapLinear::GetEndBar() {
+#ifdef RESONANCE_HOST
+    int nLoopFirst, nLoopEnd;
+    if (HostPracticeLoop(&nLoopFirst, &nLoopEnd) != 0) {
+        return kPracticeEndBar;
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 175
+#endif
     return mPatternEnd;
 }
 
@@ -184,7 +223,42 @@ int PlayMapLinear::GetPatternSection(int nIndex) {
     return mPattern[nIndex].mSection;
 }
 
+#ifdef RESONANCE_HOST
+// Practice loop: from the loop's end on, time bars play the loop's bars again, so the music, the
+// gems and the phrases (all mapped through here) repeat while the song clock runs on. A loop of
+// phrases, the entries of the song's recorded pattern, becomes the bars they span.
+int PlayMapLinear::PracticeBar(int nBar) {
+    int nFirst, nEnd;
+    const int nKind = HostPracticeLoop(&nFirst, &nEnd);
+    if (nKind == 2) {
+        int nFirstBar = 0;
+        int nEndBar = 0;
+        for (int i = 0; i < static_cast<int>(mPattern.size()) && i < nEnd; ++i) {
+            const int nLength = mSectionLengths[mPattern[i].mSection] * mPattern[i].mRepeats;
+            nFirstBar += i < nFirst ? nLength : 0;
+            nEndBar += nLength;
+        }
+        nFirst = nFirstBar;
+        nEnd = nEndBar;
+        HostPracticeLoopBars(nFirst, nEnd);
+    }
+    if (nKind == 0 || nEnd <= nFirst || nBar < nEnd) {
+        return nBar;
+    }
+    return nFirst + (nBar - nFirst) % (nEnd - nFirst);
+}
+#endif
+
+#ifndef RESONANCE_HOST
+#line 186
+#endif
 int PlayMapLinear::MapBar(int nBar) {
+#ifdef RESONANCE_HOST
+    nBar = PracticeBar(nBar);
+#endif
+#ifndef RESONANCE_HOST
+#line 187
+#endif
     GrowPastLimit(nBar);
     const int nIndex = WindowIndex(nBar);
     const int nSection = mWindow[nIndex].mSection;

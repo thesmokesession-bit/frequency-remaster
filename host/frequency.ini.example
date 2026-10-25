@@ -9,3 +9,15 @@
 #FREQ_FPS=120
 #FREQ_SCALE=6
 #FREQ_WIDESCREEN=1
+
+# Practice mode: every song is a practice run, the game's own practice mode (no juice drain; no
+# score or progress saved). Select restarts the song at once. Setting a speed or a loop turns it on.
+#FREQ_PRACTICE=1
+# Practice speed, 0.5 to 1 (or 50 to 100 percent): the song plays slower at the same pitch.
+#FREQ_PRACTICE_SPEED=0.75
+# Practice loop, repeated until you quit or restart: bars (9-16), or phrases, the song's sections
+# as the HUD's song-position blocks show them (p3 or p3-4). Counted from 1.
+#FREQ_PRACTICE_LOOP=9-16
+
+# Sample playback interpolation: linear (default, the SPU2 model's), cubic, or sinc (8 taps).
+#FREQ_SPU_INTERP=sinc

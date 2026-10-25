@@ -145,6 +145,131 @@ SDL_AudioDeviceID g_nDevice = 0;
 FILE *g_pWav = nullptr;
 uint64_t g_nWavFrames = 0;
 
+// ---- Practice speed -----------------------------------------------------------------------------
+
+// Game time per real time. Below 1 (practice, FREQ_PRACTICE_SPEED) the whole game runs on a slower
+// clock: the renderer still makes the mix in game time, so every sample slice plays at its pitch
+// and in time with the slowed MIDI, and Stretch lengthens that mix to real time without changing
+// its pitch. 1 leaves the output exactly as without practice.
+std::atomic<float> g_flSpeed{1.0f};
+
+// WSOLA: frames of kFrame input samples, Hann-windowed and overlap-added kHop apart in the output.
+// Frame k comes from within kSeek of input k * kHop * speed, where it best continues frame k - 1, so
+// the output is input / speed long, give or take kSeek: the mix keeps the song clock's time. Its
+// look-ahead delays the sound by kFrame + kSeek input samples (53 ms of game time); shorter frames
+// smear the bass (on the attract demo, 2.0 dB rms log-spectrum error below 250 Hz at 1024, 0.8 at
+// 2048).
+// FREQ_TEST_PRACTICE_STRETCH=resample, a test control, plays the mix slowed instead (pitch drops).
+class Stretch {
+public:
+    static constexpr int kFrame = 2048;
+    static constexpr int kHop = kFrame / 2;
+    static constexpr int kSeek = 512;
+
+    void Reset() {
+        m_in.clear();
+        m_nBase = 0;
+        m_nEnd = 0;
+        m_flNominal = 0;
+        m_nPrevious = -1;
+        m_tail.assign(2 * kHop, 0.0f);
+    }
+
+    void Push(const int16_t *pIn, int nFrames, float flSpeed, std::vector<int16_t> &out) {
+        m_in.insert(m_in.end(), pIn, pIn + 2 * nFrames);
+        m_nEnd += nFrames;
+        static const bool bResample = getenv("FREQ_TEST_PRACTICE_STRETCH") != nullptr;
+        if (bResample) {
+            for (int64_t i; (i = static_cast<int64_t>(m_flNominal)) + 1 < m_nEnd;
+                 m_flNominal += flSpeed) {
+                const float t = static_cast<float>(m_flNominal - i);
+                for (int c = 0; c < 2; ++c) {
+                    out.push_back(Clip(At(i, c) + t * (At(i + 1, c) - At(i, c))));
+                }
+            }
+            Discard(static_cast<int64_t>(m_flNominal));
+            return;
+        }
+        static const std::vector<float> s_window = [] {
+            std::vector<float> window(kFrame);
+            for (int j = 0; j < kFrame; ++j) {
+                window[j] = 0.5f - 0.5f * cosf(6.2831853f * j / kFrame);
+            }
+            return window;
+        }();
+        for (int64_t a; (a = llround(m_flNominal)) + kSeek + kFrame <= m_nEnd;) {
+            const int64_t x = m_nPrevious < 0 ? a : Seek(a, m_nPrevious + kHop);
+            for (int j = 0; j < kHop; ++j) {
+                for (int c = 0; c < 2; ++c) {
+                    out.push_back(Clip(m_tail[2 * j + c] + s_window[j] * At(x + j, c)));
+                    m_tail[2 * j + c] = s_window[kHop + j] * At(x + kHop + j, c);
+                }
+            }
+            m_nPrevious = x;
+            m_flNominal += kHop * static_cast<double>(flSpeed);
+            Discard(std::min<int64_t>(llround(m_flNominal) - kSeek, x + kHop));
+        }
+    }
+
+private:
+    float At(int64_t nFrame, int nChannel) const {
+        return m_in[2 * (nFrame - m_nBase) + nChannel];
+    }
+
+    static int16_t Clip(float flValue) {
+        return static_cast<int16_t>(std::clamp(lrintf(flValue), -32768L, 32767L));
+    }
+
+    // The start within kSeek of nNominal whose first half frame best matches the one at
+    // nNatural, the continuation of the previous frame: normalised correlation of L + R, on every
+    // fourth offset and second sample, then the three offsets around the best.
+    int64_t Seek(int64_t nNominal, int64_t nNatural) const {
+        const auto score = [&](int64_t x) {
+            float flDot = 0, flEnergy = 1e-3f;
+            for (int j = 0; j < kHop; j += 2) {
+                const float v = At(x + j, 0) + At(x + j, 1);
+                flDot += v * (At(nNatural + j, 0) + At(nNatural + j, 1));
+                flEnergy += v * v;
+            }
+            return flDot / sqrtf(flEnergy);
+        };
+        const int64_t nLow = std::max(nNominal - kSeek, m_nBase);
+        int64_t nBest = nNominal;
+        float flBest = -1e30f;
+        for (int64_t x = nLow; x <= nNominal + kSeek; x += 4) {
+            if (const float s = score(x); s > flBest) {
+                flBest = s;
+                nBest = x;
+            }
+        }
+        const int64_t nCoarse = nBest;
+        for (int64_t x = std::max(nCoarse - 3, nLow); x <= std::min(nCoarse + 3, nNominal + kSeek);
+             ++x) {
+            if (const float s = score(x); s > flBest) {
+                flBest = s;
+                nBest = x;
+            }
+        }
+        return nBest;
+    }
+
+    void Discard(int64_t nKeep) {
+        if (nKeep - m_nBase > 4096) {
+            m_in.erase(m_in.begin(), m_in.begin() + 2 * (nKeep - m_nBase));
+            m_nBase = nKeep;
+        }
+    }
+
+    std::vector<float> m_in; // stereo input from frame m_nBase to m_nEnd
+    int64_t m_nBase = 0;
+    int64_t m_nEnd = 0;
+    double m_flNominal = 0; // where the next frame belongs in the input
+    int64_t m_nPrevious = -1;
+    std::vector<float> m_tail; // the second half of the last frame, still to be overlapped
+};
+Stretch g_stretch;
+bool g_bStretching = false;
+
 int64_t NowNs() {
     timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
@@ -165,8 +290,12 @@ uint64_t EeClock() {
         nCycles = g_nAnchorCycles.load();
         nAnchorNs = g_nAnchorNs.load();
     } while (nCycles != g_nAnchorCycles.load());
-    // The EE moves through the block the renderer makes next, and no further, a lead ahead.
-    const int64_t nSince = std::clamp<int64_t>(NowNs() - nAnchorNs, 0, kBlockNs);
+    // The EE moves through the block the renderer makes next, and no further, a lead ahead. A
+    // practice speed below 1 makes that block last longer (RunAudio()).
+    int64_t nSince = std::clamp<int64_t>(NowNs() - nAnchorNs, 0, kBlockNs);
+    if (const float flSpeed = g_flSpeed.load(); flSpeed != 1.0f) {
+        nSince = std::clamp<int64_t>((NowNs() - nAnchorNs) * flSpeed, 0, kBlockNs);
+    }
     const uint64_t nNow = nCycles + kLeadCycles + static_cast<uint64_t>(nSince) * 294912 / 1000000;
     uint64_t nLast = g_nLastCycles.load();
     while (nNow > nLast && !g_nLastCycles.compare_exchange_weak(nLast, nNow)) {
@@ -583,15 +712,36 @@ void RenderBlock(int nFrames) {
     }
     g_nAnchorNs.store(NowNs());
     g_nAnchorCycles.store(g_nRendered * kEeCyclesPerSample);
+    const int16_t *pOut = aBlock;
+    if (const float flSpeed = g_flSpeed.load(); flSpeed != 1.0f || g_bStretching) {
+        static std::vector<int16_t> s_stretched;
+        s_stretched.clear();
+        if (!g_bStretching) {
+            g_stretch.Reset();
+        }
+        if (g_bStretching != (flSpeed != 1.0f)) { // where the mix starts or stops stretching
+            fprintf(stderr,
+                    "AUDIO_STRETCH speed=%.3f rendered=%llu wav=%llu\n",
+                    flSpeed,
+                    static_cast<unsigned long long>(g_nRendered - nFrames),
+                    static_cast<unsigned long long>(g_nWavFrames));
+        }
+        g_bStretching = flSpeed != 1.0f;
+        if (g_bStretching) {
+            g_stretch.Push(aBlock, nFrames, flSpeed, s_stretched);
+            pOut = s_stretched.data();
+            nFrames = static_cast<int>(s_stretched.size() / 2);
+        }
+    }
     const size_t nBytes = sizeof(int16_t) * 2 * nFrames;
-    if (g_nDevice != 0) {
+    if (g_nDevice != 0 && nFrames > 0) {
         // A device slower than the wall clock loses a block now and then, rather than lagging.
         if (SDL_GetQueuedAudioSize(g_nDevice) < kMaxQueuedBytes) {
-            SDL_QueueAudio(g_nDevice, aBlock, nBytes);
+            SDL_QueueAudio(g_nDevice, pOut, nBytes);
         }
     }
     if (g_pWav != nullptr) {
-        fwrite(aBlock, nBytes, 1, g_pWav);
+        fwrite(pOut, nBytes, 1, g_pWav);
         const bool bSecond = (g_nWavFrames + nFrames) / kRate != g_nWavFrames / kRate;
         g_nWavFrames += nFrames;
         if (bSecond) {
@@ -607,7 +757,7 @@ void *RunAudio(void *) {
     int64_t nDeadline = NowNs();
     for (;;) {
         RenderBlock(kBlock);
-        nDeadline += kBlockNs;
+        nDeadline += static_cast<int64_t>(kBlockNs / g_flSpeed.load());
         const int64_t nNow = NowNs();
         if (nNow - nDeadline > kMaxLagNs) {
             nDeadline = nNow; // starved: the song waits rather than jumps
@@ -651,6 +801,110 @@ void OpenDevice() {
 // ---- What the rest of the host calls ------------------------------------------------------------
 
 extern "C" {
+
+// Practice mode (host/frequency.ini.example): FREQ_PRACTICE=1, or either key below, makes every
+// song a practice run. FREQ_PRACTICE_SPEED is the song's speed, 0.5 to 1 (or 50 to 100 percent).
+// FREQ_PRACTICE_LOOP repeats a section until the player quits or restarts: "9-16" for bars 9 to
+// 16, or "p3" / "p3-4" for phrases (the song's sections, the HUD's song-position blocks), each
+// counted from 1. FREQ_TEST_PRACTICE_DEMO=1, a test control, also lets the attract demo practise.
+namespace {
+struct PracticeSettings {
+    bool bOn = false;
+    float flSpeed = 1.0f;
+    int nLoopKind = 0; // 0 none, 1 bars, 2 phrases
+    int nLoopFirst = 0;
+    int nLoopEnd = 0; // one past the last, from 0
+    PracticeSettings() {
+        const char *pszSpeed = getenv("FREQ_PRACTICE_SPEED");
+        const char *pszLoop = getenv("FREQ_PRACTICE_LOOP");
+        const char *pszOn = getenv("FREQ_PRACTICE");
+        bOn = (pszOn != nullptr && atoi(pszOn) != 0) || pszSpeed != nullptr || pszLoop != nullptr;
+        if (pszSpeed != nullptr) {
+            const float flValue = strtof(pszSpeed, nullptr);
+            flSpeed = std::clamp(flValue > 1.0f ? flValue / 100.0f : flValue, 0.5f, 1.0f);
+        }
+        int nFirst = 0, nLast = 0;
+        if (pszLoop != nullptr) {
+            const bool bPhrases = *pszLoop == 'p' || *pszLoop == 'P';
+            const int nRead = sscanf(pszLoop + bPhrases, "%d-%*[pP]%d", &nFirst, &nLast) == 2 ?
+                                  2 :
+                                  sscanf(pszLoop + bPhrases, "%d-%d", &nFirst, &nLast);
+            if (nRead == 1) {
+                nLast = nFirst;
+            }
+            if (nRead >= 1 && nFirst >= 1 && nLast >= nFirst) {
+                nLoopKind = bPhrases ? 2 : 1;
+                nLoopFirst = nFirst - 1;
+                nLoopEnd = nLast;
+            } else {
+                fprintf(stderr, "host: FREQ_PRACTICE_LOOP=%s is not understood\n", pszLoop);
+            }
+        }
+    }
+};
+const PracticeSettings &Practice() {
+    static const PracticeSettings s_settings;
+    return s_settings;
+}
+bool g_bPracticeArmed = false;
+struct {
+    int nKind, nFirst, nEnd;
+} g_practiceLoop; // the armed song's loop: Practice()'s, until its phrases are bars
+} // namespace
+
+// GrooveWorld::PrepareLevel(): whether the song about to play is a practice run. The attract demo
+// (a playback) is not, without FREQ_TEST_PRACTICE_DEMO.
+int HostPracticeArm(int bPlayback) {
+    g_bPracticeArmed =
+        Practice().bOn && (bPlayback == 0 || getenv("FREQ_TEST_PRACTICE_DEMO") != nullptr);
+    g_practiceLoop = {Practice().nLoopKind, Practice().nLoopFirst, Practice().nLoopEnd};
+    if (g_bPracticeArmed) {
+        fprintf(stderr,
+                "PRACTICE_ARMED speed=%.2f loop=%d:%d-%d\n",
+                Practice().flSpeed,
+                Practice().nLoopKind,
+                Practice().nLoopFirst,
+                Practice().nLoopEnd);
+    }
+    return g_bPracticeArmed;
+}
+
+// GrooveWorld::StartPlay(): the song clock at the practice speed from now; bOn 0, normal speed.
+void HostPracticeSpeed(int bOn) {
+    g_flSpeed.store(bOn != 0 ? Practice().flSpeed : 1.0f);
+}
+
+// The song has ended: normal speed, and the next song is not practice until armed.
+void HostPracticeEnd() {
+    HostPracticeSpeed(0);
+    g_bPracticeArmed = false;
+}
+
+int HostPracticeArmed() {
+    return g_bPracticeArmed;
+}
+
+// The practice loop of the armed song: 1 for bars, 2 for phrases, [*pFirst, *pEnd) from 0; or 0.
+int HostPracticeLoop(int *pFirst, int *pEnd) {
+    if (!g_bPracticeArmed || g_practiceLoop.nKind == 0) {
+        return 0;
+    }
+    *pFirst = g_practiceLoop.nFirst;
+    *pEnd = g_practiceLoop.nEnd;
+    return g_practiceLoop.nKind;
+}
+
+// The first bar a practice loop repeats, whose phrases come back uncaught (PhraseMgr), or INT_MAX.
+// FREQ_TEST_PRACTICE_KEEP_PHRASES=1, a test control, keeps them, so a repeat sounds as the last pass.
+int HostPracticeRepeatsFrom() {
+    static const bool bKeep = getenv("FREQ_TEST_PRACTICE_KEEP_PHRASES") != nullptr;
+    return g_bPracticeArmed && g_practiceLoop.nKind == 1 && !bKeep ? g_practiceLoop.nEnd : INT_MAX;
+}
+
+// The bars a loop of phrases spans, which PlayMapLinear works out from the song: a bar loop now.
+void HostPracticeLoopBars(int nFirst, int nEnd) {
+    g_practiceLoop = {1, nFirst, nEnd};
+}
 
 // The EE cycle counter, on the audio clock.
 uint64_t HostAudioCycles() {
