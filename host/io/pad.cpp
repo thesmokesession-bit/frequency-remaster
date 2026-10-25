@@ -8,9 +8,12 @@
 //     180 START
 //
 // "<frame> <BUTTON>[+<BUTTON>...]" holds the buttons for kHoldFrames vertical blanks from that
-// blank. Frames count from the start, or from the blank of the last "after <BREADCRUMB>" line's
+// blank. A test control for local multiplayer: "<frame> P<n>:<BUTTON>..." holds them on player n's
+// pad. P2 alone connects a second pad in port 2; P3 or P4 connect a multitap in port 1 instead,
+// with players 1 to 4 in its slots A to D. Without such entries only the pad in port 1 exists. Frames count from the start, or from the blank of the last "after <BREADCRUMB>" line's
 // breadcrumb (see HostBreadcrumb()); entries under an "after" line wait for its breadcrumb.
 
+#include <algorithm>
 #include <fcntl.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -68,6 +71,7 @@ struct InputEvent {
     std::string anchor;
     unsigned nFrame;
     unsigned short nButtons;
+    int nPort;
 };
 
 struct Anchor {
@@ -79,6 +83,7 @@ pthread_mutex_t g_inputLock = PTHREAD_MUTEX_INITIALIZER;
 std::vector<InputEvent> g_events;
 std::vector<Anchor> g_anchors;
 pthread_once_t g_scriptOnce = PTHREAD_ONCE_INIT;
+int g_nPlayers = 1; // pads the script plays; above 2, through a multitap in port 1
 
 unsigned short ParseButtons(const char *pszButtons, int nLine) {
     unsigned short nButtons = 0;
@@ -128,7 +133,10 @@ void LoadScript() {
         if (strcmp(szWord, "after") == 0 && sscanf(szLine, "after %127s", szWord) == 1) {
             anchor = szWord;
         } else if (sscanf(szLine, "%u %127s", &nFrame, szWord) == 2) {
-            g_events.push_back(InputEvent{anchor, nFrame, ParseButtons(szWord, nLine)});
+            const bool bPlayer = szWord[0] == 'P' && szWord[1] >= '2' && szWord[1] <= '4' && szWord[2] == ':';
+            const int nPlayer = bPlayer ? szWord[1] - '1' : 0;
+            g_nPlayers = std::max(g_nPlayers, nPlayer + 1);
+            g_events.push_back(InputEvent{anchor, nFrame, ParseButtons(szWord + (bPlayer ? 3 : 0), nLine), nPlayer});
         } else {
             fprintf(stderr, "host: FREQ_INPUT line %d is not understood\n", nLine);
         }
@@ -136,13 +144,16 @@ void LoadScript() {
     fclose(pFile);
 }
 
-// The buttons the script holds at this vertical blank.
-unsigned short HeldButtons() {
+// The buttons the script holds on player nPlayer's pad at this vertical blank.
+unsigned short HeldButtons(int nPlayer) {
     pthread_once(&g_scriptOnce, LoadScript);
     const unsigned nNow = HostVblankCount();
     unsigned short nButtons = 0;
     pthread_mutex_lock(&g_inputLock);
     for (const InputEvent &event : g_events) {
+        if (event.nPort != nPlayer) {
+            continue;
+        }
         unsigned nOrigin = 0;
         bool bArmed = event.anchor.empty();
         for (const Anchor &anchor : g_anchors) {
@@ -178,8 +189,21 @@ void *ReportAlive(void *pReport) {
     return nullptr;
 }
 
+bool Multitap() {
+    pthread_once(&g_scriptOnce, LoadScript);
+    return g_nPlayers > 2;
+}
+
+// The player whose pad is in nPort/nSlot, or -1.
+int PlayerAt(int nPort, int nSlot) {
+    if (Multitap()) {
+        return nPort == 0 && nSlot < g_nPlayers ? nSlot : -1;
+    }
+    return nSlot == 0 && nPort < g_nPlayers ? nPort : -1;
+}
+
 bool Connected(int nPort, int nSlot) {
-    return nPort == 0 && nSlot == 0;
+    return PlayerAt(nPort, nSlot) >= 0;
 }
 
 // A mode or actuator request reports busy once, as the pad takes a frame to answer, and then
@@ -294,7 +318,7 @@ int scePadRead(int nPort, int nSlot, unsigned char *pData) {
     if (!Connected(nPort, nSlot)) {
         return 0;
     }
-    const unsigned short nHeld = HeldButtons();
+    const unsigned short nHeld = HeldButtons(PlayerAt(nPort, nSlot));
     const unsigned short nWire = static_cast<unsigned short>(~nHeld);
     pData[1] = kDualShockPressureMode;
     pData[2] = static_cast<unsigned char>(nWire >> 8);
@@ -321,8 +345,8 @@ int sceMtapPortClose(int) {
     return 1;
 }
 
-int sceMtapGetConnection(int) {
-    return 0;
+int sceMtapGetConnection(int nPort) {
+    return nPort == 0 && Multitap() ? 1 : 0;
 }
 
 } // extern "C"
