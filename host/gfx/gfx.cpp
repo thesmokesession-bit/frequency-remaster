@@ -6,7 +6,7 @@
 //
 // FREQ_SHOT=<directory> and FREQ_SHOT_AT=<BREADCRUMB>:<blank>[,<blank>...] save the displayed frame
 // as <directory>/<BREADCRUMB>+<blank>.png, where blank 0 is the first blank after the breadcrumb.
-// Blanks are fields (59.94 Hz) at any FREQ_FPS.
+// Blanks are fields (59.94 Hz) at any FREQ_FPS. Groups for more breadcrumbs follow after ';'.
 //
 // FREQ_FRAMEHASH=<BREADCRUMB>:<fields> logs "FRAMEHASH <tick> <ns> <hash>" for each frame presented
 // in that many fields from the breadcrumb: a hash of the displayed frame's PNG, and the fixed
@@ -84,13 +84,16 @@ SDL_GLContext g_context = nullptr;
 const char *g_pszShotDirectory = nullptr;
 // Whether shots save the window rather than the GS framebuffer.
 bool g_bOutputShots = false;
-std::string g_shotBreadcrumb;
-std::vector<unsigned> g_shotOffsets;
-// The blank count at the shot breadcrumb.
-bool g_bShotAnchored = false;
-unsigned g_nShotAnchor = 0;
-timespec g_shotAnchorTime;
-unsigned g_nShotAnchorPresents;
+// The shots of one breadcrumb, and the blank count at that breadcrumb.
+struct ShotGroup {
+    std::string breadcrumb;
+    std::vector<unsigned> offsets;
+    bool bAnchored = false;
+    unsigned nAnchor = 0;
+    timespec anchorTime;
+    unsigned nAnchorPresents = 0;
+};
+std::vector<ShotGroup> g_shotGroups;
 // The blank of the next shot. The blank thread takes it itself, so the shot shows what the GS
 // displays at that blank rather than at the present thread's later turn.
 std::atomic<unsigned> g_nNextShotVblank{~0U};
@@ -207,16 +210,20 @@ void ParseShots() {
         g_pszShotDirectory = nullptr;
         return;
     }
-    const char *pszColon = strchr(pszAt, ':');
-    if (pszColon == nullptr) {
-        fprintf(stderr, "host: FREQ_SHOT_AT is not <BREADCRUMB>:<blank>[,<blank>...]\n");
-        _exit(70);
-    }
-    g_shotBreadcrumb.assign(pszAt, pszColon);
-    for (const char *p = pszColon + 1; *p != '\0';) {
-        char *pszEnd;
-        g_shotOffsets.push_back(static_cast<unsigned>(strtoul(p, &pszEnd, 10)));
-        p = (*pszEnd == ',') ? pszEnd + 1 : pszEnd + strlen(pszEnd);
+    for (const char *p = pszAt; *p != '\0';) {
+        const char *pszColon = strchr(p, ':');
+        if (pszColon == nullptr) {
+            fprintf(stderr, "host: FREQ_SHOT_AT is not <BREADCRUMB>:<blank>[,<blank>...][;...]\n");
+            _exit(70);
+        }
+        ShotGroup &group = g_shotGroups.emplace_back();
+        group.breadcrumb.assign(p, pszColon);
+        for (p = pszColon + 1; *p != '\0' && *p != ';';) {
+            char *pszEnd;
+            group.offsets.push_back(static_cast<unsigned>(strtoul(p, &pszEnd, 10)));
+            p = (*pszEnd == ',') ? pszEnd + 1 : pszEnd + strcspn(pszEnd, ";");
+        }
+        p += *p == ';';
     }
 }
 
@@ -301,43 +308,50 @@ bool Drawing() {
 // Called with g_lock held.
 void ScheduleNextShot() {
     unsigned nNext = ~0U;
-    for (unsigned nOffset : g_shotOffsets) {
-        nNext = std::min(nNext, g_nShotAnchor + nOffset + 1);
+    for (const ShotGroup &group : g_shotGroups) {
+        for (unsigned nOffset : group.offsets) {
+            if (group.bAnchored) {
+                nNext = std::min(nNext, group.nAnchor + nOffset + 1);
+            }
+        }
     }
     g_nNextShotVblank = nNext;
 }
 
 void TakeShots(unsigned nVblank) {
-    if (!g_bShotAnchored) {
-        return;
-    }
-    for (auto it = g_shotOffsets.begin(); it != g_shotOffsets.end();) {
-        const unsigned nOffset = *it;
-        if (nVblank - g_nShotAnchor < nOffset + 1) {
-            ++it;
+    for (ShotGroup &group : g_shotGroups) {
+        if (!group.bAnchored) {
             continue;
         }
-        char szPath[4096];
-        snprintf(szPath,
-                 sizeof(szPath),
-                 "%s/%s+%03u.png",
-                 g_pszShotDirectory,
-                 g_shotBreadcrumb.c_str(),
-                 nOffset);
-        const int nResult =
-            g_bOutputShots ? ps2gfx_screenshot_output(szPath) : ps2gfx_screenshot(szPath);
-        timespec now;
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        const double flSeconds = static_cast<double>(now.tv_sec - g_shotAnchorTime.tv_sec) +
-                                 static_cast<double>(now.tv_nsec - g_shotAnchorTime.tv_nsec) / 1e9;
-        fprintf(stderr,
-                "SHOT %s%s (blank %u, %.2f s and %u frames after the breadcrumb)\n",
-                szPath,
-                nResult == 0 ? "" : " FAILED",
-                nVblank - g_nShotAnchor - 1,
-                flSeconds,
-                g_nPresents - g_nShotAnchorPresents);
-        it = g_shotOffsets.erase(it);
+        for (auto it = group.offsets.begin(); it != group.offsets.end();) {
+            const unsigned nOffset = *it;
+            if (nVblank - group.nAnchor < nOffset + 1) {
+                ++it;
+                continue;
+            }
+            char szPath[4096];
+            snprintf(szPath,
+                     sizeof(szPath),
+                     "%s/%s+%03u.png",
+                     g_pszShotDirectory,
+                     group.breadcrumb.c_str(),
+                     nOffset);
+            const int nResult =
+                g_bOutputShots ? ps2gfx_screenshot_output(szPath) : ps2gfx_screenshot(szPath);
+            timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            const double flSeconds =
+                static_cast<double>(now.tv_sec - group.anchorTime.tv_sec) +
+                static_cast<double>(now.tv_nsec - group.anchorTime.tv_nsec) / 1e9;
+            fprintf(stderr,
+                    "SHOT %s%s (blank %u, %.2f s and %u frames after the breadcrumb)\n",
+                    szPath,
+                    nResult == 0 ? "" : " FAILED",
+                    nVblank - group.nAnchor - 1,
+                    flSeconds,
+                    g_nPresents - group.nAnchorPresents);
+            it = group.offsets.erase(it);
+        }
     }
     ScheduleNextShot();
 }
@@ -359,15 +373,17 @@ void __wrap__Z14HostBreadcrumbPKc(const char *pszName) {
         }
         pthread_mutex_unlock(&g_lock);
     }
-    if (Drawing() && g_pszShotDirectory != nullptr && g_shotBreadcrumb == pszName) {
+    if (Drawing() && g_pszShotDirectory != nullptr) {
         const unsigned nVblank = HostVblankCount();
         pthread_mutex_lock(&g_lock);
-        if (!g_bShotAnchored) {
-            g_nShotAnchor = nVblank;
-            clock_gettime(CLOCK_MONOTONIC, &g_shotAnchorTime);
-            g_nShotAnchorPresents = g_nPresents;
-            g_bShotAnchored = true;
-            ScheduleNextShot();
+        for (ShotGroup &group : g_shotGroups) {
+            if (!group.bAnchored && group.breadcrumb == pszName) {
+                group.nAnchor = nVblank;
+                clock_gettime(CLOCK_MONOTONIC, &group.anchorTime);
+                group.nAnchorPresents = g_nPresents;
+                group.bAnchored = true;
+                ScheduleNextShot();
+            }
         }
         pthread_mutex_unlock(&g_lock);
     }
