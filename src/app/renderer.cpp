@@ -14,15 +14,14 @@
 #include "gfx/hostframe.h"
 #ifdef RESONANCE_HOST
 #include <cstdlib>
+#include <deque>
+#include <utility>
 
-#ifndef RESONANCE_HOST
-#line 15
-#endif
 #include "os/random.h" // gRandom, for the event log
 #include "sch/tempomap.h"
-#ifndef RESONANCE_HOST
-#line 16
 #endif
+#ifndef RESONANCE_HOST
+#line 17
 #endif
 #include "gfx/vram.h"
 #include "msg/barstatusmsg.h"
@@ -79,6 +78,33 @@ constexpr int kNoBar = -1;
 constexpr int kNoPowerup = -1;
 
 } // namespace
+
+#ifdef RESONANCE_HOST
+namespace {
+
+// FREQ_VIDEO_OFFSET_MS: the picture shows the song this much later (negative: earlier) than the
+// clock that judges, plays and scores it. A positive offset also holds each message for the frame
+// (catches, misses, captures) that long, so its effect lands where the drawn gems are; a negative
+// one cannot show an event before it happens, so those effects come |offset| late.
+long long VideoOffsetNs() {
+    static const long long s_nOffsetNs = static_cast<long long>(
+        atof(getenv("FREQ_VIDEO_OFFSET_MS") != nullptr ? getenv("FREQ_VIDEO_OFFSET_MS") : "0") * 1e6);
+    return s_nOffsetNs;
+}
+
+// Messages held back, with the song time PollMessages() took them at.
+std::deque<std::pair<long long, Message *> > g_heldMessages;
+bool g_bReleasing = false;
+
+// A message is due when the drawn time reaches its own, within the song clock's resolution (it
+// counts whole milliseconds, so frames are 16 or 17 ms apart).
+constexpr long long kHoldSlackNs = 1000000;
+
+} // namespace
+#endif
+#ifndef RESONANCE_HOST
+#line 72
+#endif
 
 // NTSC-U/C: 0x006e253c, PAL: 0x00725e44
 Renderer *g_pRenderer;
@@ -172,6 +198,15 @@ Renderer::Renderer()
 }
 
 Renderer::~Renderer() {
+#ifdef RESONANCE_HOST
+    for (auto &held : g_heldMessages) {
+        delete held.second; // never shown: the level is going
+    }
+    g_heldMessages.clear();
+#endif
+#ifndef RESONANCE_HOST
+#line 165
+#endif
     g_pRenderer = nullptr;
     delete mArena;
     delete mOverlay;
@@ -179,6 +214,15 @@ Renderer::~Renderer() {
 }
 
 void Renderer::DispatchPriv(Message *pMsg) {
+#ifdef RESONANCE_HOST
+    if (VideoOffsetNs() > 0 && !g_bReleasing) {
+        g_heldMessages.emplace_back(mSongClock->Now(), pMsg->Clone());
+        return;
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 172
+#endif
     int nType = pMsg->Type();
     if (nType == g_nGameBeginMsgType) {
         OnMsg(*static_cast<GameBeginMsg *>(pMsg));
@@ -193,10 +237,7 @@ void Renderer::DispatchPriv(Message *pMsg) {
 
 void Renderer::PollMessages() {
 #ifdef RESONANCE_HOST
-    // FREQ_VIDEO_OFFSET_MS: the picture shows the song this much later (negative: earlier) than
-    // the clock that judges, plays and scores it.
-    static const long long s_nVideoOffsetNs = static_cast<long long>(
-        atof(getenv("FREQ_VIDEO_OFFSET_MS") != nullptr ? getenv("FREQ_VIDEO_OFFSET_MS") : "0") * 1e6);
+    const long long s_nVideoOffsetNs = VideoOffsetNs();
     mSongTick = static_cast<float>(
         s_nVideoOffsetNs == 0 ?
             mSongClock->SongTick() :
@@ -219,11 +260,25 @@ void Renderer::PollMessages() {
     if (s_nVideoOffsetNs != 0) {
         HostEvent("drawn songtick=%d", static_cast<int>(mSongTick));
     }
-#ifndef RESONANCE_HOST
-#line 189
 #endif
+#ifndef RESONANCE_HOST
+#line 190
 #endif
     RendererBase::PollMessages();
+#ifdef RESONANCE_HOST
+    g_bReleasing = true;
+    while (!g_heldMessages.empty() &&
+           g_heldMessages.front().first <= mSongClock->Now() - s_nVideoOffsetNs + kHoldSlackNs) {
+        Message *pHeld = g_heldMessages.front().second;
+        g_heldMessages.pop_front();
+        DispatchPriv(pHeld);
+        delete pHeld;
+    }
+    g_bReleasing = false;
+#endif
+#ifndef RESONANCE_HOST
+#line 191
+#endif
 }
 
 void Renderer::Update() {

@@ -13,15 +13,17 @@
 # Latency, in ms. Audio and video offsets play the sound and draw the picture that much later than
 # the game judges (negative: earlier). The input offset judges your presses that much earlier: the
 # calibration sets it (Options > Game Options, press Square, tap any button with the 12 clicks;
-# Triangle cancels) and saves it here.
+# Triangle cancels) and saves it here. A positive video offset also delays catch effects with the
+# picture; a negative one cannot show them early.
 #FREQ_AUDIO_OFFSET_MS=0
 #FREQ_VIDEO_OFFSET_MS=0
 #FREQ_INPUT_OFFSET_MS=0
 
-# Assists, off by default. No fail: running out of energy never ends a song (1 = on).
+# Assists, off by default. No fail: running out of energy does not stop the song, but a song that
+# ran out still ends as a fail, with no progress or high score saved (1 = on).
 #FREQ_NO_FAIL=1
 # Timing window: the catch window times this (1.0 = original, 1.5 or 2.0 wider).
 #FREQ_TIMING_WINDOW=1.5
-# Unlock all: every arena and stage open, the game's own cheat; as with the cheat, songs played
-# with it on do not save progress or high scores (1 = on).
+# Unlock all: every arena and stage open from the start, as the game's own cheat opens them; unlike
+# the cheat, progress and high scores still save (1 = on).
 #FREQ_UNLOCK_ALL=1

@@ -46,9 +46,9 @@
 #endif
 #ifdef RESONANCE_HOST
 #include "gfx/hostframe.h"
-#ifndef RESONANCE_HOST
-#line 45
 #endif
+#ifndef RESONANCE_HOST
+#line 46
 #endif
 
 namespace {
@@ -1070,9 +1070,22 @@ void MetSoloStagesScreen::EnterAndShow() {
         return;
     }
 
+#ifdef RESONANCE_HOST
+    int HostUnlockAll(); // met/metfrontendstate.cpp: FREQ_UNLOCK_ALL
+    mUnlockAll = MetFrontEndState::shared()->mUnlockAll | HostUnlockAll();
+    RebuildLevelLists();
+    SetUpStages(mUnlockAll);
+#else
+#ifndef RESONANCE_HOST
+#line 1053
+#endif
     mUnlockAll = MetFrontEndState::shared()->mUnlockAll;
     RebuildLevelLists();
     SetUpStages(MetFrontEndState::shared()->mUnlockAll);
+#endif
+#ifndef RESONANCE_HOST
+#line 1056
+#endif
 
     if (MetFrontEndState::shared()->mPendingTransition != 0) {
         MetFrontEndState *pState = MetFrontEndState::shared();

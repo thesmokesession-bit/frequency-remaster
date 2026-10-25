@@ -33,9 +33,9 @@
 #endif
 #ifdef RESONANCE_HOST
 #include "gfx/hostframe.h"
-#ifndef RESONANCE_HOST
-#line 32
 #endif
+#ifndef RESONANCE_HOST
+#line 33
 #endif
 
 namespace {
@@ -183,7 +183,18 @@ void MetArenasScreen::EnterAndShow() {
     MetScreenTitleScreen::SetTitle(modeKind + arenas);
 
     mScreenshots->invalidate();
+#ifdef RESONANCE_HOST
+    int HostUnlockAll(); // met/metfrontendstate.cpp: FREQ_UNLOCK_ALL
+    SetupArenaButtons(MetFrontEndState::shared()->mUnlockAll | HostUnlockAll());
+#else
+#ifndef RESONANCE_HOST
+#line 179
+#endif
     SetupArenaButtons(MetFrontEndState::shared()->mUnlockAll);
+#endif
+#ifndef RESONANCE_HOST
+#line 180
+#endif
     MetHelpScreen::SelectPreset(MetText(kMetStrHStandardTitle, kStandardTitleLayout));
     MetScreen::EnterAndShow();
 }

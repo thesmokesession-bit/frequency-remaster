@@ -80,6 +80,12 @@
 #include "rnd/view.h"
 #include "script/configquery.h"
 #include "script/scripthost.h"
+#ifdef RESONANCE_HOST
+#include "gfx/hostframe.h"
+#endif
+#ifndef RESONANCE_HOST
+#line 82
+#endif
 
 namespace {
 
@@ -714,6 +720,13 @@ void AppTunnel::OnCatch(CatchMsg *pMsg) {
     const float flBlend = static_cast<float>(nGem) * kGemLaneScale + kGemLaneBase;
     const int nTrack = pMsg->mTrack;
     pPlayer->mActivator.mCatcher.Hit(nGem);
+#ifdef RESONANCE_HOST
+    HostEvent("tnlcatch hit=%d gemtick=%d drawn=%d", pMsg->mHit, pMsg->mTick,
+              static_cast<int>(mRenderer->mSongTick));
+#endif
+#ifndef RESONANCE_HOST
+#line 716
+#endif
     if (pMsg->mHit) {
         Transform xfm;
         PadTransformRows(xfm);

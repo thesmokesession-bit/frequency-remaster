@@ -60,6 +60,12 @@ static const char *const kForceFeedbackButton = "pangame_force_feedback.but";
 static const char *const kLeftArrowFormat = "arr_left_0%i.but";
 static const char *const kRightArrowFormat = "arr_right_0%i.but";
 
+#ifdef RESONANCE_HOST
+static const char *const kHintText = "host_calibrate_hint.txt";
+#endif
+#ifndef RESONANCE_HOST
+#line 62
+#endif
 static const char *const kTitleKey = "pangame_options";
 static const char *const kTabPreset = "pangame_tab_text";
 
@@ -197,10 +203,10 @@ bool CalibrationCommand(int nCommand, Rnd::Text *pLabel, Rnd::Text *pValue, cons
 
 } // namespace
 #endif
-
 #ifndef RESONANCE_HOST
-#line 85
+#line 84
 #endif
+
 MetConfigGameOptionsScreen::MetConfigGameOptionsScreen(MetRenderer *pRenderer, int nPriority)
     : MetScreenMultiSoundBank(
           pRenderer, nPriority, HxStr(kScreenName), HxStr(kDirectory), HxStr(kContainerName)),
@@ -224,6 +230,33 @@ void MetConfigGameOptionsScreen::ResolveContainerViews() {
     mRows->Add(HxStr(kForceFeedbackButton),
                MetConfigText(kMetStrPangameForceFeedback, kPromptConfigCode, kForceFeedbackRowKey));
 
+#ifdef RESONANCE_HOST
+    // The calibration hint: a copy of the second row's label, one row further down.
+    Rnd::Text *pFirstLabel = dynamic_cast<Rnd::Text *>(Rnd::TheManager.Find(HxStr(kAudioLabel)));
+    Rnd::Text *pSecondLabel =
+        dynamic_cast<Rnd::Text *>(Rnd::TheManager.Find(HxStr(kForceFeedbackLabel)));
+    if (pFirstLabel != nullptr && pSecondLabel != nullptr &&
+        Rnd::TheManager.Find(HxStr(kHintText)) == nullptr) {
+        Rnd::Text *pHint = Rnd::Text::sNew(HxStr(kHintText));
+        pHint->Copy(pSecondLabel, 0);
+        for (int i = 0; i < 3; ++i) {
+            pHint->mLocalXfm[3][i] =
+                2.0f * pSecondLabel->mLocalXfm[3][i] - pFirstLabel->mLocalXfm[3][i];
+        }
+        pHint->mDirty = 1;
+        pHint->SetShowing(1); // the label it copies is hidden until the screen shows it
+        pHint->SetText(HxStr("SQUARE: CALIBRATE"));
+        if (Rnd::Drawable *pDrawParent = pSecondLabel->Drawable::Parent()) {
+            pDrawParent->AddDraw(pHint, pSecondLabel);
+        }
+        if (Rnd::Transformable *pTransParent = pSecondLabel->Transformable::Parent()) {
+            pTransParent->AddTrans(pHint);
+        }
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 108
+#endif
     mLeftArrows.resize(kRowCount);
     mRightArrows.resize(kRowCount);
     for (int nRow = 0; nRow < kRowCount; ++nRow) {
