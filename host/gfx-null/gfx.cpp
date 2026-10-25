@@ -12,6 +12,7 @@
 // a tick comes as soon as the game waits for one, so a run is independent of the host's speed.
 
 #include <atomic>
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -322,6 +323,17 @@ int HostTestGemColor(int nColor) {
         return pszValue != nullptr ? atoi(pszValue) : -1;
     }();
     return nForced >= 0 ? nForced : nColor;
+}
+
+void HostGemDump(const char *pszText) {
+    const char *pszPath = getenv("FREQ_GEM_DUMP");
+    // The game defines its own fopen() and write() (src/os/filelog.cpp), as in host/audio/audio.cpp.
+    const int nFile = pszPath != nullptr ? open(pszPath, O_WRONLY | O_CREAT | O_APPEND, 0644) : -1;
+    FILE *pFile = nFile >= 0 ? fdopen(nFile, "a") : nullptr;
+    if (pFile != nullptr) {
+        fputs(pszText, pFile);
+        fclose(pFile);
+    }
 }
 
 int HostWaitVblank() {

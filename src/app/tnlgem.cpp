@@ -32,9 +32,10 @@ enum ColorIndex {
 
 inline Color ParticleColor(int nColor) {
 #ifdef RESONANCE_HOST
+    // TnlColorFromName() gives the same five colours, and applies FREQ_GEM_PALETTE=cb.
+    static const char *const kNames[] = {"null", "green", "red", "yellow", "purple"};
     if (HostGemPalette() != 0 && nColor >= 0 && nColor < 5) {
-        return Color{
-            kCbGemColors[nColor][0], kCbGemColors[nColor][1], kCbGemColors[nColor][2], 1.0f};
+        return TnlColorFromName(HxStr(kNames[nColor]));
     }
 #endif
 #ifndef RESONANCE_HOST

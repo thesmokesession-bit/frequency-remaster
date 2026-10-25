@@ -151,16 +151,18 @@ extern float g_flTunnelBrightness;
 extern "C" int HostGemPalette(); // FREQ_GEM_PALETTE=cb, host/gfx-null/gfx.cpp
 
 /**
- * The gem colour of each colour index (null, green, red, yellow, purple) under FREQ_GEM_PALETTE=cb:
- * Okabe-Ito based, tuned on the rendered gems to stay apart under deuteranopia and protanopia, with
- * a lightness order as a second cue (null white, then yellow, green, blue for purple, and a dark
- * vermilion for red).
+ * FREQ_GEM_PALETTE=cb recolour of one sRGB colour (components 0 to 1, in place) toward colour index
+ * nColor (null, green, red, yellow, purple): in OKLab the hue becomes the target's, the chroma is
+ * scaled and L takes a gamma, per colour (tnlutil.cpp), so shading, black, white highlights and
+ * alpha survive. Out-of-gamut results lose chroma, not lightness.
  */
-constexpr float kCbGemColors[5][3] = {
-    {1.0f, 1.0f, 1.0f},
-    {0.0f, 0.713f, 0.519f},
-    {0.626f, 0.277f, 0.0f},
-    {0.941f, 0.894f, 0.259f},
-    {0.0f, 0.447f, 0.698f},
-};
+void TnlCbRecolour(float *pRgb, int nColor);
+
+/** The colour index of a player colour name, or -1 for any other name. */
+int TnlCbIndex(const HxStr &name);
+
+/**
+ * color through TnlCbRecolour() when FREQ_GEM_PALETTE=cb and nColor is 0 to 4; otherwise color.
+ */
+Color TnlCbColor(const Color &color, int nColor);
 #endif

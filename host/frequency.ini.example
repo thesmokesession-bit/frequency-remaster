@@ -13,5 +13,6 @@
 #FREQ_HUD_EDGES=1
 # Strength of the motion trails (score text trails, feedback blur): 1 = original, 0.5, 0 = off.
 #FREQ_TRAILS=0.5
-# Gem colours: original, or cb for a palette that stays distinct with red-green colour blindness.
+# Player colours (gems, catcher, pointer, lane, HUD): original, or cb for colours that stay
+# distinct with red-green colour blindness.
 #FREQ_GEM_PALETTE=cb

@@ -3,6 +3,15 @@
 #include "met/metstrings.h"
 #include "os/formatstring.h"
 
+#ifdef RESONANCE_HOST
+#include "app/tnlutil.h"
+// FREQ_GEM_PALETTE=cb wraps HudColorFromName() (end of file); the body below is the original.
+#define HudColorFromName HudColorFromNameOriginal
+#endif
+#ifndef RESONANCE_HOST
+#line 4
+#endif
+
 namespace {
 
 // Share of full red in the colour `purple` selects.
@@ -68,3 +77,10 @@ Color HudColorFromName(HxStr name) {
 HxStr NextHudName() {
     return HxStr(Rnd::MakeString("<hud%04d>", ++g_nHudNameCounter));
 }
+
+#ifdef RESONANCE_HOST
+#undef HudColorFromName
+Color HudColorFromName(HxStr name) {
+    return TnlCbColor(HudColorFromNameOriginal(name), TnlCbIndex(name));
+}
+#endif
