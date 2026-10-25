@@ -19,5 +19,5 @@
 # as the HUD's song-position blocks show them (p3 or p3-4). Counted from 1.
 #FREQ_PRACTICE_LOOP=9-16
 
-# Sample playback interpolation: linear (default, the SPU2 model's), cubic, or sinc (8 taps).
+# Sample playback interpolation: gaussian (default, the console's), linear, cubic, or sinc (8 taps).
 #FREQ_SPU_INTERP=sinc
