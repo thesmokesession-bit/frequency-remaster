@@ -571,7 +571,8 @@ void Catcher::SchedulePostGemCommand(int nTick) {
         if (nSlot >= 0 && bFree) {
             AutoplayPress(mClock, nSlot, mTrack, nGemTick, nGem);
         } else if (nSlot >= 0) {
-            const int nNow = mClock->SongTick();
+            // Decided on the judged clock and pressed autoplay-late, as a lagging player would.
+            const int nNow = mClock->SongTick() - JudgeTicks();
             int nTarget = -1;
             for (int nTrack = 0; nTrack < kChannels; ++nTrack) {
                 const int nTick = g_autoplayTracks[nTrack].nFreeTick;
@@ -585,8 +586,9 @@ void Catcher::SchedulePostGemCommand(int nTick) {
                 const bool bRight = nSteps <= kChannels / 2;
                 for (int i = 0; i < (bRight ? nSteps : kChannels - nSteps); ++i) {
                     const int nAction = bRight ? kActionRotateRight : kActionRotateLeft;
-                    PostAutoplay(mClock, nNow + 1 + 2 * i, nSlot, nAction, 0, 1.0f);
-                    PostAutoplay(mClock, nNow + 2 + 2 * i, nSlot, nAction, 0, 0.0f);
+                    const int nAt = nNow + g_nAutoplayTicks + 1 + 2 * i;
+                    PostAutoplay(mClock, nAt, nSlot, nAction, 0, 1.0f);
+                    PostAutoplay(mClock, nAt + 1, nSlot, nAction, 0, 0.0f);
                 }
                 HostEvent("autoplay move from=%d to=%d", mTrack, nTarget);
                 AutoplayPress(mClock, nSlot, nTarget, g_autoplayTracks[nTarget].nFreeTick,
