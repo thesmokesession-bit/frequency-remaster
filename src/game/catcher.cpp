@@ -28,14 +28,17 @@
 #include "game/grooveworld.h"
 #include "sch/tempomap.h"
 
-extern "C" int HostRand(void); // host/core/libc.c: the console C library's rand()
+extern "C" int HostRand(void);                           // host/core/libc.c: the console C library's rand()
+extern "C" long long HostSongOffsetNs(long long nWallNs); // host/audio/audio.cpp
 
 namespace {
 
 // Live presses are judged FREQ_INPUT_OFFSET_MS earlier, and each gem's miss deadline moves as
-// much; a demo plays back as recorded. FREQ_TEST_AUTOPLAY_MS, a test control, presses each gem of a
-// local player's track that many ms late through the controller path. Both are read at Start().
-int g_nJudgeTicks = 0;
+// much; a demo plays back as recorded. At a practice speed the offset is the song time it spans
+// there, plus the time stretch's lag (HostSongOffsetNs()). FREQ_TEST_AUTOPLAY_MS, a test control,
+// presses each gem of a local player's track that many ms late through the controller path. Both
+// are read at Start().
+long long g_nInputOffsetNs = 0;
 bool g_bAutoplay = false;
 int g_nAutoplayTicks = 0;
 
@@ -48,8 +51,11 @@ bool IsLive() {
     return Application::shared()->GetGameManager()->IsPlaybackActive() == 0;
 }
 
-int JudgeTicks() {
-    return IsLive() ? g_nJudgeTicks : 0;
+int JudgeTicks(Sch::TickClock *pClock) {
+    return IsLive() ? static_cast<int>(std::llround(
+                          static_cast<double>(HostSongOffsetNs(g_nInputOffsetNs)) /
+                          pClock->mTempoMap->mNanosecondsPerTick)) :
+                      0;
 }
 
 constexpr int kActionPitchRiff = 0x72706368;   // InputMap's `rpch`
@@ -412,7 +418,7 @@ void Catcher::PostCatchMsg(PitchRiffMsg *pMsg) {
     }
 
 #ifdef RESONANCE_HOST
-    const int nTick = MakePosition(pMsg->mPosition.mTick - JudgeTicks()).mTick;
+    const int nTick = MakePosition(pMsg->mPosition.mTick - JudgeTicks(mClock)).mTick;
 #else
 #ifndef RESONANCE_HOST
 #line 306
@@ -558,7 +564,7 @@ void Catcher::SchedulePostGemCommand(int nTick) {
 
     PostGemCmd *pCommand = new PostGemCmd(this, nGemTick);
 #ifdef RESONANCE_HOST
-    mClock->PostAtSongTick(pCommand, MakePosition(when.mTick + JudgeTicks()).mTick, mPostGemCommand);
+    mClock->PostAtSongTick(pCommand, MakePosition(when.mTick + JudgeTicks(mClock)).mTick, mPostGemCommand);
     if (g_bAutoplay && IsLive() && mTrack >= 0 && mTrack < kChannels) {
         // The autoplay plays the player's track; once it is captured, it moves to the track whose
         // next free gem comes first.
@@ -572,7 +578,7 @@ void Catcher::SchedulePostGemCommand(int nTick) {
             AutoplayPress(mClock, nSlot, mTrack, nGemTick, nGem);
         } else if (nSlot >= 0) {
             // Decided on the judged clock and pressed autoplay-late, as a lagging player would.
-            const int nNow = mClock->SongTick() - JudgeTicks();
+            const int nNow = mClock->SongTick() - JudgeTicks(mClock);
             int nTarget = -1;
             for (int nTrack = 0; nTrack < kChannels; ++nTrack) {
                 const int nTick = g_autoplayTracks[nTrack].nFreeTick;
@@ -777,7 +783,7 @@ void Catcher::OnInvalidateSeeker(InvalidateSeekerMsg *pMsg) {
 void Catcher::Start() {
 #ifdef RESONANCE_HOST
     const char *pszOffset = getenv("FREQ_INPUT_OFFSET_MS");
-    g_nJudgeTicks = pszOffset != nullptr ? MsToTicks(mClock, pszOffset) : 0;
+    g_nInputOffsetNs = pszOffset != nullptr ? std::llround(atof(pszOffset) * 1e6) : 0;
     const char *pszAutoplay = getenv("FREQ_TEST_AUTOPLAY_MS");
     g_bAutoplay = pszAutoplay != nullptr;
     if (mTrack >= 0 && mTrack < kChannels) {

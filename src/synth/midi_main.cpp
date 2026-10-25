@@ -23,6 +23,7 @@
 #include "synth/callbackxferhdtoiop.h"
 
 #ifdef RESONANCE_HOST
+#include <stdlib.h>
 extern long long g_llHostCommandLateNs;                              // src/app/scheduler.cpp
 extern "C" void HostMidiQueued(unsigned nOffset, long long nLateNs); // host/audio/audio.cpp
 #endif
@@ -735,6 +736,26 @@ void SendMidiToDriver(unsigned char nStatus, unsigned char nData1, unsigned char
         nBank = nData2;
     }
 #ifdef RESONANCE_HOST
+    // Test controls, so a test hears the song alone. FREQ_TEST_MIDI_MUTE=15 (channels 0 to 15,
+    // comma-separated) drops note-ons on those channels: the sound effects (PlaySynthSound()), or a
+    // track the player plays. FREQ_TEST_MIDI_FIXED_MIX=1 drops pan and expression (controllers 10
+    // and 11), which Mixer sets from the play: the track selected, the tracks on, a mute.
+    static const bool s_bFixedMix = getenv("FREQ_TEST_MIDI_FIXED_MIX") != nullptr;
+    if (s_bFixedMix && nType == kMidiControlChange && (nData1 == 10 || nData1 == 11)) {
+        return;
+    }
+    static const unsigned s_nMuted = [] {
+        unsigned nMask = 0;
+        for (const char *p = getenv("FREQ_TEST_MIDI_MUTE"); p != nullptr && *p != '\0';) {
+            char *pEnd;
+            nMask |= 1u << (strtol(p, &pEnd, 10) & kMidiChannelMask);
+            p = *pEnd == ',' ? pEnd + 1 : nullptr;
+        }
+        return nMask;
+    }();
+    if (nType == 0x90 && (s_nMuted >> (nStatus & kMidiChannelMask) & 1) != 0) {
+        return;
+    }
     // The message's due time, for the host to play it at: now, less how late the scheduler
     // command sending it runs.
     HostMidiQueued(msinBf.mValidSize, g_llHostCommandLateNs);

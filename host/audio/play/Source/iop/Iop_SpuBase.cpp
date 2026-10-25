@@ -1,5 +1,6 @@
 #include <cassert>
 #include <cstring>
+#include <cstdlib>
 #include <cmath>
 #include <climits>
 #include <algorithm>
@@ -1257,6 +1258,7 @@ void CSpuBase::CSampleReader::SaveState(CRegisterState& channelState) const
 void CSpuBase::CSampleReader::SetParams(uint32 address, uint32 repeat)
 {
 	m_srcSampleIdx = 0;
+	memset(m_history, 0, sizeof(m_history));
 	m_nextSampleAddr = address & (m_ramSize - 1);
 	m_repeatAddr = repeat & (m_ramSize - 1);
 	m_s1 = 0;
@@ -1284,14 +1286,139 @@ void CSpuBase::CSampleReader::SetPitch(uint32 baseSamplingRate, uint16 pitch)
 	UpdateSampleStep();
 }
 
+// resonance: FREQ_SPU_INTERP picks the voice interpolation: unset or gaussian, the console's
+// 4-point Gaussian (its spectrum matches the PCSX2 reference capture within 0.05 dB over 2-16 kHz,
+// where Play!'s linear is up to 9.6 dB too bright); linear, Play!'s two-point linear; cubic,
+// 4-point Catmull-Rom; sinc, 8-tap Lanczos (a = 4) windowed sinc.
+namespace
+{
+	enum
+	{
+		INTERP_LINEAR,
+		INTERP_GAUSSIAN,
+		INTERP_CUBIC,
+		INTERP_SINC,
+	};
+
+	int ReadInterpolation()
+	{
+		const char* value = getenv("FREQ_SPU_INTERP");
+		if(value == nullptr) return INTERP_GAUSSIAN;
+		if(!strcmp(value, "linear")) return INTERP_LINEAR;
+		if(!strcmp(value, "cubic")) return INTERP_CUBIC;
+		if(!strcmp(value, "sinc")) return INTERP_SINC;
+		return INTERP_GAUSSIAN;
+	}
+
+	const int g_interpolation = ReadInterpolation();
+
+	// The SPU's Gaussian table, as the nocash psx-spx documentation lists it ("4-Point Gaussian
+	// Interpolation"); the PS2's SPU2 interpolates the same way. Each phase's 4 weights sum to
+	// 0x8000 less about 0.4 %.
+	const int16 g_gauss[512] = {
+		-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+		0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 3, 3,
+		3, 4, 4, 5, 5, 6, 7, 7, 8, 9, 9, 10, 11, 12, 13, 14,
+		15, 16, 17, 18, 19, 21, 22, 24, 25, 27, 28, 30, 32, 33, 35, 37,
+		39, 41, 44, 46, 48, 51, 53, 56, 58, 61, 64, 67, 70, 73, 77, 80,
+		84, 87, 91, 95, 99, 103, 107, 111, 116, 120, 125, 130, 135, 140, 145, 150,
+		156, 161, 167, 173, 179, 186, 192, 199, 205, 212, 219, 227, 234, 242, 250, 257,
+		266, 274, 283, 291, 300, 309, 319, 328, 338, 348, 358, 369, 379, 390, 401, 412,
+		424, 436, 448, 460, 473, 485, 498, 512, 525, 539, 553, 567, 582, 597, 612, 627,
+		643, 659, 675, 692, 708, 726, 743, 761, 779, 797, 816, 835, 854, 874, 894, 914,
+		935, 956, 977, 999, 1020, 1043, 1066, 1089, 1112, 1136, 1160, 1184, 1209, 1234, 1260, 1286,
+		1312, 1339, 1366, 1394, 1422, 1450, 1479, 1508, 1537, 1567, 1598, 1628, 1660, 1691, 1723, 1756,
+		1789, 1822, 1856, 1890, 1924, 1959, 1995, 2031, 2067, 2104, 2141, 2179, 2217, 2256, 2295, 2334,
+		2374, 2415, 2456, 2497, 2539, 2582, 2624, 2668, 2712, 2756, 2801, 2846, 2892, 2938, 2985, 3032,
+		3079, 3128, 3176, 3225, 3275, 3325, 3376, 3427, 3479, 3531, 3584, 3637, 3691, 3745, 3799, 3855,
+		3910, 3967, 4023, 4081, 4138, 4197, 4255, 4315, 4374, 4435, 4495, 4557, 4619, 4681, 4744, 4807,
+		4871, 4935, 5000, 5065, 5131, 5197, 5264, 5332, 5399, 5468, 5536, 5606, 5676, 5746, 5817, 5888,
+		5959, 6032, 6104, 6177, 6251, 6325, 6400, 6475, 6550, 6626, 6702, 6779, 6856, 6934, 7012, 7091,
+		7170, 7249, 7329, 7409, 7490, 7571, 7653, 7735, 7817, 7900, 7983, 8066, 8150, 8234, 8319, 8404,
+		8489, 8575, 8661, 8748, 8834, 8922, 9009, 9097, 9185, 9273, 9362, 9451, 9541, 9630, 9720, 9811,
+		9901, 9992, 10083, 10174, 10266, 10358, 10450, 10542, 10635, 10727, 10820, 10913, 11007, 11100, 11194, 11288,
+		11382, 11476, 11571, 11665, 11760, 11855, 11950, 12045, 12140, 12236, 12331, 12427, 12522, 12618, 12714, 12809,
+		12905, 13001, 13097, 13193, 13289, 13385, 13481, 13577, 13673, 13769, 13865, 13961, 14056, 14152, 14248, 14343,
+		14439, 14534, 14630, 14725, 14820, 14915, 15010, 15104, 15199, 15293, 15387, 15481, 15575, 15669, 15762, 15855,
+		15948, 16041, 16133, 16226, 16317, 16409, 16500, 16592, 16682, 16773, 16863, 16953, 17042, 17131, 17220, 17308,
+		17396, 17484, 17571, 17658, 17744, 17830, 17916, 18001, 18086, 18170, 18254, 18337, 18420, 18502, 18584, 18665,
+		18746, 18826, 18905, 18985, 19063, 19141, 19219, 19295, 19372, 19447, 19522, 19597, 19671, 19744, 19816, 19888,
+		19959, 20030, 20100, 20169, 20238, 20306, 20373, 20439, 20505, 20570, 20634, 20698, 20760, 20822, 20884, 20944,
+		21004, 21063, 21121, 21178, 21235, 21290, 21345, 21399, 21452, 21505, 21556, 21607, 21657, 21706, 21754, 21801,
+		21848, 21893, 21938, 21982, 22025, 22066, 22107, 22148, 22187, 22225, 22262, 22299, 22334, 22369, 22402, 22435,
+		22467, 22498, 22527, 22556, 22584, 22611, 22637, 22662, 22686, 22709, 22731, 22752, 22772, 22791, 22809, 22826,
+		22842, 22857, 22872, 22885, 22897, 22908, 22918, 22927, 22935, 22942, 22948, 22953, 22957, 22960, 22962, 22963,
+	};
+
+	// Taps k = -3..4 around the sample before the read position, for 256 fractions, summing to 1 << 14.
+	struct SincTable
+	{
+		int16 taps[256][8];
+		SincTable()
+		{
+			for(int phase = 0; phase < 256; phase++)
+			{
+				double weights[8];
+				double sum = 0;
+				for(int k = 0; k < 8; k++)
+				{
+					const double x = (k - 3) - phase / 256.0;
+					const auto sinc = [](double v) { return v == 0 ? 1.0 : sin(M_PI * v) / (M_PI * v); };
+					weights[k] = sinc(x) * sinc(x / 4);
+					sum += weights[k];
+				}
+				for(int k = 0; k < 8; k++) taps[phase][k] = static_cast<int16>(lrint(weights[k] / sum * 16384));
+			}
+		}
+	};
+}
+
+int32 CSpuBase::CSampleReader::Interpolate(uint32 index, int32 alpha) const
+{
+	const auto at = [&](int position) -> int32 { return position < 0 ? m_history[4 + position] : m_buffer[position]; };
+	const int i = static_cast<int>(index);
+	int32 result;
+	if(g_interpolation == INTERP_GAUSSIAN)
+	{
+		// psx-spx: i is the fraction's top 8 bits; oldest, older, old, new are the samples before,
+		// at, and after the read position, and each product is shifted down 15 bits.
+		const int g = alpha >> 4;
+		result = ((g_gauss[0xff - g] * at(i - 1)) >> 15) + ((g_gauss[0x1ff - g] * at(i)) >> 15) +
+		         ((g_gauss[0x100 + g] * at(i + 1)) >> 15) + ((g_gauss[g] * at(i + 2)) >> 15);
+	}
+	else if(g_interpolation == INTERP_CUBIC)
+	{
+		const float t = alpha / static_cast<float>(PITCH_BASE);
+		const float pm1 = at(i - 1), p0 = at(i), p1 = at(i + 1), p2 = at(i + 2);
+		result = static_cast<int32>(lrintf(p0 + 0.5f * t * (p1 - pm1 + t * (2 * pm1 - 5 * p0 + 4 * p1 - p2 + t * (3 * (p0 - p1) + p2 - pm1)))));
+	}
+	else
+	{
+		static const SincTable table;
+		const int16* taps = table.taps[alpha >> 4];
+		int32 sum = 0;
+		for(int k = 0; k < 8; k++) sum += at(i - 3 + k) * taps[k];
+		result = (sum + (1 << 13)) >> 14;
+	}
+	return std::clamp<int32>(result, SHRT_MIN, SHRT_MAX);
+}
+
 int32 CSpuBase::CSampleReader::GetSample()
 {
 	uint32 srcSampleIdx = m_srcSampleIdx / PITCH_BASE;
 	int32 srcSampleAlpha = m_srcSampleIdx % PITCH_BASE;
-	int32 currentSample = m_buffer[srcSampleIdx];
-	int32 nextSample = m_buffer[srcSampleIdx + 1];
-	int32 resultSample = (currentSample * (PITCH_BASE - srcSampleAlpha) / PITCH_BASE) +
-	                     (nextSample * srcSampleAlpha / PITCH_BASE);
+	int32 resultSample;
+	if(g_interpolation == INTERP_LINEAR)
+	{
+		int32 currentSample = m_buffer[srcSampleIdx];
+		int32 nextSample = m_buffer[srcSampleIdx + 1];
+		resultSample = (currentSample * (PITCH_BASE - srcSampleAlpha) / PITCH_BASE) +
+		               (nextSample * srcSampleAlpha / PITCH_BASE);
+	}
+	else
+	{
+		resultSample = Interpolate(srcSampleIdx, srcSampleAlpha);
+	}
 	m_srcSampleIdx += m_sampleStep;
 	if(srcSampleIdx >= BUFFER_SAMPLES)
 	{
@@ -1305,6 +1432,7 @@ void CSpuBase::CSampleReader::AdvanceBuffer()
 {
 	if(m_nextValid)
 	{
+		memcpy(m_history, m_buffer + BUFFER_SAMPLES - 4, sizeof(m_history));
 		memmove(m_buffer, m_buffer + BUFFER_SAMPLES, sizeof(int16) * BUFFER_SAMPLES);
 		UnpackSamples(m_buffer + BUFFER_SAMPLES);
 	}

@@ -19,6 +19,7 @@
 
 #include "os/random.h" // gRandom, for the event log
 #include "sch/tempomap.h"
+extern "C" long long HostSongOffsetNs(long long nWallNs); // host/audio/audio.cpp
 #endif
 #ifndef RESONANCE_HOST
 #line 17
@@ -85,11 +86,13 @@ namespace {
 // FREQ_VIDEO_OFFSET_MS: the picture shows the song this much later (negative: earlier) than the
 // clock that judges, plays and scores it. A positive offset also holds each message for the frame
 // (catches, misses, captures) that long, so its effect lands where the drawn gems are; a negative
-// one cannot show an event before it happens, so those effects come |offset| late.
+// one cannot show an event before it happens, so those effects come |offset| late. In song time
+// (HostSongOffsetNs()): at a practice speed, the offset's wall time at that speed, plus the time
+// stretch's lag, so the picture keeps with the stretched sound.
 long long VideoOffsetNs() {
     static const long long s_nOffsetNs = static_cast<long long>(
         atof(getenv("FREQ_VIDEO_OFFSET_MS") != nullptr ? getenv("FREQ_VIDEO_OFFSET_MS") : "0") * 1e6);
-    return s_nOffsetNs;
+    return HostSongOffsetNs(s_nOffsetNs);
 }
 
 // Messages held back, with the song time PollMessages() took them at.

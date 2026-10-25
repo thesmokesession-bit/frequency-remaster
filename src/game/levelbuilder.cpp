@@ -10,6 +10,13 @@
 #include "sch/tempomap.h"
 #include "script/configquery.h"
 
+#ifdef RESONANCE_HOST
+extern "C" int HostPracticeLoop(int *pFirst, int *pEnd); // host/audio/audio.cpp
+#endif
+#ifndef RESONANCE_HOST
+#line 11
+#endif
+
 namespace {
 
 // NTSC-U/C: 0x001ec328, PAL: 0x001f25b0
@@ -147,6 +154,15 @@ PlayMap *LevelBuilder::GetPlayMap() {
 }
 
 int LevelBuilder::GetEndBar() {
+#ifdef RESONANCE_HOST
+    int nLoopFirst, nLoopEnd;
+    if (HostPracticeLoop(&nLoopFirst, &nLoopEnd) != 0) {
+        return mPlayMap->GetEndBar(); // a practice loop's, never reached: the song plays on
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 149
+#endif
     return mPlayMap->GetLength();
 }
 

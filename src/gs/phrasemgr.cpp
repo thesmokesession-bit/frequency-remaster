@@ -28,6 +28,13 @@
 #include "msg/refreshnetmsg.h"
 #include "sch/command.h"
 #include "sch/tickclock.h"
+
+#ifdef RESONANCE_HOST
+extern "C" int HostPracticeRepeatsFrom(void); // host/audio/audio.cpp
+#endif
+#ifndef RESONANCE_HOST
+#line 30
+#endif
 #include "script/configquery.h"
 
 namespace {
@@ -441,6 +448,17 @@ void PhraseMgr::OnExportCommand(int nBar) {
     mRefreshing = 1;
     mWindowStart = nBar - 1;
     mWindowEnd = nBar + mConfig + 1;
+#ifdef RESONANCE_HOST
+    // A practice loop's repeats come back to play: a repeated bar enters the window without what
+    // was caught there on the last pass.
+    if (nBar + mConfig >= HostPracticeRepeatsFrom() &&
+        mDatabase->GetPhraseAt(nBar + mConfig) != nullptr) {
+        ClearPhrase(nBar + mConfig, 0);
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 443
+#endif
     RefreshBar(nBar + mConfig, 0);
     mRefreshing = 0;
 

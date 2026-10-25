@@ -34,6 +34,13 @@
 #include "script/scripthost.h"
 #include "synth/ps2hardsynth.h"
 
+#ifdef RESONANCE_HOST
+extern "C" int HostPracticeArm(int bPlayback); // host/audio/audio.cpp: FREQ_PRACTICE...
+#endif
+#ifndef RESONANCE_HOST
+#line 35
+#endif
+
 namespace {
 
 // Script templates the manager publishes its settings through.
@@ -442,6 +449,12 @@ void GameManagerImpl::OnBeginGameLocal(Message *) {
         mpMetaWorld->GetRenderer()->Dispatch(&recording);
     }
 
+#ifdef RESONANCE_HOST
+    HostPracticeArm(0); // a game the player plays may be a practice run
+#endif
+#ifndef RESONANCE_HOST
+#line 444
+#endif
     CreateWorld();
     FinishWorldLoad();
     mpWorld->mIsPlayback = 0;
@@ -488,6 +501,12 @@ void GameManagerImpl::Load(IBStream *pStream) {
     }
 
     Renderer::LoadLevel(mParams);
+#ifdef RESONANCE_HOST
+    HostPracticeArm(1); // a recorded game (the attract demo)
+#endif
+#ifndef RESONANCE_HOST
+#line 490
+#endif
     CreateWorld();
     FinishWorldLoad(); // The binary expands this body inline here.
     mpWorld->mIsPlayback = 1;
