@@ -1370,7 +1370,7 @@ void CGSH_OpenGL::SetupTexture(uint64 primReg, uint64 tex0Reg, uint64 tex1Reg, u
 		if(indexed) MakeLinearCLUT(tex0, clut);
 		uint64 key = TexReplace::Key(texInfo.contentHash, tex0, clut.data());
 		TexReplace::Image hd;
-		if(TexReplace::Bind(key, texInfo.contentHash, m_pRAM, tex0, indexed ? clut.data() : nullptr, hd))
+		if(TexReplace::Bind(key, texInfo.contentHash, m_pRAM, tex0, indexed ? clut.data() : nullptr, clamp, hd))
 		{
 			GLuint& handle = m_replacementTextures[key];
 			if(!hd.rgba.empty())

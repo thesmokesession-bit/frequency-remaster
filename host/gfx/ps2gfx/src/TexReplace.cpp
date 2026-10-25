@@ -31,6 +31,7 @@ namespace
 		uint64 texels;
 		std::vector<uint32> tbps;
 		std::string name;
+		uint32 wrapS = 0, wrapT = 0; // bit per CLAMP mode seen
 	};
 
 	// GS thread only.
@@ -189,13 +190,19 @@ namespace
 		int fd = open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
 		FILE* f = fd >= 0 ? fdopen(fd, "w") : nullptr;
 		if(!f) return;
-		fprintf(f, "# key\tkind\tpsm\tcpsm\twidth\theight\tfirst\tcount\ttbp0\tname\ttexels\n");
+		fprintf(f, "# key\tkind\tpsm\tcpsm\twidth\theight\tfirst\tcount\ttbp0\tname\ttexels\twrap\n");
 		for(const auto& [key, e] : rows)
 		{
 			fprintf(f, "%016llx\t%s\t0x%02x\t0x%02x\t%u\t%u\t%u\t%u\t", static_cast<unsigned long long>(key), e->kind, e->psm, e->cpsm,
 			        e->width, e->height, e->first, e->count);
 			for(size_t i = 0; i < e->tbps.size(); i++) fprintf(f, i ? ",%u" : "%u", e->tbps[i]);
-			fprintf(f, "\t%s\t%016llx\n", e->name.empty() ? "-" : e->name.c_str(), static_cast<unsigned long long>(e->texels));
+			fprintf(f, "\t%s\t%016llx\t", e->name.empty() ? "-" : e->name.c_str(), static_cast<unsigned long long>(e->texels));
+			for(uint32 axis = 0; axis < 2; axis++)
+			{
+				for(uint32 mode = 0; mode < 4; mode++)
+					if(((axis ? e->wrapT : e->wrapS) >> mode) & 1) fputc("rcCR"[mode], f);
+				fputc(axis ? '\n' : '/', f);
+			}
 		}
 		fclose(f);
 		rename(tmp.c_str(), (std::string(g_dumpDir) + "/index.tsv").c_str());
@@ -265,7 +272,7 @@ uint64 TexReplace::Key(uint64 texelHash, const TEX0& tex0, const uint32* clut)
 	return XXH3_64bits_withSeed(usedClut, entries * sizeof(uint32), texelHash ^ (static_cast<uint64>(tex0.nCPSM) << 56));
 }
 
-bool TexReplace::Bind(uint64 key, uint64 texelHash, uint8* ram, const TEX0& tex0, const uint32* clut, Image& hd)
+bool TexReplace::Bind(uint64 key, uint64 texelHash, uint8* ram, const TEX0& tex0, const uint32* clut, const CGSHandler::CLAMP& clamp, Image& hd)
 {
 	bool isNew;
 	const char* kind = "file";
@@ -282,6 +289,9 @@ bool TexReplace::Bind(uint64 key, uint64 texelHash, uint8* ram, const TEX0& tex0
 	}
 	auto& e = Note(key, texelHash, kind, tex0, isNew);
 	if(isNew) e.name = name;
+	if(!((e.wrapS >> clamp.nWMS) & (e.wrapT >> clamp.nWMT) & 1)) g_indexDirty = true;
+	e.wrapS |= 1 << clamp.nWMS;
+	e.wrapT |= 1 << clamp.nWMT;
 	if(e.kind[0] == 'g') return false; // the game's own drawing stays as drawn
 	if(isNew)
 	{

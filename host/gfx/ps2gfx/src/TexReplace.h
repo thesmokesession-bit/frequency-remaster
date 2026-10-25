@@ -2,8 +2,9 @@
 //
 // FREQ_TEX_DUMP=<dir> writes each distinct texture the GS samples once, as <dir>/<key>.png (RGBA,
 // decoded through its CLUT), and keeps <dir>/index.tsv: key, kind, PSM, CPSM, size, the present it
-// was first drawn in, the presents it was drawn in, the TBP0s it was seen at, a name, and the
-// texel hash (equal for the CLUT variants of one texture).
+// was first drawn in, the presents it was drawn in, the TBP0s it was seen at, a name, the
+// texel hash (equal for the CLUT variants of one texture), and the CLAMP wrap modes it was drawn
+// with, S/T, each the set of r (REPEAT), c (CLAMP), C (REGION_CLAMP), R (REGION_REPEAT) seen.
 // FREQ_TEX_REPLACE=<dir> draws <dir>/<key>.png, of any integer multiple of the texture's size, in
 // place of the texture.
 //
@@ -39,7 +40,7 @@ namespace TexReplace
 
 	// Every textured state the GS sets up, on the GS thread. True when the key has a replacement;
 	// the first time, hd holds it and the renderer makes its texture.
-	bool Bind(uint64 key, uint64 texelHash, uint8* ram, const CGSHandler::TEX0& tex0, const uint32* clut, Image& hd);
+	bool Bind(uint64 key, uint64 texelHash, uint8* ram, const CGSHandler::TEX0& tex0, const uint32* clut, const CGSHandler::CLAMP& clamp, Image& hd);
 	// A GS framebuffer sampled as a texture.
 	void BindRenderTarget(const CGSHandler::TEX0& tex0);
 	// Each presented frame, on the GS thread.
