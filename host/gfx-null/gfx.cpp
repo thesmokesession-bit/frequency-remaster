@@ -291,6 +291,14 @@ int HostWidescreen() {
     return bWidescreen;
 }
 
+int HostHudEdges() {
+    static const bool bEdges = [] {
+        const char *pszValue = getenv("FREQ_HUD_EDGES");
+        return HostWidescreen() != 0 && pszValue != nullptr && strcmp(pszValue, "1") == 0;
+    }();
+    return bEdges;
+}
+
 float HostTrails() {
     static const float flTrails = [] {
         const char *pszValue = getenv("FREQ_TRAILS");

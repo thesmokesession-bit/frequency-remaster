@@ -84,6 +84,10 @@ void HostEvent(const char *pszFormat, ...);
  */
 int HostWidescreen(void);
 
+/** FREQ_HUD_EDGES=1 (with FREQ_WIDESCREEN=1): the head-up display's side parts sit at the screen
+ *  edges rather than in the centre 4:3 box. */
+int HostHudEdges(void);
+
 /** FREQ_TRAILS: strength of the motion trails (the text trails and the feedback blur), 0 to 1;
  *  1, the default, is the original. */
 float HostTrails(void);

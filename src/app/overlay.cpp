@@ -52,6 +52,86 @@
 #include "script/configquery.h"
 #include "script/scripthost.h"
 
+#ifdef RESONANCE_HOST
+#include "rnd/blur.h"
+#include "rnd/cam.h"
+
+extern "C" int HostHudEdges(); // host/gfx-null/gfx.cpp
+
+namespace {
+
+// FREQ_HUD_EDGES=1 in 16:9: the parts of the head-up display left or right of the centre move from
+// the centre 4:3 box to the screen edges. Each run of side parts in the layout's draw list is drawn
+// through a copy of the HUD camera whose screen rectangle is shifted by the side band, an eighth of
+// the frame (the 4:3 box is 3/4 of it), and a plain copy selects the unshifted view again for the
+// centred parts (track name, messages, letterbox, screen flash) that follow.
+constexpr float kSideBand = 0.125f;
+// A part whose origin lies further than this from the centre, in HUD units (about a pixel of the
+// 640-pixel frame each), belongs to a side.
+constexpr float kSideX = 64.0f;
+
+std::vector<Rnd::Cam *> g_edgeCams;
+Rnd::View *g_pEdgeLayout;
+
+float HudSide(Rnd::Drawable *pDraw, float flCurrent) {
+    if (Rnd::Blur *pBlur = dynamic_cast<Rnd::Blur *>(pDraw)) {
+        pDraw = pBlur->GetText() != nullptr ? static_cast<Rnd::Drawable *>(pBlur->GetText()) :
+                                              pBlur->GetMesh();
+    }
+    Rnd::Transformable *pXfm = dynamic_cast<Rnd::Transformable *>(pDraw);
+    if (pXfm == nullptr) {
+        return flCurrent; // the environment and empty blurs stay with their neighbours
+    }
+    if (pDraw->mName == "HUD screen rect") {
+        return 0.0f; // the full-screen flash, whose origin is its corner
+    }
+    const float flX = pXfm->mWorldXfm[3][0];
+    return flX < -kSideX ? -1.0f : (flX > kSideX ? 1.0f : 0.0f);
+}
+
+void AnchorHudToEdges(Rnd::View *pLayout) {
+    Rnd::Cam *pCam = dynamic_cast<Rnd::Cam *>(Rnd::TheManager.Find(HxStr("hud.cam")));
+    if (pCam == nullptr) {
+        return;
+    }
+    pLayout->UpdateWorldXfm(nullptr, 1);
+    g_pEdgeLayout = pLayout;
+    float flSide = 0.0f;
+    const std::list<Rnd::Drawable *> draws = pLayout->GetDraws();
+    for (std::list<Rnd::Drawable *>::const_iterator it = draws.begin(); it != draws.end(); ++it) {
+        if (*it == pCam) {
+            continue;
+        }
+        const float flNext = HudSide(*it, flSide);
+        if (flNext == flSide) {
+            continue;
+        }
+        flSide = flNext;
+        Rnd::Cam *pSideCam = Rnd::NewCamThroughHook(
+            HxStr(Rnd::MakeString("hud edge cam%d", (int)g_edgeCams.size())));
+        pSideCam->Copy(pCam, 0);
+        Rnd::Cam::Rect rect = pCam->mScreenRect;
+        rect.x += flSide * kSideBand;
+        pSideCam->SetScreenRect(rect);
+        pLayout->AddDraw(pSideCam, *it);
+        g_edgeCams.push_back(pSideCam);
+    }
+}
+
+void ReleaseHudEdges() {
+    for (std::vector<Rnd::Cam *>::iterator it = g_edgeCams.begin(); it != g_edgeCams.end(); ++it) {
+        g_pEdgeLayout->RemoveDraw(*it);
+        delete *it;
+    }
+    g_edgeCams.clear();
+}
+
+} // namespace
+#endif
+#ifndef RESONANCE_HOST
+#line 53
+#endif
+
 #ifdef VIDEO_STANDARD_PAL
 #include <libscf.h>
 
@@ -267,11 +347,25 @@ Overlay::Overlay(Renderer *pRenderer) : mPanel(nullptr), mRenderer(pRenderer) {
             (*it)->mFreq.SetPulsing(1);
         }
     }
+#ifdef RESONANCE_HOST
+    if (HostHudEdges() != 0) {
+        AnchorHudToEdges(pLayout);
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 269
+#endif
     g_pOverlay = this;
 }
 
 Overlay::~Overlay() {
     g_pOverlay = nullptr;
+#ifdef RESONANCE_HOST
+    ReleaseHudEdges();
+#endif
+#ifndef RESONANCE_HOST
+#line 274
+#endif
     for (std::vector<HudBadge *>::iterator it = mBadges.begin(); it != mBadges.end(); ++it) {
         delete *it;
     }
