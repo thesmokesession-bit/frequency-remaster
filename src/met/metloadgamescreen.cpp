@@ -205,6 +205,13 @@ void MetLoadGameScreen::OnFadeInDone() {
     } else {
         BeginGameLocalMsg msg;
         Application::shared()->GetGameManager()->QueueMessage(&msg);
+#ifdef RESONANCE_HOST
+        void HostBreadcrumb(const char *pszName); // host/io/pad.cpp
+        HostBreadcrumb("GAME_STARTED");
+#endif
+#ifndef RESONANCE_HOST
+#line 207
+#endif
     }
     mRenderer->RemoveScreen(this);
     MetFrontEndState::shared()->mSettingsDirty = 0;

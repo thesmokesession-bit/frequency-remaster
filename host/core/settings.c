@@ -5,6 +5,7 @@
 // open()/read() because host/io/stdio.cpp's fopen() serves the game's file layer.
 
 #include <fcntl.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -33,4 +34,43 @@ __attribute__((constructor(101))) static void LoadSettings(void) {
         }
         setenv(pszKey, pszValue, 0); // the environment wins over the file
     }
+}
+
+// Set one option for this run and keep it in the settings file: the file's line for the key is
+// replaced, or one is added. Returns 0 when the file could not be written.
+int HostSaveSetting(const char *pszKey, const char *pszValue) {
+    setenv(pszKey, pszValue, 1);
+    const char *pszPath = getenv("FREQ_CONFIG") != NULL ? getenv("FREQ_CONFIG") : "frequency.ini";
+    static char s_szOld[65536];
+    static char s_szNew[65536 + 256];
+    ssize_t nSize = 0;
+    const int nIn = open(pszPath, O_RDONLY);
+    if (nIn >= 0) {
+        nSize = read(nIn, s_szOld, sizeof(s_szOld) - 1);
+        close(nIn);
+    }
+    s_szOld[nSize > 0 ? nSize : 0] = '\0';
+    const size_t nKey = strlen(pszKey);
+    size_t nUsed = 0;
+    for (char *pszLine = s_szOld; *pszLine != '\0';) {
+        char *pszEnd = pszLine + strcspn(pszLine, "\n");
+        const size_t nLine = (size_t)(pszEnd - pszLine) + (*pszEnd == '\n');
+        const char *pszText = pszLine + strspn(pszLine, " \t");
+        if (!(strncmp(pszText, pszKey, nKey) == 0 && strchr(" \t=", pszText[nKey]) != NULL)) {
+            memcpy(s_szNew + nUsed, pszLine, nLine);
+            nUsed += nLine;
+        }
+        pszLine += nLine;
+    }
+    if (nUsed > 0 && s_szNew[nUsed - 1] != '\n') {
+        s_szNew[nUsed++] = '\n';
+    }
+    nUsed += (size_t)snprintf(s_szNew + nUsed, 256, "%s=%s\n", pszKey, pszValue);
+    const int nOut = open(pszPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (nOut < 0) {
+        return 0;
+    }
+    const int bOk = write(nOut, s_szNew, nUsed) == (ssize_t)nUsed;
+    close(nOut);
+    return bOk;
 }

@@ -13,7 +13,16 @@
 #include "gfx/gfxdevice.h"
 #include "gfx/hostframe.h"
 #ifdef RESONANCE_HOST
+#include <cstdlib>
+
+#ifndef RESONANCE_HOST
+#line 15
+#endif
 #include "os/random.h" // gRandom, for the event log
+#include "sch/tempomap.h"
+#ifndef RESONANCE_HOST
+#line 16
+#endif
 #endif
 #include "gfx/vram.h"
 #include "msg/barstatusmsg.h"
@@ -183,7 +192,27 @@ void Renderer::DispatchPriv(Message *pMsg) {
 }
 
 void Renderer::PollMessages() {
+#ifdef RESONANCE_HOST
+    // FREQ_VIDEO_OFFSET_MS: the picture shows the song this much later (negative: earlier) than
+    // the clock that judges, plays and scores it.
+    static const long long s_nVideoOffsetNs = static_cast<long long>(
+        atof(getenv("FREQ_VIDEO_OFFSET_MS") != nullptr ? getenv("FREQ_VIDEO_OFFSET_MS") : "0") * 1e6);
+    mSongTick = static_cast<float>(
+        s_nVideoOffsetNs == 0 ?
+            mSongClock->SongTick() :
+            Sch::Tick(static_cast<int>((mSongClock->Now() - s_nVideoOffsetNs +
+                                        mSongClock->mTempoMap->mCeilingBias) /
+                                       mSongClock->mTempoMap->mNanosecondsPerTick))
+                .mTick);
+#else
+#ifndef RESONANCE_HOST
+#line 185
+#endif
     mSongTick = static_cast<float>(mSongClock->SongTick());
+#endif
+#ifndef RESONANCE_HOST
+#line 186
+#endif
 #ifdef RESONANCE_HOST
     HostEvent(
         "frame songtick=%d songns=%lld rng=%d", mSongClock->SongTick(), mSongClock->Now(), gRandom);

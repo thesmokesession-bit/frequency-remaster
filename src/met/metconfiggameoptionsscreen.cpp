@@ -83,6 +83,124 @@ inline Rnd::Button *FindArrow(const char *pszFormat, int nNumber) {
 
 } // namespace
 
+#ifdef RESONANCE_HOST
+#include <algorithm>
+#include <cstdlib>
+
+#include "app/playsound.h"
+#include "app/timeclock.h"
+#include "gfx/hostframe.h"
+#include "sch/cmdid.h"
+#include "sch/command.h"
+
+extern "C" int HostSaveSetting(const char *pszKey, const char *pszValue); // host/core/settings.c
+
+namespace {
+
+// Latency calibration, Square on this screen. The game's own key click sounds every 30 NTSC blanks;
+// the player taps any button but Triangle with it, which cancels. After kCalibrationTaps taps the
+// median of tap minus nearest click is the judging offset, FREQ_INPUT_OFFSET_MS, kept in the
+// settings file. Times are the watchdog's, as presses in a song are.
+constexpr long long kClickNs = 500500000;
+constexpr int kCalibrationTaps = 12;
+constexpr int kSquareCommand = 8; // MetCommandMap's code for Square
+
+bool g_bCalibrating = false;
+long long g_nFirstClickNs = 0;
+std::vector<long long> g_lags;
+Sch::CmdID g_clickCommand;
+
+long long WatchdogTimerNs() {
+    return Application::shared()->GetWatchdogTimer()->Now();
+}
+
+class CalibrationClickCmd : public Sch::Command {
+public:
+    virtual int CmdID() {
+        return sCmdID;
+    }
+    virtual void Execute();
+    virtual void Print(std::ostream &stream) {
+        stream << "{Calibration/Click}";
+    }
+    static int sCmdID;
+};
+
+int CalibrationClickCmd::sCmdID;
+
+void PostClick(long long nInNs) {
+    CalibrationClickCmd *pCommand = new CalibrationClickCmd;
+    g_clickCommand.mValue = -2; // unallocated
+    Application::shared()->GetWatchdogTimer()->PostIn(pCommand, Sch::Time{nInNs}, g_clickCommand, 0);
+    pCommand->Release();
+}
+
+void CalibrationClickCmd::Execute() {
+    PlaySoundByName("SND_MET_KEY1");
+    HostEvent("calclick ns=%lld", WatchdogTimerNs());
+    PostClick(kClickNs);
+}
+
+void StopCalibration() {
+    g_bCalibrating = false;
+    Application::shared()->GetWatchdogTimer()->Withdraw(g_clickCommand);
+}
+
+// Handle a command while calibrating, or Square to start; false leaves it to the screen.
+bool CalibrationCommand(int nCommand, Rnd::Text *pLabel, Rnd::Text *pValue, const HxStr &label) {
+    char szText[32];
+    if (!g_bCalibrating) {
+        if (nCommand != kSquareCommand) {
+            return false;
+        }
+        g_bCalibrating = true;
+        g_lags.clear();
+        g_nFirstClickNs = WatchdogTimerNs() + kClickNs;
+        PostClick(kClickNs);
+        pLabel->SetText(HxStr("LATENCY"));
+        snprintf(szText, sizeof(szText), "TAP %d", kCalibrationTaps);
+        pValue->SetText(HxStr(szText));
+        return true;
+    }
+    if (nCommand == kMetScreenCommandBack) {
+        StopCalibration();
+        pLabel->SetText(label);
+        return false; // and the screen leaves as Back does
+    }
+    const long long nSince = WatchdogTimerNs() - g_nFirstClickNs;
+    if (nSince < -kClickNs / 2) {
+        return true; // before the first click
+    }
+    long long nLag = (nSince % kClickNs + kClickNs) % kClickNs;
+    if (nLag >= kClickNs / 2) {
+        nLag -= kClickNs;
+    }
+    g_lags.push_back(nLag);
+    HostEvent("caltap lag_ns=%lld", nLag);
+    if (static_cast<int>(g_lags.size()) < kCalibrationTaps) {
+        snprintf(szText, sizeof(szText), "TAP %d", kCalibrationTaps - static_cast<int>(g_lags.size()));
+        pValue->SetText(HxStr(szText));
+        return true;
+    }
+    StopCalibration();
+    pLabel->SetText(label);
+    std::sort(g_lags.begin(), g_lags.end());
+    const long long nMedian = (g_lags[kCalibrationTaps / 2 - 1] + g_lags[kCalibrationTaps / 2]) / 2;
+    const int nMs = static_cast<int>((nMedian + (nMedian < 0 ? -500000 : 500000)) / 1000000);
+    snprintf(szText, sizeof(szText), "%d", nMs);
+    const int bSaved = HostSaveSetting("FREQ_INPUT_OFFSET_MS", szText);
+    HostEvent("calibration lag_ms=%d median_ns=%lld saved=%d", nMs, nMedian, bSaved);
+    snprintf(szText, sizeof(szText), "LAG %d MS", nMs);
+    pValue->SetText(HxStr(szText));
+    return true;
+}
+
+} // namespace
+#endif
+
+#ifndef RESONANCE_HOST
+#line 85
+#endif
 MetConfigGameOptionsScreen::MetConfigGameOptionsScreen(MetRenderer *pRenderer, int nPriority)
     : MetScreenMultiSoundBank(
           pRenderer, nPriority, HxStr(kScreenName), HxStr(kDirectory), HxStr(kContainerName)),
@@ -119,6 +237,17 @@ MetConfigGameOptionsScreen::~MetConfigGameOptionsScreen() {
 }
 
 void MetConfigGameOptionsScreen::HandleCommand(const MetScreenCommand *pCommand) {
+#ifdef RESONANCE_HOST
+    if (CalibrationCommand(pCommand->mCommand,
+                           dynamic_cast<Rnd::Text *>(Rnd::TheManager.Find(HxStr(kAudioLabel))),
+                           mRows->GetButton(kRowAudio)->mText,
+                           MetConfigText(kMetStrPangameAudioLbl, kPromptConfigCode, kAudioLabelKey))) {
+        return;
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 121
+#endif
     switch (pCommand->mCommand) {
     case kMetScreenCommandPrevious:
         mRows->SelectPrevious();
