@@ -216,6 +216,12 @@ void Renderer::PollMessages() {
 #ifdef RESONANCE_HOST
     HostEvent(
         "frame songtick=%d songns=%lld rng=%d", mSongClock->SongTick(), mSongClock->Now(), gRandom);
+    if (s_nVideoOffsetNs != 0) {
+        HostEvent("drawn songtick=%d", static_cast<int>(mSongTick));
+    }
+#ifndef RESONANCE_HOST
+#line 189
+#endif
 #endif
     RendererBase::PollMessages();
 }
