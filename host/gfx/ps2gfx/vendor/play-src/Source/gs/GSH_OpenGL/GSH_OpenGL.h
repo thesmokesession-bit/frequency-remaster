@@ -98,6 +98,7 @@ private:
 		unsigned int alphaFailMethod : 2;
 		unsigned int alphaTestDepthTest_DepthFetch : 1;
 		unsigned int alphaTestDepthTestEqual_DepthFetch : 1;
+		unsigned int texScaledLinear : 1; //resonance: a framebuffer drawn at m_lineScale, filtered over one GS texel
 
 		bool isIndexedTextureSource() const
 		{
@@ -138,6 +139,7 @@ private:
 		GLint texture0WrapT;
 		bool texture0AlphaAsIndex;
 		bool texture0Replaced; // TexReplace: an RGBA8 HD texture, drawn as a direct-colour texture
+		bool texture0Framebuffer; //resonance: texture0 is a framebuffer (drawn at m_fbScale)
 		GLuint texture1Handle;
 		GLsizei viewportWidth;
 		GLsizei viewportHeight;
@@ -275,6 +277,7 @@ private:
 		float scaleRatioY = 1;
 		bool alphaAsIndex = false;
 		uint64 contentHash = 0; // TexReplace: texel hash of a cached texture, 0 for a framebuffer
+		bool isFramebuffer = false; //resonance
 	};
 
 	struct TEXTUREFORMAT_INFO
@@ -401,6 +404,7 @@ private:
 
 	bool m_forceBilinearTextures = false;
 	unsigned int m_fbScale = 1;
+	unsigned int m_lineScale = 1; //resonance: width of a line and size of a point, in pixels
 	bool m_multisampleEnabled = false;
 	bool m_depthTestingEnabled = true;
 	bool m_alphaBlendingEnabled = true;

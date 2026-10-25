@@ -274,6 +274,10 @@ void CGSH_OpenGL::NotifyPreferencesChangedImpl()
 void CGSH_OpenGL::LoadPreferences()
 {
 	m_fbScale = CAppConfig::GetInstance().GetPreferenceInteger(PREF_CGSH_OPENGL_RESOLUTION_FACTOR);
+	//resonance: FREQ_SCALE_EFFECTS (default on) draws a line or a point one GS pixel wide, m_fbScale
+	//pixels, as on the PS2. Off keeps GL's one pixel, a hairline at a high resolution factor.
+	const char* scaleEffects = getenv("FREQ_SCALE_EFFECTS");
+	m_lineScale = (scaleEffects && !strcmp(scaleEffects, "off")) ? 1 : m_fbScale;
 	m_forceBilinearTextures = CAppConfig::GetInstance().GetPreferenceBoolean(PREF_CGSH_OPENGL_FORCEBILINEARTEXTURES);
 }
 
@@ -1242,6 +1246,7 @@ void CGSH_OpenGL::SetupTexture(uint64 primReg, uint64 tex0Reg, uint64 tex1Reg, u
 	m_renderState.texture0WrapS = GL_CLAMP_TO_EDGE;
 	m_renderState.texture0WrapT = GL_CLAMP_TO_EDGE;
 	m_renderState.texture0Replaced = false;
+	m_renderState.texture0Framebuffer = false;
 	m_validGlState &= ~GLSTATE_TEXTURE;
 
 	auto prim = make_convertible<PRMODE>(primReg);
@@ -1262,6 +1267,7 @@ void CGSH_OpenGL::SetupTexture(uint64 primReg, uint64 tex0Reg, uint64 tex1Reg, u
 	auto texInfo = PrepareTexture(tex0);
 	m_renderState.texture0Handle = texInfo.textureHandle;
 	m_renderState.texture0AlphaAsIndex = texInfo.alphaAsIndex;
+	m_renderState.texture0Framebuffer = texInfo.isFramebuffer;
 
 	//Setup sampling modes
 	switch(tex1.nMagFilter)
@@ -1766,6 +1772,13 @@ void CGSH_OpenGL::FlushVertexBuffer()
 		// texBilinearFilter keeps the indexed filter's sampling position
 		shaderCaps.texSourceMode = TEXTURE_SOURCE_MODE_STD;
 	}
+	//resonance: a framebuffer drawn at m_lineScale and read through a linear filter (the feedback
+	//blur, render targets) is filtered over one GS texel, so it softens as much as at 1x.
+	if(m_lineScale > 1 && m_renderState.texture0Framebuffer && shaderCaps.texSourceMode == TEXTURE_SOURCE_MODE_STD &&
+	   (m_renderState.texture0MinFilter == GL_LINEAR || m_renderState.texture0MagFilter == GL_LINEAR))
+	{
+		shaderCaps.texScaledLinear = 1;
+	}
 	auto shader = GetShaderFromCaps(shaderCaps);
 	if(*shader != m_renderState.shaderHandle)
 	{
@@ -1893,6 +1906,28 @@ void CGSH_OpenGL::DoRenderPass()
 	default:
 		assert(false);
 		break;
+	}
+
+	//resonance: GL's wide lines and points are the GS's, scaled: a line spans m_lineScale pixels
+	//across its minor axis, a point is m_lineScale pixels square, both centred where GL draws one.
+	if(m_lineScale > 1 && primitiveMode != GL_TRIANGLES)
+	{
+		glLineWidth(static_cast<float>(m_lineScale));
+		glPointSize(static_cast<float>(m_lineScale));
+	}
+	//resonance: PS2GFX_DRAW_ONLY=lines (a measurement aid) leaves out triangles and textured sprites
+	//and draws untextured sprites (the clear) black, so only lines and points show. With
+	//=lines+feedback, sprites textured from a framebuffer (the feedback blur) draw too.
+	static const char* drawOnly = getenv("PS2GFX_DRAW_ONLY");
+	static const bool drawOnlyLines = drawOnly && !strncmp(drawOnly, "lines", 5);
+	static const bool keepFeedback = drawOnly && !strcmp(drawOnly, "lines+feedback");
+	const bool textured = m_renderState.shaderCaps.texSourceMode != TEXTURE_SOURCE_MODE_NONE;
+	if(drawOnlyLines && primitiveMode == GL_TRIANGLES && !(keepFeedback && m_primitiveType == PRIM_SPRITE && textured && m_renderState.texture0Framebuffer))
+	{
+		if(m_primitiveType != PRIM_SPRITE || textured) return;
+		glEnable(GL_BLEND);
+		glBlendFuncSeparate(GL_ZERO, GL_ZERO, GL_ZERO, GL_ZERO);
+		m_validGlState &= ~GLSTATE_BLEND;
 	}
 
 	glDrawArrays(primitiveMode, 0, m_vertexBuffer.size());
