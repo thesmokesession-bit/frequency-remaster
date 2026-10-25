@@ -1296,8 +1296,12 @@ void CGSH_OpenGL::SetupTexture(uint64 primReg, uint64 tex0Reg, uint64 tex1Reg, u
 		m_renderState.texture0MagFilter = GL_LINEAR;
 		m_renderState.texture0MinFilter = GL_LINEAR;
 	}
-	GLint replacementMinFilter = (m_renderState.texture0MinFilter == GL_LINEAR) ? GL_LINEAR_MIPMAP_LINEAR : GL_NEAREST_MIPMAP_NEAREST;
-	GLint replacementMagFilter = m_renderState.texture0MagFilter;
+	// An indexed texture is filtered in the shader whenever either filter is linear; its HD
+	// replacement then takes GL's linear filters in both directions.
+	bool replacementLinear[2] = {m_renderState.texture0MinFilter == GL_LINEAR, m_renderState.texture0MagFilter == GL_LINEAR};
+	if(CGsPixelFormats::IsPsmIDTEX(tex0.nPsm)) replacementLinear[0] = replacementLinear[1] = replacementLinear[0] || replacementLinear[1];
+	GLint replacementMinFilter = replacementLinear[0] ? GL_LINEAR_MIPMAP_LINEAR : GL_NEAREST_MIPMAP_NEAREST;
+	GLint replacementMagFilter = replacementLinear[1] ? GL_LINEAR : GL_NEAREST;
 
 	unsigned int clampMin[2] = {0, 0};
 	unsigned int clampMax[2] = {0, 0};
@@ -1758,9 +1762,9 @@ void CGSH_OpenGL::FlushVertexBuffer()
 	auto shaderCaps = m_renderState.shaderCaps;
 	if(m_renderState.texture0Replaced && shaderCaps.texSourceMode != TEXTURE_SOURCE_MODE_NONE)
 	{
-		// TexReplace: the HD texture holds the colours an indexed texture would look up
+		// TexReplace: the HD texture holds the colours an indexed texture would look up; a set
+		// texBilinearFilter keeps the indexed filter's sampling position
 		shaderCaps.texSourceMode = TEXTURE_SOURCE_MODE_STD;
-		shaderCaps.texBilinearFilter = 0;
 	}
 	auto shader = GetShaderFromCaps(shaderCaps);
 	if(*shader != m_renderState.shaderHandle)
