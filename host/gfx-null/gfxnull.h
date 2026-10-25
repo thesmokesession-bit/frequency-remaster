@@ -84,6 +84,27 @@ void HostEvent(const char *pszFormat, ...);
  */
 int HostWidescreen(void);
 
+/** FREQ_HUD_EDGES=1 (with FREQ_WIDESCREEN=1): the head-up display's side parts sit at the screen
+ *  edges rather than in the centre 4:3 box. */
+int HostHudEdges(void);
+
+/** FREQ_TRAILS: strength of the motion trails (the text trails and the feedback blur), 0 to 1;
+ *  1, the default, is the original. */
+float HostTrails(void);
+
+/** FREQ_GEM_PALETTE=cb: the five player colours (gems and their flashes, catcher, pointer, sabre
+ *  trail, lane tint, HUD) are recoloured to stay distinct under deuteranopia and protanopia
+ *  (TnlCbRecolour(), src/app/tnlutil.h). */
+int HostGemPalette(void);
+
+/** Test hook FREQ_TEST_GEMCOLOR=<0..4>: every plain gem takes that colour index (null, green, red,
+ *  yellow, purple) instead of nColor. */
+int HostTestGemColor(int nColor);
+
+/** Test hook FREQ_GEM_DUMP=<file>: appends pszText to that file (the game's own stdio does not reach
+ *  the host file system). */
+void HostGemDump(const char *pszText);
+
 #ifdef __cplusplus
 }
 #endif

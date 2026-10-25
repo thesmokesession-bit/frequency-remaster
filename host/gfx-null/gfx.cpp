@@ -12,6 +12,7 @@
 // a tick comes as soon as the game waits for one, so a run is independent of the host's speed.
 
 #include <atomic>
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -293,6 +294,50 @@ int HostWidescreen() {
         return pszValue != nullptr && strcmp(pszValue, "1") == 0;
     }();
     return bWidescreen;
+}
+
+int HostHudEdges() {
+    static const bool bEdges = [] {
+        const char *pszValue = getenv("FREQ_HUD_EDGES");
+        return HostWidescreen() != 0 && pszValue != nullptr && strcmp(pszValue, "1") == 0;
+    }();
+    return bEdges;
+}
+
+float HostTrails() {
+    static const float flTrails = [] {
+        const char *pszValue = getenv("FREQ_TRAILS");
+        const float flValue = pszValue != nullptr ? strtof(pszValue, nullptr) : 1.0f;
+        return flValue < 0.0f ? 0.0f : flValue > 1.0f ? 1.0f : flValue;
+    }();
+    return flTrails;
+}
+
+int HostGemPalette() {
+    static const bool bCb = [] {
+        const char *pszValue = getenv("FREQ_GEM_PALETTE");
+        return pszValue != nullptr && strcmp(pszValue, "cb") == 0;
+    }();
+    return bCb;
+}
+
+int HostTestGemColor(int nColor) {
+    static const int nForced = [] {
+        const char *pszValue = getenv("FREQ_TEST_GEMCOLOR");
+        return pszValue != nullptr ? atoi(pszValue) : -1;
+    }();
+    return nForced >= 0 ? nForced : nColor;
+}
+
+void HostGemDump(const char *pszText) {
+    const char *pszPath = getenv("FREQ_GEM_DUMP");
+    // The game defines its own fopen() and write() (src/os/filelog.cpp), as in host/audio/audio.cpp.
+    const int nFile = pszPath != nullptr ? open(pszPath, O_WRONLY | O_CREAT | O_APPEND, 0644) : -1;
+    FILE *pFile = nFile >= 0 ? fdopen(nFile, "a") : nullptr;
+    if (pFile != nullptr) {
+        fputs(pszText, pFile);
+        fclose(pFile);
+    }
 }
 
 int HostWaitVblank() {

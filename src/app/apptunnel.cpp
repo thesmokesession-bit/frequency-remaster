@@ -1,5 +1,211 @@
 #include "app/apptunnel.h"
 
+#ifdef RESONANCE_HOST
+#include <algorithm>
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <vector>
+
+#include "app/tnlutil.h"
+#include "os/formatstring.h"
+#include "rnd/manager.h"
+#include "rnd/mat.h"
+#include "rnd/mesh.h"
+#include "rnd/multimesh.h"
+#include "rnd/string.h"
+#include "rnd/tex.h"
+#include "rndartt/acanvas.h"
+#include "rndartt/apalette.h"
+
+extern "C" int HostTestGemColor(int nColor);         // host/gfx-null/gfx.cpp
+extern "C" void HostGemDump(const char *pszText); // host/gfx-null/gfx.cpp
+
+namespace {
+
+// FREQ_GEM_PALETTE=cb: the textures and materials drawn in a player's colour (the hex gems, the
+// catcher, pointer and sabre trail, the HUD score font) are recoloured with TnlCbRecolour(). Gem
+// letters follow the colour index order (null gems are blue); the other assets take the first
+// letter of the colour name.
+constexpr char kGemLetters[] = "bgryp";
+constexpr char kPlayerLetters[] = "ngryp";
+const char *const kColorNames[] = {"null", "green", "red", "yellow", "purple"};
+
+// The palettes this file wrote, so a texture still loaded from an earlier song is not recoloured
+// twice; and the same for material colours.
+std::vector<std::pair<Rnd::Tex *, APalette *>> g_recoloured;
+std::vector<std::pair<Rnd::Mat *, Color>> g_recolouredMats;
+
+// FREQ_GEM_DUMP=<file> (tests): appends each recoloured texture's size, format, palette before and
+// after, and how many texels use each palette entry.
+void DumpTex(Rnd::Tex *pTex, const ABitmap &bitmap, const APalette &before, const APalette &after) {
+    std::vector<unsigned> counts(before.mEnd, 0);
+    const unsigned char *pRows = static_cast<const unsigned char *>(static_cast<void *>(bitmap.mPixels));
+    const bool b4 = bitmap.mFormat == kABitmapFormatLinear4;
+    for (int y = 0; y < bitmap.mHeight && pRows != nullptr; ++y) {
+        for (int x = 0; x < bitmap.mWidth; ++x) {
+            const unsigned char b = pRows[y * bitmap.mBytesPerRow + (b4 ? x / 2 : x)];
+            const int i = b4 ? ((x & 1) != 0 ? b >> 4 : b & 15) : b;
+            if (i < before.mEnd) {
+                ++counts[i];
+            }
+        }
+    }
+    char buf[64];
+    std::string text = std::string("TEX ") + pTex->mName.mStr;
+    snprintf(buf, sizeof(buf), " %d %d %d\n", bitmap.mWidth, bitmap.mHeight, int(bitmap.mFormat));
+    text += buf;
+    const APalette *pals[2] = {&before, &after};
+    for (int k = 0; k < 2; ++k) {
+        text += k == 0 ? "BEFORE" : "AFTER";
+        for (int i = 0; i < before.mEnd; ++i) {
+            snprintf(buf, sizeof(buf), " %08x", pals[k]->mEntries[i]);
+            text += buf;
+        }
+        text += "\n";
+    }
+    text += "COUNT";
+    for (unsigned n : counts) {
+        snprintf(buf, sizeof(buf), " %u", n);
+        text += buf;
+    }
+    text += "\n";
+    HostGemDump(text.c_str());
+}
+
+void RecolourTex(Rnd::Tex *pTex, int nColor) {
+    ACanvas *pCanvas = pTex->LockMipBitmap(0, 0, 0);
+    if (pCanvas == nullptr || pCanvas->mBitmap.mPalette == nullptr) {
+        HostGemDump((std::string("SKIP ") + pTex->mName.mStr + " not palettised\n").c_str());
+        return;
+    }
+    const ABitmap &bitmap = pCanvas->mBitmap;
+    const APalette *pPalette = bitmap.mPalette;
+    for (auto it = g_recoloured.begin(); it != g_recoloured.end(); ++it) {
+        if (it->first == pTex &&
+            memcmp(it->second->mEntries, pPalette->mEntries, pPalette->mEnd * sizeof(pPalette->mEntries[0])) == 0) {
+            return;
+        }
+    }
+    APalette *pNew = new APalette(pPalette->mEntries, pPalette->mEnd);
+    for (int i = 0; i < pPalette->mEnd; ++i) {
+        const unsigned int nEntry = pPalette->mEntries[i];
+        float rgb[3];
+        for (int c = 0; c < 3; ++c) {
+            rgb[c] = static_cast<float>((nEntry >> (8 * c)) & 0xffu) / 255.0f;
+        }
+        TnlCbRecolour(rgb, nColor);
+        unsigned int nOut = nEntry & 0xff000000u; // alpha
+        for (int c = 0; c < 3; ++c) {
+            nOut |= static_cast<unsigned int>(rgb[c] * 255.0f + 0.5f) << (8 * c);
+        }
+        pNew->mEntries[i] = nOut;
+    }
+    DumpTex(pTex, bitmap, *pPalette, *pNew);
+    pTex->SetPalette(pNew, 0);
+    g_recoloured.push_back(std::make_pair(pTex, pNew));
+}
+
+void RecolourMat(Rnd::Mat *pMat, int nColor) {
+    for (auto it = g_recolouredMats.begin(); it != g_recolouredMats.end(); ++it) {
+        if (it->first == pMat && memcmp(&it->second, &pMat->mEmissive, sizeof(Color)) == 0) {
+            return;
+        }
+    }
+    pMat->SetAmbient(TnlCbColor(pMat->mAmbient, nColor));
+    pMat->SetDiffuse(TnlCbColor(pMat->mDiffuse, nColor));
+    pMat->SetEmissive(TnlCbColor(pMat->mEmissive, nColor));
+    g_recolouredMats.push_back(std::make_pair(pMat, pMat->mEmissive));
+    char buf[160];
+    snprintf(buf, sizeof(buf), "MAT %s %d diffuse %.3f %.3f %.3f emissive %.3f %.3f %.3f\n",
+             pMat->mName.mStr, nColor, pMat->mDiffuse.r, pMat->mDiffuse.g, pMat->mDiffuse.b,
+             pMat->mEmissive.r, pMat->mEmissive.g, pMat->mEmissive.b);
+    HostGemDump(buf);
+}
+
+template <typename T>
+T *FindAs(const char *pszName) {
+    return dynamic_cast<T *>(Rnd::TheManager.Find(HxStr(pszName)));
+}
+
+// Every per-colour material and texture, with the colours that reach it; one reached from two
+// colours is shared and keeps its colours.
+void RecolourPlayerAssets() {
+    std::vector<std::pair<Rnd::Mat *, int>> mats;
+    std::vector<std::pair<Rnd::Tex *, int>> texes;
+    for (int nColor = 0; nColor < 5; ++nColor) {
+        const char g = kGemLetters[nColor], p = kPlayerLetters[nColor];
+        std::vector<Rnd::Mesh *> meshes;
+        for (int nLod = 0;; ++nLod) {
+            Rnd::MultiMesh *pMulti = FindAs<Rnd::MultiMesh>(Rnd::MakeString("gem_hex_%c%d.mm", g, nLod));
+            if (pMulti == nullptr) {
+                break;
+            }
+            meshes.push_back(pMulti->GetMesh());
+        }
+        for (int i = 0; i < 16; ++i) {
+            meshes.push_back(FindAs<Rnd::Mesh>(Rnd::MakeString("act_%ctar%d.mesh", p, i)));
+        }
+        for (const char *pszPart : {"axe", "scratch", "vox", "plate", "tgt"}) {
+            meshes.push_back(FindAs<Rnd::Mesh>(Rnd::MakeString("ptr_%c_%s.mesh", p, pszPart)));
+        }
+        std::vector<Rnd::Mat *> found = {FindAs<Rnd::Mat>(Rnd::MakeString("act_%c.mat", p)),
+                                         FindAs<Rnd::Mat>(Rnd::MakeString("act_%c tar up.mat", p)),
+                                         FindAs<Rnd::Mat>(Rnd::MakeString("act_%c tar dn.mat", p)),
+                                         FindAs<Rnd::Mat>(Rnd::MakeString("HUD score font %s.mat", kColorNames[nColor]))};
+        if (Rnd::String *pSabre = FindAs<Rnd::String>(Rnd::MakeString("sabre_%c.str", p))) {
+            found.push_back(pSabre->GetMat());
+        }
+        for (Rnd::Mesh *pMesh : meshes) {
+            if (pMesh != nullptr) {
+                found.push_back(pMesh->mMat);
+            }
+        }
+        texes.push_back(std::make_pair(FindAs<Rnd::Tex>(Rnd::MakeString("act_%c.bmp", p)), nColor));
+        texes.push_back(std::make_pair(FindAs<Rnd::Tex>(Rnd::MakeString("act_mult_%c.tex", p)), nColor));
+        for (Rnd::Mat *pMat : found) {
+            if (pMat == nullptr) {
+                continue;
+            }
+            mats.push_back(std::make_pair(pMat, nColor));
+            for (auto it = pMat->mStages.begin(); it != pMat->mStages.end(); ++it) {
+                texes.push_back(std::make_pair(it->mTex, nColor));
+            }
+        }
+    }
+    // An object is recoloured once, and only when every route to it has the same colour.
+    auto run = [](auto &list, auto fn) {
+        for (auto &item : list) {
+            if (item.first == nullptr) {
+                continue;
+            }
+            bool bShared = false, bFirst = true;
+            for (auto &other : list) {
+                if (other.first == item.first) {
+                    bShared |= other.second != item.second;
+                    bFirst &= &other >= &item;
+                }
+            }
+            if (!bFirst) {
+                continue;
+            }
+            if (bShared) {
+                HostGemDump((std::string("SHARED ") + item.first->mName.mStr + "\n").c_str());
+            } else {
+                fn(item.first, item.second);
+            }
+        }
+    };
+    run(texes, RecolourTex);
+    run(mats, RecolourMat);
+}
+
+} // namespace
+#endif
+#ifndef RESONANCE_HOST
+#line 1
+#endif
+
 #include <algorithm>
 
 #include "app/application.h"
@@ -444,6 +650,14 @@ AppTunnel::AppTunnel(Renderer *pRenderer)
     mHexGemKinds[2] = mGemManager->AddMeshKind("gem_hex_r", flHexGemLod, 1.0f);
     mHexGemKinds[3] = mGemManager->AddMeshKind("gem_hex_y", flHexGemLod, 1.0f);
     mHexGemKinds[4] = mGemManager->AddMeshKind("gem_hex_p", flHexGemLod, 1.0f);
+#ifdef RESONANCE_HOST
+    if (HostGemPalette() != 0) {
+        RecolourPlayerAssets();
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 440
+#endif
     mCrateGemKind = mGemManager->AddMeshKind("gem_crate", flHexGemLod, 1.0f);
     mPowerupGemKinds.resize(kHudItemMultiplier + 1);
     mPowerupGemKinds[kHudItemBumper] = mGemManager->AddMeshKind("gem_bump", flPowerupGemLod, 1.0f);
@@ -692,7 +906,17 @@ void AppTunnel::OnGem(GemMsg *pMsg) {
     }
     float flAppearFrame = flTick;
     bool bFlash = !pPlayer->IsNull();
+#ifdef RESONANCE_HOST
+    const int nColor = HostTestGemColor(TnlColorIndexFromName(pPlayer->mColorName));
+#else
+#ifndef RESONANCE_HOST
+#line 688
+#endif
     const int nColor = TnlColorIndexFromName(pPlayer->mColorName);
+#endif
+#ifndef RESONANCE_HOST
+#line 689
+#endif
     char nKind;
     if (pMsg->mGhost) {
         nKind = mGhostGemKinds[nTrack];

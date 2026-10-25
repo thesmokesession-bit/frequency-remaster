@@ -146,3 +146,23 @@ extern int g_nAppTunnelTutorial;
  * @ghidraAddress PAL: 0x00727bd0
  */
 extern float g_flTunnelBrightness;
+
+#ifdef RESONANCE_HOST
+extern "C" int HostGemPalette(); // FREQ_GEM_PALETTE=cb, host/gfx-null/gfx.cpp
+
+/**
+ * FREQ_GEM_PALETTE=cb recolour of one sRGB colour (components 0 to 1, in place) toward colour index
+ * nColor (null, green, red, yellow, purple): in OKLab the hue becomes the target's, the chroma is
+ * scaled and L takes a gamma, per colour (tnlutil.cpp), so shading, black, white highlights and
+ * alpha survive. Out-of-gamut results lose chroma, not lightness.
+ */
+void TnlCbRecolour(float *pRgb, int nColor);
+
+/** The colour index of a player colour name, or -1 for any other name. */
+int TnlCbIndex(const HxStr &name);
+
+/**
+ * color through TnlCbRecolour() when FREQ_GEM_PALETTE=cb and nColor is 0 to 4; otherwise color.
+ */
+Color TnlCbColor(const Color &color, int nColor);
+#endif
