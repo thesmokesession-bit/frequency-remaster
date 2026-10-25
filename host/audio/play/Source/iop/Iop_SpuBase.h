@@ -320,6 +320,7 @@ namespace Iop
 			void SetParamsNoRead(uint32, uint32);
 			void SetPitch(uint32, uint16);
 			int32 GetSample();
+			int32 Interpolate(uint32, int32) const;
 			uint32 GetRepeat() const;
 			void SetRepeat(uint32);
 			uint32 GetCurrent() const;
@@ -351,6 +352,7 @@ namespace Iop
 			uint32 m_nextSampleAddr = 0;
 			uint32 m_repeatAddr = 0;
 			int16 m_buffer[BUFFER_SAMPLES * 2];
+			int16 m_history[4] = {}; // resonance: the 4 samples before m_buffer, for FREQ_SPU_INTERP
 			uint16 m_pitch;
 			int32 m_s1;
 			int32 m_s2;

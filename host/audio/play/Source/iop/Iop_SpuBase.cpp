@@ -1,5 +1,6 @@
 #include <cassert>
 #include <cstring>
+#include <cstdlib>
 #include <cmath>
 #include <climits>
 #include <algorithm>
@@ -1257,6 +1258,7 @@ void CSpuBase::CSampleReader::SaveState(CRegisterState& channelState) const
 void CSpuBase::CSampleReader::SetParams(uint32 address, uint32 repeat)
 {
 	m_srcSampleIdx = 0;
+	memset(m_history, 0, sizeof(m_history));
 	m_nextSampleAddr = address & (m_ramSize - 1);
 	m_repeatAddr = repeat & (m_ramSize - 1);
 	m_s1 = 0;
@@ -1284,14 +1286,89 @@ void CSpuBase::CSampleReader::SetPitch(uint32 baseSamplingRate, uint16 pitch)
 	UpdateSampleStep();
 }
 
+// resonance: FREQ_SPU_INTERP picks the voice interpolation: unset or linear, Play!'s two-point
+// linear (as before); cubic, 4-point Catmull-Rom; sinc, 8-tap Lanczos (a = 4) windowed sinc.
+namespace
+{
+	enum
+	{
+		INTERP_LINEAR,
+		INTERP_CUBIC,
+		INTERP_SINC,
+	};
+
+	int ReadInterpolation()
+	{
+		const char* value = getenv("FREQ_SPU_INTERP");
+		if(value == nullptr) return INTERP_LINEAR;
+		if(!strcmp(value, "cubic")) return INTERP_CUBIC;
+		if(!strcmp(value, "sinc")) return INTERP_SINC;
+		return INTERP_LINEAR;
+	}
+
+	const int g_interpolation = ReadInterpolation();
+
+	// Taps k = -3..4 around the sample before the read position, for 256 fractions, summing to 1 << 14.
+	struct SincTable
+	{
+		int16 taps[256][8];
+		SincTable()
+		{
+			for(int phase = 0; phase < 256; phase++)
+			{
+				double weights[8];
+				double sum = 0;
+				for(int k = 0; k < 8; k++)
+				{
+					const double x = (k - 3) - phase / 256.0;
+					const auto sinc = [](double v) { return v == 0 ? 1.0 : sin(M_PI * v) / (M_PI * v); };
+					weights[k] = sinc(x) * sinc(x / 4);
+					sum += weights[k];
+				}
+				for(int k = 0; k < 8; k++) taps[phase][k] = static_cast<int16>(lrint(weights[k] / sum * 16384));
+			}
+		}
+	};
+}
+
+int32 CSpuBase::CSampleReader::Interpolate(uint32 index, int32 alpha) const
+{
+	const auto at = [&](int position) -> int32 { return position < 0 ? m_history[4 + position] : m_buffer[position]; };
+	const int i = static_cast<int>(index);
+	int32 result;
+	if(g_interpolation == INTERP_CUBIC)
+	{
+		const float t = alpha / static_cast<float>(PITCH_BASE);
+		const float pm1 = at(i - 1), p0 = at(i), p1 = at(i + 1), p2 = at(i + 2);
+		result = static_cast<int32>(lrintf(p0 + 0.5f * t * (p1 - pm1 + t * (2 * pm1 - 5 * p0 + 4 * p1 - p2 + t * (3 * (p0 - p1) + p2 - pm1)))));
+	}
+	else
+	{
+		static const SincTable table;
+		const int16* taps = table.taps[alpha >> 4];
+		int32 sum = 0;
+		for(int k = 0; k < 8; k++) sum += at(i - 3 + k) * taps[k];
+		result = (sum + (1 << 13)) >> 14;
+	}
+	return std::clamp<int32>(result, SHRT_MIN, SHRT_MAX);
+}
+
 int32 CSpuBase::CSampleReader::GetSample()
 {
 	uint32 srcSampleIdx = m_srcSampleIdx / PITCH_BASE;
 	int32 srcSampleAlpha = m_srcSampleIdx % PITCH_BASE;
-	int32 currentSample = m_buffer[srcSampleIdx];
-	int32 nextSample = m_buffer[srcSampleIdx + 1];
-	int32 resultSample = (currentSample * (PITCH_BASE - srcSampleAlpha) / PITCH_BASE) +
-	                     (nextSample * srcSampleAlpha / PITCH_BASE);
+	int32 resultSample;
+	if(g_interpolation == INTERP_LINEAR)
+	{
+		int32 currentSample = m_buffer[srcSampleIdx];
+		int32 nextSample = m_buffer[srcSampleIdx + 1];
+		resultSample = (currentSample * (PITCH_BASE - srcSampleAlpha) / PITCH_BASE) +
+		               (nextSample * srcSampleAlpha / PITCH_BASE);
+	}
+	else
+	{
+		resultSample = Interpolate(srcSampleIdx, srcSampleAlpha);
+	}
 	m_srcSampleIdx += m_sampleStep;
 	if(srcSampleIdx >= BUFFER_SAMPLES)
 	{
@@ -1305,6 +1382,7 @@ void CSpuBase::CSampleReader::AdvanceBuffer()
 {
 	if(m_nextValid)
 	{
+		memcpy(m_history, m_buffer + BUFFER_SAMPLES - 4, sizeof(m_history));
 		memmove(m_buffer, m_buffer + BUFFER_SAMPLES, sizeof(int16) * BUFFER_SAMPLES);
 		UnpackSamples(m_buffer + BUFFER_SAMPLES);
 	}
