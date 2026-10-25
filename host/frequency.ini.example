@@ -1,0 +1,11 @@
+# Frequency (native) settings. Copy to frequency.ini next to where you start the game, or point
+# FREQ_CONFIG at a file. An environment variable of the same name overrides a line here.
+
+# Disc image and memory card folder.
+#FREQ_DISC=Frequency (USA).iso
+#FREQ_MC=memcard
+
+# Display: frame rate 60 or 120; resolution factor (1 = PS2, 6 = 4K); 16:9 widescreen (1 = on).
+#FREQ_FPS=120
+#FREQ_SCALE=6
+#FREQ_WIDESCREEN=1
