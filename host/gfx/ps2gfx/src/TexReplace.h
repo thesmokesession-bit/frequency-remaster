@@ -5,6 +5,7 @@
 // was first drawn in, the presents it was drawn in, the TBP0s it was seen at, a name, the
 // texel hash (equal for the CLUT variants of one texture), and the CLAMP wrap modes it was drawn
 // with, S/T, each the set of r (REPEAT), c (CLAMP), C (REGION_CLAMP), R (REGION_REPEAT) seen.
+// <dir>/loaded.tsv lists each file texture the game uploads (texel hash, file, PSM, size), drawn or not.
 // FREQ_TEX_REPLACE=<dir> draws <dir>/<key>.png, of any integer multiple of the texture's size, in
 // place of the texture.
 //
@@ -47,5 +48,6 @@ namespace TexReplace
 	void Present();
 
 	// The game drew these texels at run time (any thread). pixels are the upload's rows, stride bytes apart.
+	// A name "file:<path>" instead names a file texture's level 0 for the index (still kind file).
 	void Generated(const char* name, uint32 psm, uint32 width, uint32 height, const void* pixels, uint32 stride);
 }

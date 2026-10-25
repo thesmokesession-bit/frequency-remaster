@@ -491,11 +491,33 @@ void PsTex::RebuildClut() {
     }
 }
 
+#ifdef RESONANCE_HOST
+} // namespace Rnd
+void HostTexGenerated(const char *, int, int, int, const void *, int); // host/gfx/gfx.cpp
+namespace Rnd {
+// HD textures name each file texture's level 0 by its file: "file:<path>" (TexReplace.h).
+static void HostTexLoaded(const FilePath &path, int nPsm, int nWidth, int nHeight, const void *pPixels, int nStride) {
+    char szName[300];
+    snprintf(szName, sizeof(szName), "file:%s", path.mStr != nullptr ? path.mStr : "");
+    HostTexGenerated(szName, nPsm, nWidth, nHeight, pPixels, nStride);
+}
+#endif
+#ifndef RESONANCE_HOST
+#line 493
+#endif
 int PsTex::UploadBitmapMipToGs(int nMip) {
     const ABitmap *pBitmap = mLoadedBitmaps[nMip];
     GsMip &mip = mGsMips[nMip];
 
     if (pBitmap->mFormat != kABitmapFormatRle8) {
+#ifdef RESONANCE_HOST
+        if (nMip == 0) {
+            HostTexLoaded(mBitmapPath, mGsPsm, pBitmap->mWidth, pBitmap->mHeight, pBitmap->mPixels, pBitmap->mBytesPerRow);
+        }
+#endif
+#ifndef RESONANCE_HOST
+#line 498
+#endif
         return mip.mPage->UploadImage(
             pBitmap->mPixels, pBitmap->mWidth, pBitmap->mHeight, mBitsPerPixel, mGsPsm);
     }
@@ -509,6 +531,14 @@ int PsTex::UploadBitmapMipToGs(int nMip) {
                                    static_cast<int>(pBitmap->mTransparentColor) :
                                    kARleReaderNoTransparentValue;
     reader.UnpackAll(pIndices);
+#ifdef RESONANCE_HOST
+    if (nMip == 0) {
+        HostTexLoaded(mBitmapPath, kGsPsmT8, pBitmap->mWidth, pBitmap->mHeight, pIndices, pBitmap->mWidth);
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 511
+#endif
     ZoneReleaseTemp(); // Yes, the binary releases the buffer before the upload reads it.
     return mip.mPage->UploadImage(
         pIndices, pBitmap->mWidth, pBitmap->mHeight, kRleBitsPerPixel, kGsPsmT8);
