@@ -423,19 +423,45 @@ extern "C" void ps2gfx_wait_frames(void)
 	g->gs->SendGSCall([]() {}, true, false);
 }
 
-extern "C" int ps2gfx_screenshot(const char* path)
+// The displayed framebuffer and the size of its crop, or an empty bitmap if nothing is displayed.
+static Framework::CBitmap DisplayedFrame(uint32& w, uint32& h)
 {
 	auto info = g->gs->GetCurrentDisplayInfo();
 	const auto& l = info.layers[0];
 	auto dbg = dynamic_cast<CGsDebuggerInterface*>(g->gs);
-	if(!l.enabled || !dbg) return -1;
+	if(!l.enabled || !dbg) return {};
 	g->gs->Finish(true);
 	uint64 frame = (l.bufPtr / 8192) | (static_cast<uint64>(l.bufWidth / 64) << 16) | (static_cast<uint64>(l.psm) << 24);
 	auto bmp = dbg->GetFramebuffer(frame);
-	if(bmp.IsEmpty() || bmp.GetBitsPerPixel() != 32) return -1;
+	if(bmp.IsEmpty() || bmp.GetBitsPerPixel() != 32) return {};
 	// The Vulkan GS returns its scaled framebuffer; OpenGL keeps the native-size crop it always had.
 	uint32 scale = dynamic_cast<CGSH_OpenGLLib*>(g->gs) ? 1 : dbg->GetFramebufferScale();
-	return WritePng(path, bmp, info.width * scale, info.height * scale) ? 0 : -1;
+	w = std::min(info.width * scale, bmp.GetWidth());
+	h = std::min(info.height * scale, bmp.GetHeight());
+	return bmp;
+}
+
+extern "C" int ps2gfx_screenshot(const char* path)
+{
+	uint32 w = 0, h = 0;
+	auto bmp = DisplayedFrame(w, h);
+	return !bmp.IsEmpty() && WritePng(path, bmp, w, h) ? 0 : -1;
+}
+
+extern "C" int ps2gfx_frame_hash(uint64_t* hash)
+{
+	uint32 w = 0, h = 0;
+	auto bmp = DisplayedFrame(w, h);
+	if(bmp.IsEmpty()) return -1;
+	uint64_t x = 14695981039346656037ULL; // FNV-1a over the pixels a screenshot writes (no alpha)
+	for(uint32 y = 0; y < h; y++)
+	{
+		const uint8* row = bmp.GetPixels() + static_cast<size_t>(y) * bmp.GetWidth() * 4;
+		for(uint32 i = 0; i < w * 4; i++)
+			if((i & 3) != 3) x = (x ^ row[i]) * 1099511628211ULL;
+	}
+	*hash = x;
+	return 0;
 }
 
 extern "C" int ps2gfx_screenshot_output(const char* path)
