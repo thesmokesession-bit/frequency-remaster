@@ -283,15 +283,20 @@ int64_t NowNs() {
 }
 
 // FREQ_AUDIO_OFFSET_MS: everything heard plays this much later against the game (negative:
-// earlier). Each sound is stamped that much after its due time; a negative offset lengthens the
-// lead by as much, so the stamp is still ahead of the render when the message arrives.
+// earlier). A positive offset stamps each sound that much after its due time. A negative one
+// cannot play a sound before the game sends it: the picture and the judging (HostSongOffsetNs())
+// wait that much instead, which puts the sound as much earlier against them. (Stamping earlier with
+// a longer render lead, as before, moved the sound in the WAV but not against the picture: the
+// lead kept the clock that much further ahead of the render.)
 const int64_t g_nOffsetCycles = static_cast<int64_t>(
     atof(getenv("FREQ_AUDIO_OFFSET_MS") != nullptr ? getenv("FREQ_AUDIO_OFFSET_MS") : "0") * 294912);
-const uint64_t g_nLeadCycles = kLeadCycles + static_cast<uint64_t>(std::max<int64_t>(-g_nOffsetCycles, 0));
+const uint64_t g_nLeadCycles = kLeadCycles;
+const int64_t g_nLateCycles = std::max<int64_t>(g_nOffsetCycles, 0);
+const long long g_nEarlyNs = llround(std::max<int64_t>(-g_nOffsetCycles, 0) * 1e6 / 294912);
 
 uint64_t Stamp(uint64_t nDue) {
     // The offset is wall time: at a practice speed s it spans s of it in song time.
-    const int64_t nOffset = llround(g_nOffsetCycles * static_cast<double>(g_flSpeed.load()));
+    const int64_t nOffset = llround(g_nLateCycles * static_cast<double>(g_flSpeed.load()));
     return static_cast<uint64_t>(std::max<int64_t>(static_cast<int64_t>(nDue) + nOffset, 0));
 }
 
@@ -746,6 +751,8 @@ void WriteWavHeader() {
     fflush(g_pWav);
 }
 
+extern "C" long long HostSongOffsetNs(long long nWallNs);
+
 void RenderBlock(int nFrames) {
     int16_t aBlock[2 * kBlock];
     {
@@ -785,17 +792,24 @@ void RenderBlock(int nFrames) {
     }
     // FREQ_TEST_AUDIO_LAG=1, a test measure: how far the song time on screen is ahead of the sound
     // heard, in ms, when the newest sample plays (after the device's queue); the median each second.
+    // The screen shows the clock less the video offset (HostSongOffsetNs(), which holds the
+    // practice lag); the sound in a rendered sample is the song time its stamp offset moved there.
     static const bool s_bLag = getenv("FREQ_TEST_AUDIO_LAG") != nullptr;
+    static const long long s_nVideoNs = llround(
+        atof(getenv("FREQ_VIDEO_OFFSET_MS") != nullptr ? getenv("FREQ_VIDEO_OFFSET_MS") : "0") * 1e6);
     if (s_bLag && g_nDevice != 0) {
         static std::vector<float> s_lags;
         const float flSpeed = g_bStretching ? g_flSpeed.load() : 1.0f;
-        const int64_t nContent = g_bStretching ? g_nStretchBase + g_stretch.Content() :
-                                                 static_cast<int64_t>(g_nRendered) - 1;
+        const int64_t nContent =
+            (g_bStretching ? g_nStretchBase + g_stretch.Content() :
+                             static_cast<int64_t>(g_nRendered) - 1) -
+            llround(g_nLateCycles * static_cast<double>(g_flSpeed.load())) /
+                static_cast<int64_t>(kEeCyclesPerSample);
         const double flQueued = SDL_GetQueuedAudioSize(g_nDevice) / 4.0;
         // A stretch frame outputs kHop samples at once, each later against the clock than the
         // next: the frame's average sample is (1 - speed) kHop / 2 later than its newest.
         const double flShown = static_cast<double>(EeClock()) / kEeCyclesPerSample +
-                               flSpeed * flQueued - HostPracticeVideoLagSamples() +
+                               flSpeed * flQueued - HostSongOffsetNs(s_nVideoNs) * kRate / 1e9 +
                                (g_bStretching ? (1 - flSpeed) * Stretch::kHop / 2 : 0);
         s_lags.push_back(static_cast<float>((flShown - nContent) / (kRate / 1000.0) / flSpeed));
         if (s_lags.size() == 100) {
@@ -973,11 +987,12 @@ void HostPracticeLoopBars(int nFirst, int nEnd) {
 }
 
 // Renderer (FREQ_VIDEO_OFFSET_MS) and Catcher (FREQ_INPUT_OFFSET_MS): the song time, in ns, that a
-// latency offset of nWallNs wall time spans now (at a practice speed s, s of it), plus how much
-// later a practice speed's stretch plays the sound (HostPracticeVideoLagSamples()). At normal speed,
-// nWallNs itself.
+// latency offset of nWallNs wall time spans now (at a practice speed s, s of it), with a negative
+// FREQ_AUDIO_OFFSET_MS's size added (the picture and judging wait for it), plus how much later a
+// practice speed's stretch plays the sound (HostPracticeVideoLagSamples()). At normal speed and no
+// negative audio offset, nWallNs itself.
 long long HostSongOffsetNs(long long nWallNs) {
-    return llround(nWallNs * static_cast<double>(g_flSpeed.load()) +
+    return llround((nWallNs + g_nEarlyNs) * static_cast<double>(g_flSpeed.load()) +
                    HostPracticeVideoLagSamples() * 1e9 / kRate);
 }
 
