@@ -656,7 +656,61 @@ std::string CGSH_OpenGL::GenerateAlphaBlendSection(ALPHABLEND_ABD factorA, ALPHA
 	return shaderSource;
 }
 
-Framework::OpenGl::ProgramPtr CGSH_OpenGL::GeneratePresentProgram()
+// FREQ_AA: FXAA on the presented frame. Where the local luma contrast is high, the edge's direction is
+// found from the 3x3 neighbourhood, the edge is followed both ways to its ends, and the pixel is read
+// shifted across the edge by how far it sits from the nearer end (a long, shallow edge gets a smooth
+// ramp, a stair step's corner the most). Written for this renderer from the published FXAA idea.
+static const char* g_fxaaSource = R"(
+uniform vec2 g_texelSize;
+float lumaAt(vec2 p) { return dot(texture(g_texture, p).rgb, vec3(0.299, 0.587, 0.114)); }
+void main()
+{
+	vec2 p = v_texCoord;
+	vec2 t = g_texelSize;
+	vec4 color = texture(g_texture, p);
+	float lM = dot(color.rgb, vec3(0.299, 0.587, 0.114));
+	float lN = lumaAt(p + vec2(0.0, -t.y)), lS = lumaAt(p + vec2(0.0, t.y));
+	float lW = lumaAt(p + vec2(-t.x, 0.0)), lE = lumaAt(p + vec2(t.x, 0.0));
+	float lMin = min(lM, min(min(lN, lS), min(lW, lE)));
+	float lMax = max(lM, max(max(lN, lS), max(lW, lE)));
+	float range = lMax - lMin;
+	if(range < max(0.0625, lMax * 0.125)) { fragColor = color; return; }
+	float lNW = lumaAt(p - t), lSE = lumaAt(p + t);
+	float lNE = lumaAt(p + vec2(t.x, -t.y)), lSW = lumaAt(p + vec2(-t.x, t.y));
+	float edgeH = abs(lNW + lSW - 2.0 * lW) + 2.0 * abs(lN + lS - 2.0 * lM) + abs(lNE + lSE - 2.0 * lE);
+	float edgeV = abs(lNW + lNE - 2.0 * lN) + 2.0 * abs(lW + lE - 2.0 * lM) + abs(lSW + lSE - 2.0 * lS);
+	bool horizontal = edgeH >= edgeV;
+	float l1 = horizontal ? lN : lW, l2 = horizontal ? lS : lE;
+	float g1 = abs(l1 - lM), g2 = abs(l2 - lM);
+	float stepAcross = horizontal ? t.y : t.x;
+	float lEdge = 0.5 * (lM + l2);
+	float gradient = 0.25 * max(g1, g2);
+	if(g1 >= g2) { stepAcross = -stepAcross; lEdge = 0.5 * (lM + l1); }
+	vec2 along = horizontal ? vec2(t.x, 0.0) : vec2(0.0, t.y);
+	vec2 e = p + (horizontal ? vec2(0.0, 0.5 * stepAcross) : vec2(0.5 * stepAcross, 0.0));
+	vec2 p1 = e - along, p2 = e + along;
+	float d1 = lumaAt(p1) - lEdge, d2 = lumaAt(p2) - lEdge;
+	bool end1 = abs(d1) >= gradient, end2 = abs(d2) >= gradient;
+	for(int i = 0; i < 10 && !(end1 && end2); i++)
+	{
+		float stride = i < 4 ? 1.0 : (i < 7 ? 2.0 : 4.0);
+		if(!end1) { p1 -= along * stride; d1 = lumaAt(p1) - lEdge; end1 = abs(d1) >= gradient; }
+		if(!end2) { p2 += along * stride; d2 = lumaAt(p2) - lEdge; end2 = abs(d2) >= gradient; }
+	}
+	float dist1 = horizontal ? p.x - p1.x : p.y - p1.y;
+	float dist2 = horizontal ? p2.x - p.x : p2.y - p.y;
+	bool nearer1 = dist1 < dist2;
+	float offset = 0.5 - min(dist1, dist2) / (dist1 + dist2);
+	if(((nearer1 ? d1 : d2) < 0.0) == (lM - lEdge < 0.0)) offset = 0.0;
+	float lAverage = (2.0 * (lN + lS + lW + lE) + lNW + lNE + lSW + lSE) / 12.0;
+	float sub = clamp(abs(lAverage - lM) / range, 0.0, 1.0);
+	sub = (-2.0 * sub + 3.0) * sub * sub;
+	offset = max(offset, sub * sub * 0.25);
+	fragColor = texture(g_texture, p + (horizontal ? vec2(0.0, offset * stepAcross) : vec2(offset * stepAcross, 0.0)));
+}
+)";
+
+Framework::OpenGl::ProgramPtr CGSH_OpenGL::GeneratePresentProgram(bool antiAliasing)
 {
 	Framework::OpenGl::CShader vertexShader(GL_VERTEX_SHADER);
 	Framework::OpenGl::CShader pixelShader(GL_FRAGMENT_SHADER);
@@ -686,10 +740,17 @@ Framework::OpenGl::ProgramPtr CGSH_OpenGL::GeneratePresentProgram()
 		shaderBuilder << "in vec2 v_texCoord;" << std::endl;
 		shaderBuilder << "out vec4 fragColor;" << std::endl;
 		shaderBuilder << "uniform sampler2D g_texture;" << std::endl;
-		shaderBuilder << "void main()" << std::endl;
-		shaderBuilder << "{" << std::endl;
-		shaderBuilder << "	fragColor = texture(g_texture, v_texCoord);" << std::endl;
-		shaderBuilder << "}" << std::endl;
+		if(antiAliasing)
+		{
+			shaderBuilder << g_fxaaSource;
+		}
+		else
+		{
+			shaderBuilder << "void main()" << std::endl;
+			shaderBuilder << "{" << std::endl;
+			shaderBuilder << "	fragColor = texture(g_texture, v_texCoord);" << std::endl;
+			shaderBuilder << "}" << std::endl;
+		}
 
 		pixelShader.SetSource(shaderBuilder.str().c_str());
 		FRAMEWORK_MAYBE_UNUSED bool result = pixelShader.Compile();

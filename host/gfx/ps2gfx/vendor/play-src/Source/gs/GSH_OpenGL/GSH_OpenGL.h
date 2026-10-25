@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <list>
 #include <unordered_map>
 #include "../GSHandler.h"
@@ -275,6 +276,7 @@ private:
 		float scaleRatioY = 1;
 		bool alphaAsIndex = false;
 		uint64 contentHash = 0; // TexReplace: texel hash of a cached texture, 0 for a framebuffer
+		uint64 version = 0;     // upload count of a cached texture, 0 for a framebuffer
 	};
 
 	struct TEXTUREFORMAT_INFO
@@ -319,6 +321,7 @@ private:
 	TEXTURE_INFO PrepareTexture(const TEX0&);
 	TEXTURE_INFO SearchTextureFramebuffer(const TEX0&);
 	GLuint PreparePalette(const TEX0&);
+	GLuint PrepareMipTexture(const TEX0&, const TEX1&, uint64, uint64, bool);
 
 	void ProcessPrim(uint64);
 	void VertexKick(uint8, uint64);
@@ -331,7 +334,7 @@ private:
 	std::string GenerateAlphaTestSection(ALPHA_TEST_METHOD, ALPHA_TEST_FAIL_METHOD);
 	std::string GenerateAlphaBlendSection(ALPHABLEND_ABD, ALPHABLEND_ABD, ALPHABLEND_C, ALPHABLEND_ABD);
 
-	Framework::OpenGl::ProgramPtr GeneratePresentProgram();
+	Framework::OpenGl::ProgramPtr GeneratePresentProgram(bool);
 	Framework::OpenGl::CBuffer GeneratePresentVertexBuffer();
 	Framework::OpenGl::CVertexArray GeneratePresentVertexArray();
 
@@ -422,6 +425,7 @@ private:
 	Framework::OpenGl::CVertexArray m_presentVertexArray;
 	GLint m_presentTextureUniform = -1;
 	GLint m_presentTexCoordScaleUniform = -1;
+	GLint m_presentTexelSizeUniform = -1; // FREQ_AA: the present shader's FXAA pass
 
 	Framework::OpenGl::ProgramPtr m_copyToFbProgram;
 	Framework::OpenGl::CTexture m_copyToFbTexture;
@@ -432,6 +436,9 @@ private:
 
 	TextureCache m_textureCache;
 	std::unordered_map<uint64, GLuint> m_replacementTextures; // TexReplace key -> HD texture, kept for the run
+	// FREQ_TEX_FILTER: RGBA copies of textures with all their mip levels, and the level versions they hold
+	std::unordered_map<uint64, std::pair<GLuint, std::array<uint64, 7>>> m_mipTextures;
+	uint64 m_textureVersion = 0;
 	PaletteList m_paletteCache;
 	FramebufferList m_framebuffers;
 	DepthbufferList m_depthbuffers;

@@ -3,6 +3,8 @@
 #include <sys/stat.h>
 #include <limits.h>
 #include <algorithm>
+#include <string_view>
+#include <vector>
 #ifdef _WIN32
 #include <intrin.h>
 #endif
@@ -256,8 +258,89 @@ CGSH_OpenGL::TEXTURE_INFO CGSH_OpenGL::PrepareTexture(const TEX0& tex0)
 		texture->m_contentHash = TexReplace::HashTexels(m_pRAM, tex0);
 	}
 	texInfo.contentHash = texture->m_contentHash;
+	if(updated) texture->m_version = ++m_textureVersion;
+	texInfo.version = texture->m_version;
 
 	return texInfo;
+}
+
+// FREQ_TEX_FILTER=enhanced: an RGBA8 texture holding the levels the game gave this texture (TEX0 is
+// level 0, MIPTBP1/2 place levels 1..MXL), with indexed texels looked up in the draw's CLUT, so GL
+// filters across levels. A texture the game gave no levels (most tunnel walls) gets a full chain
+// averaged from level 0 when generate is set. Rebuilt when a level's texels or the CLUT change; 0 if a level is a framebuffer.
+GLuint CGSH_OpenGL::PrepareMipTexture(const TEX0& tex0, const TEX1& tex1, uint64 miptbp1Reg, uint64 miptbp2Reg, bool generate)
+{
+	auto miptbp1 = make_convertible<MIPTBP1>(miptbp1Reg);
+	auto miptbp2 = make_convertible<MIPTBP2>(miptbp2Reg);
+	const uint32 tbp[7] = {0, miptbp1.GetTbp1(), miptbp1.GetTbp2(), miptbp1.GetTbp3(), miptbp2.GetTbp4(), miptbp2.GetTbp5(), miptbp2.GetTbp6()};
+	const uint32 tbw[7] = {0, miptbp1.GetTbw1(), miptbp1.GetTbw2(), miptbp1.GetTbw3(), miptbp2.GetTbw4(), miptbp2.GetTbw5(), miptbp2.GetTbw6()};
+	bool gameMips = tex1.nMaxMip != 0 && tex1.nMinFilter >= MIN_FILTER_NEAREST_MIP_NEAREST && !tex1.nMipBaseAddr;
+	if(!gameMips && !generate) return 0;
+	uint32 levels = gameMips ? std::min<uint32>({tex1.nMaxMip, tex0.nWidth, static_cast<uint32>(__builtin_ctz(tex0.GetHeight())), 6u}) + 1 : 1;
+
+	std::array<TEX0, 7> level;
+	std::array<uint64, 7> versions = {};
+	for(uint32 n = 0; n < levels; n++)
+	{
+		level[n] = tex0;
+		if(n != 0)
+		{
+			level[n].nBufPtr = tbp[n] / 256;
+			level[n].nBufWidth = tbw[n] / 64;
+			uint32 heightLog2 = __builtin_ctz(tex0.GetHeight()) - n;
+			level[n].nWidth -= n;
+			level[n].nPad0 = heightLog2 & 3;
+			level[n].nPad1 = heightLog2 >> 2;
+		}
+		versions[n] = PrepareTexture(level[n]).version;
+		if(versions[n] == 0) return 0;
+	}
+
+	std::array<uint32, 256> clut = {};
+	bool indexed = CGsPixelFormats::IsPsmIDTEX(tex0.nPsm);
+	if(indexed) MakeLinearCLUT(tex0, clut);
+	uint64 key[5] = {static_cast<uint64>(tex0) & TEX0_CLUTINFO_MASK, levels, gameMips ? miptbp1Reg : 0, gameMips ? miptbp2Reg : 0,
+	                 indexed ? std::hash<std::string_view>()(std::string_view(reinterpret_cast<const char*>(clut.data()), sizeof(clut))) : 0};
+	if(m_mipTextures.size() >= 512) // ponytail: drop them all when full; an LRU if songs ever rebuild them often
+	{
+		for(auto& mip : m_mipTextures) glDeleteTextures(1, &mip.second.first);
+		m_mipTextures.clear();
+	}
+	auto& entry = m_mipTextures[std::hash<std::string_view>()(std::string_view(reinterpret_cast<const char*>(key), sizeof(key)))];
+	if(entry.first != 0 && entry.second == versions) return entry.first;
+
+	uint32 width = std::min<uint32>(tex0.GetWidth(), TEX0_MAX_TEXTURE_SIZE);
+	uint32 height = std::min<uint32>(tex0.GetHeight(), TEX0_MAX_TEXTURE_SIZE);
+	if(entry.first == 0)
+	{
+		glGenTextures(1, &entry.first);
+		glBindTexture(GL_TEXTURE_2D, entry.first);
+		glTexStorage2D(GL_TEXTURE_2D, gameMips ? levels : 32 - __builtin_clz(std::max(width, height)), GL_RGBA8, width, height);
+		glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, 16.0f);
+	}
+	entry.second = versions;
+	std::vector<uint32> rgba(width * height);
+	std::vector<uint8> indices(width * height);
+	glPixelStorei(GL_PACK_ALIGNMENT, 1);
+	for(uint32 n = 0; n < levels; n++)
+	{
+		uint32 w = std::max<uint32>(width >> n, 1), h = std::max<uint32>(height >> n, 1);
+		glBindTexture(GL_TEXTURE_2D, PrepareTexture(level[n]).textureHandle);
+		if(indexed)
+		{
+			glGetTexImage(GL_TEXTURE_2D, 0, GL_RED, GL_UNSIGNED_BYTE, indices.data());
+			for(uint32 i = 0; i < w * h; i++) rgba[i] = clut[indices[i]];
+		}
+		else
+		{
+			glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+		}
+		glBindTexture(GL_TEXTURE_2D, entry.first);
+		glTexSubImage2D(GL_TEXTURE_2D, n, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+	}
+	if(!gameMips) glGenerateMipmap(GL_TEXTURE_2D);
+	CHECKGLERROR();
+	return entry.first;
 }
 
 GLuint CGSH_OpenGL::PreparePalette(const TEX0& tex0)

@@ -25,6 +25,7 @@ public:
 		bool m_live = false;
 		CGsCachedArea m_cachedArea;
 		uint64 m_contentHash = 0; // TexReplace: hash of the texels, kept while the pages stay clean
+		uint64 m_version = 0;     // FREQ_TEX_FILTER: changes with every upload of the texels
 
 		//Platform specific
 		TextureHandleType m_textureHandle;
