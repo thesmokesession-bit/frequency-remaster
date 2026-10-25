@@ -1,6 +1,14 @@
 #include "game/catchingstg.h"
 
 #include "app/application.h"
+#ifdef RESONANCE_HOST
+#include <cstdlib>
+
+#include "gfx/hostframe.h"
+#endif
+#ifndef RESONANCE_HOST
+#line 3
+#endif
 #include "game/gamemanagerimpl.h"
 #include "game/multicatcher.h"
 #include "game/singlecatcher.h"
@@ -24,8 +32,24 @@ CatchingSTG::CatchingSTG(TrackData *pTrackData)
     : ScoreTrackGraph(pTrackData), mNeutralizer(nullptr), mCatcher(nullptr) {
     mNeutralizer = new PhraseNeutralizer(mTrackData, mPhraseMgr);
 
+#ifdef RESONANCE_HOST
+    // FREQ_TIMING_WINDOW: the catch window times this (1.0 the original, 1.5 or 2.0 wider).
+    const char *pszScale = getenv("FREQ_TIMING_WINDOW");
+    const long long nWindowNs = static_cast<long long>(
+        QueryConfigValue(kCatchWindowConfigCode) * kNanosecondsPerMillisecond *
+        (pszScale != nullptr ? atof(pszScale) : 1.0));
+    HostEvent("catchwindow ms=%d scale=%s", QueryConfigValue(kCatchWindowConfigCode),
+              pszScale != nullptr ? pszScale : "1");
+#else
+#ifndef RESONANCE_HOST
+#line 26
+#endif
     const long long nWindowNs =
         QueryConfigValue(kCatchWindowConfigCode) * kNanosecondsPerMillisecond;
+#endif
+#ifndef RESONANCE_HOST
+#line 28
+#endif
     const Sch::TempoMap *pTempo = mApplication->GetSongClock()->mTempoMap;
     const Sch::Tick window(
         static_cast<int>((nWindowNs + pTempo->mCeilingBias) / pTempo->mNanosecondsPerTick));

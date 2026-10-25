@@ -1,6 +1,13 @@
 #include "met/metfrontendstate.h"
 
 #include <vector>
+#ifdef RESONANCE_HOST
+#include <cstdlib>
+#include <cstring>
+#endif
+#ifndef RESONANCE_HOST
+#line 3
+#endif
 
 #include "app/application.h"
 #include "game/gamemanagerimpl.h"
@@ -41,7 +48,19 @@ void MetFrontEndState::Destroy() {
 }
 
 void MetFrontEndState::Reset() {
+#ifdef RESONANCE_HOST
+    // FREQ_UNLOCK_ALL=1: the game's own unlock-everything cheat, on from the start.
+    const char *pszUnlock = getenv("FREQ_UNLOCK_ALL");
+    mUnlockAll = pszUnlock != nullptr && strcmp(pszUnlock, "0") != 0;
+#else
+#ifndef RESONANCE_HOST
+#line 43
+#endif
     mUnlockAll = 0;
+#endif
+#ifndef RESONANCE_HOST
+#line 44
+#endif
     mPendingTransition = 0;
     mLastTransition = 0;
     mUnusedFlag = 0;

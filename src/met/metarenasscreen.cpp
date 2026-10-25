@@ -31,6 +31,12 @@
 
 #include "os/hostmode.h"
 #endif
+#ifdef RESONANCE_HOST
+#include "gfx/hostframe.h"
+#ifndef RESONANCE_HOST
+#line 32
+#endif
+#endif
 
 namespace {
 
@@ -220,6 +226,12 @@ void MetArenasScreen::SetupArenaButtons(int bUnlockAll) {
         mUnlockedCount = nArenaCount;
     }
     mNoArenaIndex = GetArenaList()->size() - 1;
+#ifdef RESONANCE_HOST
+    HostEvent("arenas unlockall=%d unlocked=%d of=%d", bUnlockAll, mUnlockedCount, nArenaCount);
+#endif
+#ifndef RESONANCE_HOST
+#line 222
+#endif
 
     for (int i = 0; i < nButtonCount; ++i) {
         HxStr label;

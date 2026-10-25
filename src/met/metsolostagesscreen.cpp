@@ -44,6 +44,12 @@
 
 #include "os/hostmode.h"
 #endif
+#ifdef RESONANCE_HOST
+#include "gfx/hostframe.h"
+#ifndef RESONANCE_HOST
+#line 45
+#endif
+#endif
 
 namespace {
 
@@ -610,6 +616,19 @@ void MetSoloStagesScreen::SetUpStages(int bUnlockAll) {
     mStageLocked[kCustomStageIndex] = 0;
 
     UpdateSecretLevels(bUnlockAll);
+#ifdef RESONANCE_HOST
+    {
+        char szLocked[kNumberedStageCount + 1] = {};
+        for (int i = 0; i < kNumberedStageCount; ++i) {
+            szLocked[i] = mStageLocked[i] != 0 ? 'L' : 'o';
+        }
+        HostEvent("stages unlockall=%d locked=%s secret=%d supersecret=%d", bUnlockAll, szLocked,
+                  mSecretUnlocked, mSuperSecretUnlocked);
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 612
+#endif
     ApplyStageStyles();
 
     int nStage = nStagesComplete;

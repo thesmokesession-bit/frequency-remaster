@@ -39,6 +39,22 @@
 #include "script/configquery.h"
 #include "script/scripthost.h"
 #include "synth/midi_main.h"
+#ifdef RESONANCE_HOST
+#include <cstdlib>
+#include <cstring>
+
+#include "gfx/hostframe.h"
+
+namespace {
+bool HostNoFail() {
+    const char *pszValue = getenv("FREQ_NO_FAIL");
+    return pszValue != nullptr && strcmp(pszValue, "0") != 0;
+}
+} // namespace
+#endif
+#ifndef RESONANCE_HOST
+#line 41
+#endif
 
 namespace {
 
@@ -423,6 +439,12 @@ void Gamer::DeclareWinners() {
 }
 
 void Gamer::RecordSoloStats(int bCompleted, int nBar) {
+#ifdef RESONANCE_HOST
+    HostEvent("solo_end won=%d bar=%d end=%d", bCompleted, nBar, mEndBar);
+#endif
+#ifndef RESONANCE_HOST
+#line 425
+#endif
     mStats->mCompleted = bCompleted;
     mStats->mCheated = mCheated;
     mStats->SetScore(0, mPlayers[0]->GetScore());
@@ -480,7 +502,18 @@ void Gamer::OnBar(int nBar) {
                         (*mGraphs)[i]->GivePhrases(nBar, pPlayer);
                     }
                 }
+#ifdef RESONANCE_HOST
+            // FREQ_NO_FAIL=1: running out of juice never ends the song.
+            } else if (pPlayer->GetJuice() < kMinimumJuice && !HostNoFail()) {
+#else
+#ifndef RESONANCE_HOST
+#line 482
+#endif
             } else if (pPlayer->GetJuice() < kMinimumJuice) {
+#endif
+#ifndef RESONANCE_HOST
+#line 483
+#endif
                 if (mEndState != kEndStateNone) {
                     InputMap::shared()->EnableEntries();
                     mGlobals->GetWorld()->PostFinish();
