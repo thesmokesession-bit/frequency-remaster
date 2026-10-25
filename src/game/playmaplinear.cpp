@@ -285,11 +285,23 @@ int PlayMapLinear::MapToLinkedStep(int nPosition, int nSet) {
 }
 
 int PlayMapLinear::GetPatternIndex(int nBar) {
+#ifdef RESONANCE_HOST
+    nBar = PracticeBar(nBar); // a practice loop's section, and its sound banks (Gamer::OnBar())
+#endif
+#ifndef RESONANCE_HOST
+#line 213
+#endif
     GrowPastLimit(nBar);
     return static_cast<int>(WindowIndex(nBar) % mPattern.size());
 }
 
 int PlayMapLinear::GetAbsoluteSectionIndex(int nBar) {
+#ifdef RESONANCE_HOST
+    nBar = PracticeBar(nBar); // a practice loop's section, and its sound banks (Gamer::OnBar())
+#endif
+#ifndef RESONANCE_HOST
+#line 218
+#endif
     GrowPastLimit(nBar);
     return WindowIndex(nBar) + mTrimmedCount;
 }

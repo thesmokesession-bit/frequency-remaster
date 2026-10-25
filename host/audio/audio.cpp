@@ -903,6 +903,7 @@ int HostPracticeRepeatsFrom() {
 
 // The bars a loop of phrases spans, which PlayMapLinear works out from the song: a bar loop now.
 void HostPracticeLoopBars(int nFirst, int nEnd) {
+    fprintf(stderr, "PRACTICE_LOOP bars %d-%d\n", nFirst + 1, nEnd);
     g_practiceLoop = {1, nFirst, nEnd};
 }
 
