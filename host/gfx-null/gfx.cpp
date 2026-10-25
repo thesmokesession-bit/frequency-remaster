@@ -291,6 +291,15 @@ int HostWidescreen() {
     return bWidescreen;
 }
 
+float HostTrails() {
+    static const float flTrails = [] {
+        const char *pszValue = getenv("FREQ_TRAILS");
+        const float flValue = pszValue != nullptr ? strtof(pszValue, nullptr) : 1.0f;
+        return flValue < 0.0f ? 0.0f : flValue > 1.0f ? 1.0f : flValue;
+    }();
+    return flTrails;
+}
+
 int HostWaitVblank() {
     pthread_once(&g_vblankOnce, StartVblanks);
     pthread_mutex_lock(&g_vblankLock);

@@ -315,7 +315,18 @@ int Blur::DrawShowing() {
     memcpy(savedWorld.m, pXfm->mWorldXfm, sizeof(savedWorld.m));
 
     const float flBaseAlpha = pMat->mDiffuse.a;
+#ifdef RESONANCE_HOST
+    // FREQ_TRAILS scales every copy of the trail; at 0 the copies are not drawn.
+    const float flTopAlpha = flBaseAlpha * mFalloff * HostTrails();
+#else
+#ifndef RESONANCE_HOST
+#line 317
+#endif
     const float flTopAlpha = flBaseAlpha * mFalloff;
+#endif
+#ifndef RESONANCE_HOST
+#line 318
+#endif
     const float flStep = flTopAlpha / static_cast<float>(mLength * mRate);
     float flAlpha = flTopAlpha - flStep * static_cast<float>(mRate - mCountdown);
     const float flRecordStep = flStep * static_cast<float>(mRate);
@@ -331,7 +342,17 @@ int Blur::DrawShowing() {
     // Each recorded transform is compared with the one before it, the first with the current one.
     const auto *pPrevious = savedWorld.m;
     for (auto it = mXfms.begin(); it != mXfms.end(); ++it) {
+#ifdef RESONANCE_HOST
+        if (!SameXfm(it->m, pPrevious) && HostTrails() != 0.0f) {
+#else
+#ifndef RESONANCE_HOST
+#line 333
+#endif
         if (!SameXfm(it->m, pPrevious)) {
+#endif
+#ifndef RESONANCE_HOST
+#line 334
+#endif
             pMat->SetAlpha(flAlpha);
             memcpy(pXfm->mLocalXfm, it->m, sizeof(it->m));
             pXfm->mDirty = 1;

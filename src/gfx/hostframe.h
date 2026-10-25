@@ -12,6 +12,10 @@ extern "C" unsigned HostWaitFrameTick(unsigned nTarget);
 extern "C" float HostFrameFields(void);
 extern "C" int HostFrameEndsField(void);
 extern "C" void HostEvent(const char *pszFormat, ...); // FREQ_EVENTLOG
+extern "C" float HostTrails(void); // FREQ_TRAILS, the motion trails' strength (1 = original)
+#ifndef RESONANCE_HOST
+#line 14
+#endif
 #define HOST_PER_FIELD(step) ((step) * HostFrameFields())
 #else
 #define HOST_PER_FIELD(step) (step)

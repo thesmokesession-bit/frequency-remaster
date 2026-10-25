@@ -84,6 +84,10 @@ void HostEvent(const char *pszFormat, ...);
  */
 int HostWidescreen(void);
 
+/** FREQ_TRAILS: strength of the motion trails (the text trails and the feedback blur), 0 to 1;
+ *  1, the default, is the original. */
+float HostTrails(void);
+
 #ifdef __cplusplus
 }
 #endif
