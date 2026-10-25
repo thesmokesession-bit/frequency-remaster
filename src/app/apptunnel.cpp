@@ -1,5 +1,85 @@
 #include "app/apptunnel.h"
 
+#ifdef RESONANCE_HOST
+#include <algorithm>
+#include <cstring>
+#include <vector>
+
+#include "app/tnlutil.h"
+#include "os/formatstring.h"
+#include "rnd/manager.h"
+#include "rnd/mat.h"
+#include "rnd/mesh.h"
+#include "rnd/multimesh.h"
+#include "rnd/tex.h"
+#include "rndartt/acanvas.h"
+#include "rndartt/apalette.h"
+
+extern "C" int HostTestGemColor(int nColor); // host/gfx-null/gfx.cpp
+
+namespace {
+
+// FREQ_GEM_PALETTE=cb: the gem textures of the five colours ("gem_hex_<b|g|r|y|p>", in colour
+// index order) take kCbGemColors. Each palette entry keeps its brightness (its largest component)
+// and takes the target's hue.
+constexpr char kGemLetters[] = "bgryp";
+
+// The palettes this file wrote, so a texture still loaded from an earlier song is not recoloured
+// twice.
+std::vector<std::pair<Rnd::Tex *, APalette *>> g_recoloured;
+
+void RecolourTex(Rnd::Tex *pTex, const float *pTarget) {
+    ACanvas *pCanvas = pTex->LockMipBitmap(0, 0, 0);
+    if (pCanvas == nullptr || pCanvas->mBitmap.mPalette == nullptr) {
+        return;
+    }
+    const APalette *pPalette = pCanvas->mBitmap.mPalette;
+    for (auto it = g_recoloured.begin(); it != g_recoloured.end(); ++it) {
+        if (it->first == pTex &&
+            memcmp(it->second->mEntries, pPalette->mEntries, sizeof(pPalette->mEntries)) == 0) {
+            return;
+        }
+    }
+    APalette *pNew = new APalette(pPalette->mEntries, pPalette->mEnd);
+    for (int i = 0; i < pPalette->mEnd; ++i) {
+        const unsigned int nEntry = pPalette->mEntries[i];
+        const unsigned int nMax =
+            std::max(nEntry & 0xffu, std::max((nEntry >> 8) & 0xffu, (nEntry >> 16) & 0xffu));
+        unsigned int nOut = nEntry & 0xff000000u; // alpha
+        for (int c = 0; c < 3; ++c) {
+            nOut |= static_cast<unsigned int>(pTarget[c] * static_cast<float>(nMax) + 0.5f)
+                    << (8 * c);
+        }
+        pNew->mEntries[i] = nOut;
+    }
+    pTex->SetPalette(pNew, 0);
+    g_recoloured.push_back(std::make_pair(pTex, pNew));
+}
+
+void RecolourGems() {
+    for (int nColor = 0; kGemLetters[nColor] != '\0'; ++nColor) {
+        for (int nLod = 0;; ++nLod) {
+            Rnd::MultiMesh *pMulti = dynamic_cast<Rnd::MultiMesh *>(Rnd::TheManager.Find(
+                HxStr(Rnd::MakeString("gem_hex_%c%d.mm", kGemLetters[nColor], nLod))));
+            if (pMulti == nullptr) {
+                break;
+            }
+            Rnd::Mat *pMat = pMulti->GetMesh()->mMat;
+            for (auto it = pMat->mStages.begin(); it != pMat->mStages.end(); ++it) {
+                if (it->mTex != nullptr) {
+                    RecolourTex(it->mTex, kCbGemColors[nColor]);
+                }
+            }
+        }
+    }
+}
+
+} // namespace
+#endif
+#ifndef RESONANCE_HOST
+#line 1
+#endif
+
 #include <algorithm>
 
 #include "app/application.h"
@@ -438,6 +518,14 @@ AppTunnel::AppTunnel(Renderer *pRenderer)
     mHexGemKinds[2] = mGemManager->AddMeshKind("gem_hex_r", flHexGemLod, 1.0f);
     mHexGemKinds[3] = mGemManager->AddMeshKind("gem_hex_y", flHexGemLod, 1.0f);
     mHexGemKinds[4] = mGemManager->AddMeshKind("gem_hex_p", flHexGemLod, 1.0f);
+#ifdef RESONANCE_HOST
+    if (HostGemPalette() != 0) {
+        RecolourGems();
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 440
+#endif
     mCrateGemKind = mGemManager->AddMeshKind("gem_crate", flHexGemLod, 1.0f);
     mPowerupGemKinds.resize(kHudItemMultiplier + 1);
     mPowerupGemKinds[kHudItemBumper] = mGemManager->AddMeshKind("gem_bump", flPowerupGemLod, 1.0f);
@@ -686,7 +774,17 @@ void AppTunnel::OnGem(GemMsg *pMsg) {
     }
     float flAppearFrame = flTick;
     bool bFlash = !pPlayer->IsNull();
+#ifdef RESONANCE_HOST
+    const int nColor = HostTestGemColor(TnlColorIndexFromName(pPlayer->mColorName));
+#else
+#ifndef RESONANCE_HOST
+#line 688
+#endif
     const int nColor = TnlColorIndexFromName(pPlayer->mColorName);
+#endif
+#ifndef RESONANCE_HOST
+#line 689
+#endif
     char nKind;
     if (pMsg->mGhost) {
         nKind = mGhostGemKinds[nTrack];

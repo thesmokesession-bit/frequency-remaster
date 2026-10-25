@@ -146,3 +146,21 @@ extern int g_nAppTunnelTutorial;
  * @ghidraAddress PAL: 0x00727bd0
  */
 extern float g_flTunnelBrightness;
+
+#ifdef RESONANCE_HOST
+extern "C" int HostGemPalette(); // FREQ_GEM_PALETTE=cb, host/gfx-null/gfx.cpp
+
+/**
+ * The gem colour of each colour index (null, green, red, yellow, purple) under FREQ_GEM_PALETTE=cb:
+ * Okabe-Ito based, tuned on the rendered gems to stay apart under deuteranopia and protanopia, with
+ * a lightness order as a second cue (null white, then yellow, green, blue for purple, and a dark
+ * vermilion for red).
+ */
+constexpr float kCbGemColors[5][3] = {
+    {1.0f, 1.0f, 1.0f},
+    {0.0f, 0.713f, 0.519f},
+    {0.626f, 0.277f, 0.0f},
+    {0.941f, 0.894f, 0.259f},
+    {0.0f, 0.447f, 0.698f},
+};
+#endif

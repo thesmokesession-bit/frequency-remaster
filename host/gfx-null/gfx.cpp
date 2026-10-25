@@ -308,6 +308,22 @@ float HostTrails() {
     return flTrails;
 }
 
+int HostGemPalette() {
+    static const bool bCb = [] {
+        const char *pszValue = getenv("FREQ_GEM_PALETTE");
+        return pszValue != nullptr && strcmp(pszValue, "cb") == 0;
+    }();
+    return bCb;
+}
+
+int HostTestGemColor(int nColor) {
+    static const int nForced = [] {
+        const char *pszValue = getenv("FREQ_TEST_GEMCOLOR");
+        return pszValue != nullptr ? atoi(pszValue) : -1;
+    }();
+    return nForced >= 0 ? nForced : nColor;
+}
+
 int HostWaitVblank() {
     pthread_once(&g_vblankOnce, StartVblanks);
     pthread_mutex_lock(&g_vblankLock);

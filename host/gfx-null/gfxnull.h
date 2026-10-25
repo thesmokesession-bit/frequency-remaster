@@ -92,6 +92,14 @@ int HostHudEdges(void);
  *  1, the default, is the original. */
 float HostTrails(void);
 
+/** FREQ_GEM_PALETTE=cb: the gems of the five player colours (and their flash particles) take a
+ *  palette that stays distinct under deuteranopia and protanopia (src/app/tnlutil.h). */
+int HostGemPalette(void);
+
+/** Test hook FREQ_TEST_GEMCOLOR=<0..4>: every plain gem takes that colour index (null, green, red,
+ *  yellow, purple) instead of nColor. */
+int HostTestGemColor(int nColor);
+
 #ifdef __cplusplus
 }
 #endif

@@ -31,6 +31,15 @@ enum ColorIndex {
 };
 
 inline Color ParticleColor(int nColor) {
+#ifdef RESONANCE_HOST
+    if (HostGemPalette() != 0 && nColor >= 0 && nColor < 5) {
+        return Color{
+            kCbGemColors[nColor][0], kCbGemColors[nColor][1], kCbGemColors[nColor][2], 1.0f};
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 33
+#endif
     switch (nColor) {
     case kColorIndexGreen:
         return Color{0.0f, 1.0f, 0.0f, 1.0f};
