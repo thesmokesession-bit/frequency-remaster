@@ -90,6 +90,8 @@ void ps2gfx_wait_frames(void);
    at res_factor times its size with Vulkan (OpenGL: native size). Returns 0 on success, -1 if
    nothing is displayed. */
 int ps2gfx_screenshot(const char* path);
+/* The same pixels as ps2gfx_screenshot, hashed (FNV-1a) instead of written. Returns 0 on success. */
+int ps2gfx_frame_hash(uint64_t* hash);
 /* OpenGL: presents the displayed framebuffer again and writes the whole window, at the window's
    size, as PNG. Call after ps2gfx_vsync. Returns 0 on success. */
 int ps2gfx_screenshot_output(const char* path);

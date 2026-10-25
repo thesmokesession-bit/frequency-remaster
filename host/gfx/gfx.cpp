@@ -9,7 +9,7 @@
 // Blanks are fields (59.94 Hz) at any FREQ_FPS. Groups for more breadcrumbs follow after ';'.
 //
 // FREQ_FRAMEHASH=<BREADCRUMB>:<fields> logs "FRAMEHASH <tick> <ns> <hash>" for each frame presented
-// in that many fields from the breadcrumb: a hash of the displayed frame's PNG, and the fixed
+// in that many fields from the breadcrumb: a hash of the displayed frame's pixels, and the fixed
 // clock's time (FREQ_CLOCK=fixed presents each tick's frame before the game goes on).
 //
 // FREQ_SCALE=<n> draws the GS at n times its resolution, FREQ_OUTPUT=<width>x<height> sizes the
@@ -18,14 +18,12 @@
 
 #include <algorithm>
 #include <atomic>
-#include <fcntl.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <string>
-#include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
 #include <vector>
@@ -106,28 +104,13 @@ bool g_bHashAnchored = false;
 unsigned g_nHashAnchor = 0;
 
 void HashFrame(unsigned nTick) {
-    char szPath[64];
-    snprintf(szPath, sizeof(szPath), "/dev/shm/freq-framehash-%d.png", static_cast<int>(getpid()));
-    unsigned long long nHash = 14695981039346656037ULL; // FNV-1a
-    const int nResult = ps2gfx_screenshot(szPath);
-    // fopen(), read() and close() are the game's (host/io/stdio.cpp), so the host file goes
-    // through the system calls.
-    const long nFile = syscall(SYS_openat, AT_FDCWD, szPath, O_RDONLY);
-    unsigned char aBuffer[65536];
-    for (long n; nFile >= 0 && (n = syscall(SYS_read, nFile, aBuffer, sizeof(aBuffer))) > 0;) {
-        for (long i = 0; i < n; ++i) {
-            nHash = (nHash ^ aBuffer[i]) * 1099511628211ULL;
-        }
-    }
-    if (nFile >= 0) {
-        syscall(SYS_close, nFile);
-    }
-    syscall(SYS_unlinkat, AT_FDCWD, szPath, 0);
+    uint64_t nHash = 0;
+    const int nResult = ps2gfx_frame_hash(&nHash);
     fprintf(stderr,
             "FRAMEHASH %u %lld %016llx%s\n",
             nTick,
             HostFixedClockNs(),
-            nHash,
+            static_cast<unsigned long long>(nHash),
             nResult == 0 ? "" : " FAILED");
 }
 
