@@ -44,6 +44,12 @@
 
 #include "os/hostmode.h"
 #endif
+#ifdef RESONANCE_HOST
+#include "gfx/hostframe.h"
+#endif
+#ifndef RESONANCE_HOST
+#line 46
+#endif
 
 namespace {
 
@@ -610,6 +616,19 @@ void MetSoloStagesScreen::SetUpStages(int bUnlockAll) {
     mStageLocked[kCustomStageIndex] = 0;
 
     UpdateSecretLevels(bUnlockAll);
+#ifdef RESONANCE_HOST
+    {
+        char szLocked[kNumberedStageCount + 1] = {};
+        for (int i = 0; i < kNumberedStageCount; ++i) {
+            szLocked[i] = mStageLocked[i] != 0 ? 'L' : 'o';
+        }
+        HostEvent("stages unlockall=%d locked=%s secret=%d supersecret=%d", bUnlockAll, szLocked,
+                  mSecretUnlocked, mSuperSecretUnlocked);
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 612
+#endif
     ApplyStageStyles();
 
     int nStage = nStagesComplete;
@@ -1051,9 +1070,22 @@ void MetSoloStagesScreen::EnterAndShow() {
         return;
     }
 
+#ifdef RESONANCE_HOST
+    int HostUnlockAll(); // met/metfrontendstate.cpp: FREQ_UNLOCK_ALL
+    mUnlockAll = MetFrontEndState::shared()->mUnlockAll | HostUnlockAll();
+    RebuildLevelLists();
+    SetUpStages(mUnlockAll);
+#else
+#ifndef RESONANCE_HOST
+#line 1053
+#endif
     mUnlockAll = MetFrontEndState::shared()->mUnlockAll;
     RebuildLevelLists();
     SetUpStages(MetFrontEndState::shared()->mUnlockAll);
+#endif
+#ifndef RESONANCE_HOST
+#line 1056
+#endif
 
     if (MetFrontEndState::shared()->mPendingTransition != 0) {
         MetFrontEndState *pState = MetFrontEndState::shared();

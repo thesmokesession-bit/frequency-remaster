@@ -151,6 +151,17 @@ int64_t NowNs() {
     return static_cast<int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec;
 }
 
+// FREQ_AUDIO_OFFSET_MS: everything heard plays this much later against the game (negative:
+// earlier). Each sound is stamped that much after its due time; a negative offset lengthens the
+// lead by as much, so the stamp is still ahead of the render when the message arrives.
+const int64_t g_nOffsetCycles = static_cast<int64_t>(
+    atof(getenv("FREQ_AUDIO_OFFSET_MS") != nullptr ? getenv("FREQ_AUDIO_OFFSET_MS") : "0") * 294912);
+const uint64_t g_nLeadCycles = kLeadCycles + static_cast<uint64_t>(std::max<int64_t>(-g_nOffsetCycles, 0));
+
+uint64_t Stamp(uint64_t nDue) {
+    return static_cast<uint64_t>(std::max<int64_t>(static_cast<int64_t>(nDue) + g_nOffsetCycles, 0));
+}
+
 uint64_t EeClock() {
     // FREQ_CLOCK=fixed: the frame loop's clock, which HostAudioFixedTick() renders up to.
     if (const long long nFixedNs = HostFixedClockNs(); nFixedNs >= 0) {
@@ -167,7 +178,7 @@ uint64_t EeClock() {
     } while (nCycles != g_nAnchorCycles.load());
     // The EE moves through the block the renderer makes next, and no further, a lead ahead.
     const int64_t nSince = std::clamp<int64_t>(NowNs() - nAnchorNs, 0, kBlockNs);
-    const uint64_t nNow = nCycles + kLeadCycles + static_cast<uint64_t>(nSince) * 294912 / 1000000;
+    const uint64_t nNow = nCycles + g_nLeadCycles + static_cast<uint64_t>(nSince) * 294912 / 1000000;
     uint64_t nLast = g_nLastCycles.load();
     while (nNow > nLast && !g_nLastCycles.compare_exchange_weak(nLast, nNow)) {
     }
@@ -669,7 +680,7 @@ void HostIopUnlock() {
 void HostMidiQueued(unsigned nOffset, long long nLateNs) {
     const uint64_t nLate = static_cast<uint64_t>(std::max(nLateNs, 0LL)) * 294912 / 1000000;
     const uint64_t nNow = EeClock();
-    g_midiDue.push_back({nOffset, nNow - std::min(nLate, nNow)});
+    g_midiDue.push_back({nOffset, Stamp(nNow - std::min(nLate, nNow))});
 }
 
 // A SIF DMA write into IOP memory, under the IOP lock. MIDI for the synth waits for its due time:
@@ -692,7 +703,7 @@ void HostIopWrite(void *pDest, const void *pSource, unsigned nSize) {
     const unsigned nData = nSize > 2 * sizeof(uint32_t) ? nSize - 2 * sizeof(uint32_t) : 0;
     const uint64_t nNow = EeClock();
     size_t nDue = 0;
-    uint64_t nStamp = nNow;
+    uint64_t nStamp = Stamp(nNow);
     for (unsigned nOffset = 0; nOffset < nData;) {
         while (nDue < g_midiDue.size() && g_midiDue[nDue].nOffset <= nOffset) {
             nStamp = g_midiDue[nDue++].nStamp;
@@ -718,7 +729,7 @@ void HostAudioFixedTick() {
     if (!g_bStarted) {
         return;
     }
-    const uint64_t nTarget = EeClock() > kLeadCycles ? EeClock() - kLeadCycles : 0;
+    const uint64_t nTarget = EeClock() > g_nLeadCycles ? EeClock() - g_nLeadCycles : 0;
     HostUseSystemHeap(1);
     while (g_nRendered * kEeCyclesPerSample < nTarget) {
         const uint64_t nFrames =
@@ -971,7 +982,7 @@ int sceSdRemote(int nWait, ...) {
             g_block.nSize = nSize;
             g_block.nFrom =
                 (nMode & 3) == kSdTransWriteFrom ? static_cast<uint32_t>(nFrom - nRing) : 0;
-            g_block.nStart = EeClock();
+            g_block.nStart = Stamp(EeClock());
             g_block.nWritten = nSize;
         }
         UpdateBlockStatus();

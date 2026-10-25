@@ -39,6 +39,25 @@
 #include "script/configquery.h"
 #include "script/scripthost.h"
 #include "synth/midi_main.h"
+#ifdef RESONANCE_HOST
+#include <cstdlib>
+#include <cstring>
+
+#include "gfx/hostframe.h"
+
+namespace {
+// Set once a FREQ_NO_FAIL song's juice falls under the fail threshold; Gamer::Start() clears it.
+bool g_bNoFailRescued = false;
+
+bool HostNoFail() {
+    const char *pszValue = getenv("FREQ_NO_FAIL");
+    return pszValue != nullptr && strcmp(pszValue, "0") != 0;
+}
+} // namespace
+#endif
+#ifndef RESONANCE_HOST
+#line 41
+#endif
 
 namespace {
 
@@ -423,6 +442,14 @@ void Gamer::DeclareWinners() {
 }
 
 void Gamer::RecordSoloStats(int bCompleted, int nBar) {
+#ifdef RESONANCE_HOST
+    HostEvent("solo_end won=%d bar=%d end=%d", bCompleted, nBar, mEndBar);
+    void HostBreadcrumb(const char *pszName); // host/io/pad.cpp
+    HostBreadcrumb(bCompleted != 0 ? "SOLO_WON" : "SOLO_LOST");
+#endif
+#ifndef RESONANCE_HOST
+#line 425
+#endif
     mStats->mCompleted = bCompleted;
     mStats->mCheated = mCheated;
     mStats->SetScore(0, mPlayers[0]->GetScore());
@@ -457,7 +484,31 @@ void Gamer::OnBar(int nBar) {
         } else {
             Player *pPlayer = mPlayers[0];
             pPlayer->GetInputSlot(); // Yes, the binary discards this call's result.
+#ifdef RESONANCE_HOST
+            // FREQ_NO_FAIL=1: the bar the song would have been lost at (the test below) does not
+            // end it, but the song then ends as a fail at its end bar instead of a win, recording
+            // no progress or score.
+            if (HostNoFail() && mEndState == kEndStateNone && pPlayer->GetJuice() < kMinimumJuice &&
+                !g_bNoFailRescued && nBar < mEndBar) {
+                bool bExhausted = true;
+                for (int i = 0; i < mTrackCount; ++i) {
+                    bExhausted = bExhausted && (*mGraphs)[i]->HasNothingPending() != 0;
+                }
+                if (bExhausted) {
+                    g_bNoFailRescued = true;
+                    HostEvent("nofail_rescued bar=%d", nBar);
+                }
+            }
+            if (nBar >= mEndBar && mEndState == kEndStateNone && !g_bNoFailRescued) {
+#else
+#ifndef RESONANCE_HOST
+#line 459
+#endif
             if (nBar >= mEndBar && mEndState == kEndStateNone) {
+#endif
+#ifndef RESONANCE_HOST
+#line 460
+#endif
                 mEndState = kEndStateWon;
                 pPlayer->SetFreestyleSpan(nBar, nBar + kWonBarSpan);
 
@@ -480,7 +531,18 @@ void Gamer::OnBar(int nBar) {
                         (*mGraphs)[i]->GivePhrases(nBar, pPlayer);
                     }
                 }
+#ifdef RESONANCE_HOST
+            } else if ((pPlayer->GetJuice() < kMinimumJuice && !HostNoFail()) ||
+                       (g_bNoFailRescued && (nBar >= mEndBar || mEndState != kEndStateNone))) {
+#else
+#ifndef RESONANCE_HOST
+#line 482
+#endif
             } else if (pPlayer->GetJuice() < kMinimumJuice) {
+#endif
+#ifndef RESONANCE_HOST
+#line 483
+#endif
                 if (mEndState != kEndStateNone) {
                     InputMap::shared()->EnableEntries();
                     mGlobals->GetWorld()->PostFinish();
@@ -542,6 +604,12 @@ void Gamer::OnBar(int nBar) {
 }
 
 void Gamer::Start() {
+#ifdef RESONANCE_HOST
+    g_bNoFailRescued = false;
+#endif
+#ifndef RESONANCE_HOST
+#line 544
+#endif
     ScheduleBar(0);
 }
 

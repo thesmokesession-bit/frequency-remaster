@@ -1,6 +1,13 @@
 #include "met/metfrontendstate.h"
 
 #include <vector>
+#ifdef RESONANCE_HOST
+#include <cstdlib>
+#include <cstring>
+#endif
+#ifndef RESONANCE_HOST
+#line 3
+#endif
 
 #include "app/application.h"
 #include "game/gamemanagerimpl.h"
@@ -40,8 +47,33 @@ void MetFrontEndState::Destroy() {
     g_pFrontEndState = nullptr;
 }
 
+#ifdef RESONANCE_HOST
+// FREQ_UNLOCK_ALL=1: the arena and stage screens open everything, as under the cheat, but the cheat
+// flag stays off, so songs still save progress and high scores.
+int HostUnlockAll() {
+    const char *pszUnlock = getenv("FREQ_UNLOCK_ALL");
+    return pszUnlock != nullptr && strcmp(pszUnlock, "0") != 0;
+}
+#endif
+
+#ifndef RESONANCE_HOST
+#line 42
+#endif
 void MetFrontEndState::Reset() {
+#ifdef RESONANCE_HOST
+    // FREQ_TEST_CHEAT_UNLOCK=1, a test control: the game's own unlock cheat (which also stops
+    // saving), on from the start as if entered at the logo screen. FREQ_UNLOCK_ALL is HostUnlockAll().
+    const char *pszCheat = getenv("FREQ_TEST_CHEAT_UNLOCK");
+    mUnlockAll = pszCheat != nullptr && strcmp(pszCheat, "0") != 0;
+#else
+#ifndef RESONANCE_HOST
+#line 43
+#endif
     mUnlockAll = 0;
+#endif
+#ifndef RESONANCE_HOST
+#line 44
+#endif
     mPendingTransition = 0;
     mLastTransition = 0;
     mUnusedFlag = 0;

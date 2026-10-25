@@ -22,7 +22,107 @@
 #include "sch/command.h"
 
 #ifdef RESONANCE_HOST
+#include <cmath>
+
+#include "game/globalsettings.h"
+#include "game/grooveworld.h"
+#include "sch/tempomap.h"
+
 extern "C" int HostRand(void); // host/core/libc.c: the console C library's rand()
+
+namespace {
+
+// Live presses are judged FREQ_INPUT_OFFSET_MS earlier, and each gem's miss deadline moves as
+// much; a demo plays back as recorded. FREQ_TEST_AUTOPLAY_MS, a test control, presses each gem of a
+// local player's track that many ms late through the controller path. Both are read at Start().
+int g_nJudgeTicks = 0;
+bool g_bAutoplay = false;
+int g_nAutoplayTicks = 0;
+
+int MsToTicks(Sch::TickClock *pClock, const char *pszMs) {
+    return static_cast<int>(
+        std::llround(atof(pszMs) * 1e6 / pClock->mTempoMap->mNanosecondsPerTick));
+}
+
+bool IsLive() {
+    return Application::shared()->GetGameManager()->IsPlaybackActive() == 0;
+}
+
+int JudgeTicks() {
+    return IsLive() ? g_nJudgeTicks : 0;
+}
+
+constexpr int kActionPitchRiff = 0x72706368;   // InputMap's `rpch`
+constexpr int kActionRotateRight = 0x726f7452; // `rotR`
+constexpr int kActionRotateLeft = 0x726f744c;  // `rotL`
+constexpr int kChannels = 8;                   // TrackSelector's ring
+
+// What the autoplay knows of each track: the tick and riff of its next gem in a free bar (tick -1:
+// none), as its catcher saw at its last gem, and the last gem tick it pressed there.
+struct AutoplayTrack {
+    int nFreeTick = -1;
+    int nFreeGem = 0;
+    int nPressedTick = -1;
+};
+AutoplayTrack g_autoplayTracks[kChannels];
+
+// One press (value 1) or release (value 0) of the button player slot nSlot binds to an action
+// (for a riff, the one bound to riff nRiff).
+class AutoplayCmd : public Sch::Command {
+public:
+    AutoplayCmd(int nSlot, int nAction, int nRiff, float flValue)
+        : mSlot(nSlot), mAction(nAction), mRiff(nRiff), mValue(flValue) {
+    }
+    virtual int CmdID() {
+        return sCmdID;
+    }
+    virtual void Execute() {
+        constexpr int kReadingTypeJoy = 0x6a6f7920; // `joy `
+        ControllerConfig &config = GlobalSettings::shared()->mControllers[mSlot];
+        for (int i = 0; i < static_cast<int>(config.mButtons.size()); ++i) {
+            if (config.ActionCode(i) == mAction &&
+                (mAction != kActionPitchRiff || config.RiffIndex(i) == mRiff)) {
+                Application::shared()->GetWorld()->OnControllerReading(
+                    kReadingTypeJoy, mSlot + 1, config.mButtons[i], mValue);
+                return;
+            }
+        }
+    }
+    virtual void Print(std::ostream &stream) {
+        stream << "{Catcher/Autoplay}";
+    }
+    static int sCmdID;
+
+private:
+    int mSlot;
+    int mAction;
+    int mRiff;
+    float mValue;
+};
+
+int AutoplayCmd::sCmdID;
+
+void PostAutoplay(
+    Sch::TickClock *pClock, int nTick, int nSlot, int nAction, int nRiff, float flValue) {
+    AutoplayCmd *pCommand = new AutoplayCmd(nSlot, nAction, nRiff, flValue);
+    Sch::CmdID id;
+    id.mValue = -2; // unallocated
+    pClock->PostAtSongTick(pCommand, nTick, id);
+    pCommand->Release();
+}
+
+// Press a gem of the track the player is on, or about to be on, autoplay-late; once per gem.
+void AutoplayPress(Sch::TickClock *pClock, int nSlot, int nTrack, int nTick, int nGem) {
+    constexpr int kHoldTicks = 60;
+    if (g_autoplayTracks[nTrack].nPressedTick == nTick) {
+        return;
+    }
+    g_autoplayTracks[nTrack].nPressedTick = nTick;
+    PostAutoplay(pClock, nTick + g_nAutoplayTicks, nSlot, kActionPitchRiff, nGem, 1.0f);
+    PostAutoplay(pClock, nTick + g_nAutoplayTicks + kHoldTicks, nSlot, kActionPitchRiff, nGem, 0.0f);
+}
+
+} // namespace
 #endif
 #ifndef RESONANCE_HOST
 #line 22
@@ -311,7 +411,17 @@ void Catcher::PostCatchMsg(PitchRiffMsg *pMsg) {
         return;
     }
 
+#ifdef RESONANCE_HOST
+    const int nTick = MakePosition(pMsg->mPosition.mTick - JudgeTicks()).mTick;
+#else
+#ifndef RESONANCE_HOST
+#line 306
+#endif
     const int nTick = pMsg->mPosition.mTick;
+#endif
+#ifndef RESONANCE_HOST
+#line 307
+#endif
     const int nSnapped = SnapToNearestGem(nTick);
     const int nGem = pMsg->mButton;
     if (!IsBarFree(nSnapped / mTicksPerBar.mTick)) {
@@ -447,7 +557,54 @@ void Catcher::SchedulePostGemCommand(int nTick) {
     const Sch::Tick when = MakePosition(nDelay + Sch::Tick(1).mTick);
 
     PostGemCmd *pCommand = new PostGemCmd(this, nGemTick);
+#ifdef RESONANCE_HOST
+    mClock->PostAtSongTick(pCommand, MakePosition(when.mTick + JudgeTicks()).mTick, mPostGemCommand);
+    if (g_bAutoplay && IsLive() && mTrack >= 0 && mTrack < kChannels) {
+        // The autoplay plays the player's track; once it is captured, it moves to the track whose
+        // next free gem comes first.
+        constexpr int kMoveLeadTicks = 240;
+        const int nGem = mTrackData->GetGemAt(nGemTick);
+        const bool bFree = nGem != kNoGem && IsBarFree(nGemTick / mTicksPerBar.mTick);
+        g_autoplayTracks[mTrack].nFreeTick = bFree ? nGemTick : -1;
+        g_autoplayTracks[mTrack].nFreeGem = nGem;
+        const int nSlot = mPlayer->GetInputSlot();
+        if (nSlot >= 0 && bFree) {
+            AutoplayPress(mClock, nSlot, mTrack, nGemTick, nGem);
+        } else if (nSlot >= 0) {
+            // Decided on the judged clock and pressed autoplay-late, as a lagging player would.
+            const int nNow = mClock->SongTick() - JudgeTicks();
+            int nTarget = -1;
+            for (int nTrack = 0; nTrack < kChannels; ++nTrack) {
+                const int nTick = g_autoplayTracks[nTrack].nFreeTick;
+                if (nTrack != mTrack && nTick > nNow + kMoveLeadTicks &&
+                    (nTarget < 0 || nTick < g_autoplayTracks[nTarget].nFreeTick)) {
+                    nTarget = nTrack;
+                }
+            }
+            if (nTarget >= 0) {
+                const int nSteps = (nTarget - mTrack + kChannels) % kChannels;
+                const bool bRight = nSteps <= kChannels / 2;
+                for (int i = 0; i < (bRight ? nSteps : kChannels - nSteps); ++i) {
+                    const int nAction = bRight ? kActionRotateRight : kActionRotateLeft;
+                    const int nAt = nNow + g_nAutoplayTicks + 1 + 2 * i;
+                    PostAutoplay(mClock, nAt, nSlot, nAction, 0, 1.0f);
+                    PostAutoplay(mClock, nAt + 1, nSlot, nAction, 0, 0.0f);
+                }
+                HostEvent("autoplay move from=%d to=%d", mTrack, nTarget);
+                AutoplayPress(mClock, nSlot, nTarget, g_autoplayTracks[nTarget].nFreeTick,
+                              g_autoplayTracks[nTarget].nFreeGem);
+            }
+        }
+    }
+#else
+#ifndef RESONANCE_HOST
+#line 442
+#endif
     mClock->PostAtSongTick(pCommand, when.mTick, mPostGemCommand);
+#endif
+#ifndef RESONANCE_HOST
+#line 443
+#endif
     if (pCommand != nullptr) {
         pCommand->Release();
     }
@@ -618,6 +775,19 @@ void Catcher::OnInvalidateSeeker(InvalidateSeekerMsg *pMsg) {
 }
 
 void Catcher::Start() {
+#ifdef RESONANCE_HOST
+    const char *pszOffset = getenv("FREQ_INPUT_OFFSET_MS");
+    g_nJudgeTicks = pszOffset != nullptr ? MsToTicks(mClock, pszOffset) : 0;
+    const char *pszAutoplay = getenv("FREQ_TEST_AUTOPLAY_MS");
+    g_bAutoplay = pszAutoplay != nullptr;
+    if (mTrack >= 0 && mTrack < kChannels) {
+        g_autoplayTracks[mTrack] = AutoplayTrack();
+    }
+    g_nAutoplayTicks = g_bAutoplay ? MsToTicks(mClock, pszAutoplay) : 0;
+#endif
+#ifndef RESONANCE_HOST
+#line 605
+#endif
     SchedulePostGemCommand(Sch::Tick(kBeforeSongStart).mTick);
     if (Application::shared()->GetGameMode() == kGameModeNet) {
         ScheduleGemCommand(Sch::Tick(kBeforeSongStart).mTick);

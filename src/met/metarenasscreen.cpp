@@ -31,6 +31,12 @@
 
 #include "os/hostmode.h"
 #endif
+#ifdef RESONANCE_HOST
+#include "gfx/hostframe.h"
+#endif
+#ifndef RESONANCE_HOST
+#line 33
+#endif
 
 namespace {
 
@@ -177,7 +183,18 @@ void MetArenasScreen::EnterAndShow() {
     MetScreenTitleScreen::SetTitle(modeKind + arenas);
 
     mScreenshots->invalidate();
+#ifdef RESONANCE_HOST
+    int HostUnlockAll(); // met/metfrontendstate.cpp: FREQ_UNLOCK_ALL
+    SetupArenaButtons(MetFrontEndState::shared()->mUnlockAll | HostUnlockAll());
+#else
+#ifndef RESONANCE_HOST
+#line 179
+#endif
     SetupArenaButtons(MetFrontEndState::shared()->mUnlockAll);
+#endif
+#ifndef RESONANCE_HOST
+#line 180
+#endif
     MetHelpScreen::SelectPreset(MetText(kMetStrHStandardTitle, kStandardTitleLayout));
     MetScreen::EnterAndShow();
 }
@@ -220,6 +237,12 @@ void MetArenasScreen::SetupArenaButtons(int bUnlockAll) {
         mUnlockedCount = nArenaCount;
     }
     mNoArenaIndex = GetArenaList()->size() - 1;
+#ifdef RESONANCE_HOST
+    HostEvent("arenas unlockall=%d unlocked=%d of=%d", bUnlockAll, mUnlockedCount, nArenaCount);
+#endif
+#ifndef RESONANCE_HOST
+#line 222
+#endif
 
     for (int i = 0; i < nButtonCount; ++i) {
         HxStr label;

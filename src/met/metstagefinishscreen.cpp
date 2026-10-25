@@ -23,6 +23,12 @@
 #include "rnd/text.h"
 #include "rnd/view.h"
 #include "script/configquery.h"
+#ifdef RESONANCE_HOST
+#include "gfx/hostframe.h"
+#endif
+#ifndef RESONANCE_HOST
+#line 25
+#endif
 
 namespace {
 
@@ -210,6 +216,16 @@ void MetStageFinishScreen::EnterAndShow() {
         }
         AddEndSuperSecretUnlockMessage(nWasEndBeaten, nIsEndBeaten);
 
+#ifdef RESONANCE_HOST
+        HostEvent("stage_record score=%d beaten=%d saved=%d",
+                  pGameStats->GetScore(kFirstPlayer),
+                  pStats->GetLevelBeaten(nDifficulty, params.mLevelName),
+                  (nWasBeaten == 0 || nOldHighScore < pGameStats->GetScore(kFirstPlayer)) &&
+                      MetFrontEndState::shared()->mUnlockAll == 0);
+#endif
+#ifndef RESONANCE_HOST
+#line 212
+#endif
         mStageRecorded = 1;
         if ((nWasBeaten == 0 || nOldHighScore < pGameStats->GetScore(kFirstPlayer)) &&
             MetFrontEndState::shared()->mUnlockAll == 0) {

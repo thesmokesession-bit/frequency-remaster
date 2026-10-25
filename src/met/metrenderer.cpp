@@ -203,6 +203,25 @@ RndAsyncLoader *gArenaLoader;
 
 } // namespace
 
+#ifdef RESONANCE_HOST
+#include <cstdio>
+#include <cstring>
+#include <typeinfo>
+
+void HostBreadcrumb(const char *pszName); // host/io/pad.cpp
+
+// A breadcrumb PANEL_<class> each time a screen becomes the active panel, for input scripts.
+static void HostPanelBreadcrumb(MetScreen *pScreen) {
+    const char *pszName = typeid(*pScreen).name();
+    char szCrumb[96];
+    snprintf(szCrumb, sizeof(szCrumb), "PANEL_%s", pszName + strspn(pszName, "0123456789"));
+    HostBreadcrumb(szCrumb);
+}
+#endif
+
+#ifndef RESONANCE_HOST
+#line 205
+#endif
 // NTSC-U/C: 0x006c3598, PAL: 0x00706608
 MetRenderer *MetRenderer::sInstance;
 
@@ -342,6 +361,12 @@ void MetRenderer::OnFadeOutDone() {
     mActivePanel = pPending;
     mPanelActive = 1;
     AddScreen(mActivePanel);
+#ifdef RESONANCE_HOST
+    HostPanelBreadcrumb(mActivePanel);
+#endif
+#ifndef RESONANCE_HOST
+#line 331
+#endif
     mActivePanel->PollContainerLoad(); // Yes, the binary discards the result.
     mActivePanel->mEnterPending = 1;
     mActivePanel->mActivatePending = 1;
@@ -352,6 +377,12 @@ void MetRenderer::OnFadeInDone() {
 
 void MetRenderer::SetActivePanel(MetScreen *pScreen) {
     mActivePanel = pScreen;
+#ifdef RESONANCE_HOST
+    HostPanelBreadcrumb(mActivePanel);
+#endif
+#ifndef RESONANCE_HOST
+#line 341
+#endif
 
     if (mCommandRepeater != nullptr) {
         mCommandRepeater->Reset();
@@ -422,6 +453,12 @@ void MetRenderer::ActivatePanel(MetScreen *pScreen) {
     }
     mPanelActive = 1;
     AddScreen(mActivePanel);
+#ifdef RESONANCE_HOST
+    HostPanelBreadcrumb(mActivePanel);
+#endif
+#ifndef RESONANCE_HOST
+#line 411
+#endif
     mActivePanel->PollContainerLoad(); // Yes, the binary discards the result.
     mActivePanel->mEnterPending = 1;
     mActivePanel->mActivatePending = 1;
