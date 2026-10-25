@@ -14,6 +14,11 @@
 #include "gfx/hostframe.h"
 #ifdef RESONANCE_HOST
 #include "os/random.h" // gRandom, for the event log
+#include "sch/tempomap.h"
+extern "C" long long HostPracticeLagNs(void); // host/audio/audio.cpp
+#endif
+#ifndef RESONANCE_HOST
+#line 17
 #endif
 #include "gfx/vram.h"
 #include "msg/barstatusmsg.h"
@@ -185,8 +190,20 @@ void Renderer::DispatchPriv(Message *pMsg) {
 void Renderer::PollMessages() {
     mSongTick = static_cast<float>(mSongClock->SongTick());
 #ifdef RESONANCE_HOST
+    // A practice speed's time stretch plays the sound later (HostPracticeLagNs()): the picture
+    // shows the song as much later, in step with it.
+    if (const long long nLagNs = HostPracticeLagNs(); nLagNs != 0) {
+        const Sch::TempoMap *pTempo = mSongClock->mTempoMap;
+        mSongTick = static_cast<float>(
+            Sch::Tick(static_cast<int>((mSongClock->Now() - nLagNs + pTempo->mCeilingBias) /
+                                       pTempo->mNanosecondsPerTick))
+                .mTick);
+    }
     HostEvent(
         "frame songtick=%d songns=%lld rng=%d", mSongClock->SongTick(), mSongClock->Now(), gRandom);
+#endif
+#ifndef RESONANCE_HOST
+#line 190
 #endif
     RendererBase::PollMessages();
 }

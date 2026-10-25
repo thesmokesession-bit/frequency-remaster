@@ -22,7 +22,22 @@
 #include "sch/command.h"
 
 #ifdef RESONANCE_HOST
-extern "C" int HostRand(void); // host/core/libc.c: the console C library's rand()
+#include "sch/tempomap.h"
+extern "C" int HostRand(void);              // host/core/libc.c: the console C library's rand()
+extern "C" long long HostPracticeLagNs(void); // host/audio/audio.cpp
+
+namespace {
+
+// A practice speed plays the sound later (HostPracticeLagNs()): a live press is judged as much
+// earlier, and each gem's miss deadline comes as much later. A demo plays back as recorded.
+int PracticeJudgeTicks(Sch::TickClock *pClock) {
+    if (Application::shared()->GetGameManager()->IsPlaybackActive() != 0) {
+        return 0;
+    }
+    return static_cast<int>(HostPracticeLagNs() / pClock->mTempoMap->mNanosecondsPerTick);
+}
+
+} // namespace
 #endif
 #ifndef RESONANCE_HOST
 #line 22
@@ -311,7 +326,17 @@ void Catcher::PostCatchMsg(PitchRiffMsg *pMsg) {
         return;
     }
 
+#ifdef RESONANCE_HOST
+    const int nTick = MakePosition(pMsg->mPosition.mTick - PracticeJudgeTicks(mClock)).mTick;
+#else
+#ifndef RESONANCE_HOST
+#line 306
+#endif
     const int nTick = pMsg->mPosition.mTick;
+#endif
+#ifndef RESONANCE_HOST
+#line 307
+#endif
     const int nSnapped = SnapToNearestGem(nTick);
     const int nGem = pMsg->mButton;
     if (!IsBarFree(nSnapped / mTicksPerBar.mTick)) {
@@ -447,7 +472,18 @@ void Catcher::SchedulePostGemCommand(int nTick) {
     const Sch::Tick when = MakePosition(nDelay + Sch::Tick(1).mTick);
 
     PostGemCmd *pCommand = new PostGemCmd(this, nGemTick);
+#ifdef RESONANCE_HOST
+    mClock->PostAtSongTick(
+        pCommand, MakePosition(when.mTick + PracticeJudgeTicks(mClock)).mTick, mPostGemCommand);
+#else
+#ifndef RESONANCE_HOST
+#line 442
+#endif
     mClock->PostAtSongTick(pCommand, when.mTick, mPostGemCommand);
+#endif
+#ifndef RESONANCE_HOST
+#line 443
+#endif
     if (pCommand != nullptr) {
         pCommand->Release();
     }

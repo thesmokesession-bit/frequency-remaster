@@ -211,6 +211,11 @@ public:
         }
     }
 
+    // The input frame (from Reset()) of the newest output sample, or -1 before the first.
+    int64_t Content() const {
+        return m_nPrevious < 0 ? -1 : m_nPrevious + kHop - 1;
+    }
+
 private:
     float At(int64_t nFrame, int nChannel) const {
         return m_in[2 * (nFrame - m_nBase) + nChannel];
@@ -269,6 +274,30 @@ private:
 };
 Stretch g_stretch;
 bool g_bStretching = false;
+uint64_t g_nStretchBase = 0; // the rendered frame the stretch's input starts at
+
+// How much later than at normal speed the sound plays against the clock while a practice speed s
+// stretches it, in samples of song time. The picture shows the song and live presses are judged as
+// much later (HostPracticeLagNs()), so they keep with the sound as at normal speed. The terms:
+//  - the stretch's look-ahead, from the newest input it holds to the newest sample it outputs;
+//  - half a block: a frame is output on the block that brings its look-ahead in;
+//  - less (1 - s) kHop / 2: a frame's kHop samples cover kHop s of song, its average is earlier;
+//  - the render lead, kLeadCycles of song time, lasts 1 / s longer;
+//  - s kHop / 2: frames reach the device queue kHop at a time, and the queue, held at
+//    kMaxQueuedBytes, holds half a frame more (on the SDL dummy driver, 10 ms; a device that
+//    keeps its queue short sees less).
+// At 0.75 it is 2332 samples, 48.6 ms of song (64.8 ms of wall time). FREQ_TEST_PRACTICE_NO_COMP=1,
+// a test control: 0.
+double HostPracticeVideoLagSamples() {
+    static const bool s_bOff = getenv("FREQ_TEST_PRACTICE_NO_COMP") != nullptr;
+    const double s = g_flSpeed.load();
+    if (s == 1.0 || s_bOff) {
+        return 0;
+    }
+    return Stretch::kFrame + Stretch::kSeek - Stretch::kHop + kBlock / 2.0 -
+           (1 - s) * Stretch::kHop / 2 + (1 - s) * kLeadCycles / kEeCyclesPerSample +
+           s * Stretch::kHop / 2;
+}
 
 int64_t NowNs() {
     timespec now;
@@ -718,6 +747,7 @@ void RenderBlock(int nFrames) {
         s_stretched.clear();
         if (!g_bStretching) {
             g_stretch.Reset();
+            g_nStretchBase = g_nRendered - nFrames;
         }
         if (g_bStretching != (flSpeed != 1.0f)) { // where the mix starts or stops stretching
             fprintf(stderr,
@@ -738,6 +768,28 @@ void RenderBlock(int nFrames) {
         // A device slower than the wall clock loses a block now and then, rather than lagging.
         if (SDL_GetQueuedAudioSize(g_nDevice) < kMaxQueuedBytes) {
             SDL_QueueAudio(g_nDevice, pOut, nBytes);
+        }
+    }
+    // FREQ_TEST_AUDIO_LAG=1, a test measure: how far the song time on screen is ahead of the sound
+    // heard, in ms, when the newest sample plays (after the device's queue); the median each second.
+    static const bool s_bLag = getenv("FREQ_TEST_AUDIO_LAG") != nullptr;
+    if (s_bLag && g_nDevice != 0) {
+        static std::vector<float> s_lags;
+        const float flSpeed = g_bStretching ? g_flSpeed.load() : 1.0f;
+        const int64_t nContent = g_bStretching ? g_nStretchBase + g_stretch.Content() :
+                                                 static_cast<int64_t>(g_nRendered) - 1;
+        const double flQueued = SDL_GetQueuedAudioSize(g_nDevice) / 4.0;
+        // A stretch frame outputs kHop samples at once, each later against the clock than the
+        // next: the frame's average sample is (1 - speed) kHop / 2 later than its newest.
+        const double flShown = static_cast<double>(EeClock()) / kEeCyclesPerSample +
+                               flSpeed * flQueued - HostPracticeVideoLagSamples() +
+                               (g_bStretching ? (1 - flSpeed) * Stretch::kHop / 2 : 0);
+        s_lags.push_back(static_cast<float>((flShown - nContent) / (kRate / 1000.0) / flSpeed));
+        if (s_lags.size() == 100) {
+            std::nth_element(s_lags.begin(), s_lags.begin() + 50, s_lags.end());
+            fprintf(stderr, "AUDIO_LAG speed=%.2f ms=%.1f queued=%.1f\n", flSpeed, s_lags[50],
+                    flQueued / (kRate / 1000.0));
+            s_lags.clear();
         }
     }
     if (g_pWav != nullptr) {
@@ -905,6 +957,11 @@ int HostPracticeRepeatsFrom() {
 void HostPracticeLoopBars(int nFirst, int nEnd) {
     fprintf(stderr, "PRACTICE_LOOP bars %d-%d\n", nFirst + 1, nEnd);
     g_practiceLoop = {1, nFirst, nEnd};
+}
+
+// Renderer::PollMessages() and Catcher: HostPracticeVideoLagSamples() in ns of song time.
+long long HostPracticeLagNs() {
+    return llround(HostPracticeVideoLagSamples() * 1e9 / kRate);
 }
 
 // The EE cycle counter, on the audio clock.
