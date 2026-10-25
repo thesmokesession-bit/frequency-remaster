@@ -1371,8 +1371,10 @@ void CGSH_OpenGL::SetupTexture(uint64 primReg, uint64 tex0Reg, uint64 tex1Reg, u
 			GLuint& handle = m_replacementTextures[key];
 			if(!hd.rgba.empty())
 			{
+				// Mipmaps down to the native size only: the GS samples the original without mipmaps,
+				// so minified HD texels look as the original's do, not blurrier.
 				GLsizei levels = 1;
-				while((std::max(hd.width, hd.height) >> levels) != 0) levels++;
+				while((hd.width >> levels) >= tex0.GetWidth() && (hd.height >> levels) >= tex0.GetHeight()) levels++;
 				glGenTextures(1, &handle);
 				glBindTexture(GL_TEXTURE_2D, handle);
 				glTexStorage2D(GL_TEXTURE_2D, levels, GL_RGBA8, hd.width, hd.height);
