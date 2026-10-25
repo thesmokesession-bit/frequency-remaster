@@ -11,6 +11,7 @@
 #include "StdStream.h"
 #include "bitmap/BMP.h"
 #include "../GsPixelFormats.h"
+#include "TexReplace.h"
 
 /////////////////////////////////////////////////////////////
 // Texture Loading
@@ -221,6 +222,7 @@ CGSH_OpenGL::TEXTURE_INFO CGSH_OpenGL::PrepareTexture(const TEX0& tex0)
 	auto& cachedArea = texture->m_cachedArea;
 	auto texturePageSize = CGsPixelFormats::GetPsmPageSize(tex0.nPsm);
 	auto areaRect = cachedArea.GetAreaPageRect();
+	bool updated = cachedArea.HasDirtyPages();
 
 	while(cachedArea.HasDirtyPages())
 	{
@@ -248,6 +250,12 @@ CGSH_OpenGL::TEXTURE_INFO CGSH_OpenGL::PrepareTexture(const TEX0& tex0)
 	}
 
 	cachedArea.ClearDirtyPages();
+
+	if(updated && TexReplace::Active())
+	{
+		texture->m_contentHash = TexReplace::HashTexels(m_pRAM, tex0);
+	}
+	texInfo.contentHash = texture->m_contentHash;
 
 	return texInfo;
 }

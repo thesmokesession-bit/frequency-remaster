@@ -2,6 +2,7 @@
 // follows Play!'s Dmac_Channel.cpp source-chain logic, but reads PS2 memory through a callback and
 // feeds the devices from a staging buffer (their "RAM"), so device code stays unmodified.
 #include "ps2gfx.h"
+#include "TexReplace.h"
 
 #include <cstdio>
 #include <cstring>
@@ -69,6 +70,7 @@ namespace
 				capture = false;
 				return;
 			}
+			if(TexReplace::Active()) TexReplace::Present();
 			if(g_cfg.present) g_cfg.present(g_cfg.user);
 		}
 
@@ -463,6 +465,11 @@ extern "C" int ps2gfx_load_state(const void* zip, size_t size)
 	g->gif.LoadState(archive);
 	g->gs->LoadState(archive);
 	return 0;
+}
+
+extern "C" void ps2gfx_tex_generated(const char* name, int psm, int width, int height, const void* pixels, int stride)
+{
+	if(TexReplace::Active()) TexReplace::Generated(name, psm, width, height, pixels, stride);
 }
 
 extern "C" void ps2gfx_set_vu1_enabled(int enabled)

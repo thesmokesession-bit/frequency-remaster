@@ -296,6 +296,12 @@ Framework::OpenGl::CShader CGSH_OpenGL::GenerateFragmentShader(const SHADERCAPS&
 			shaderBuilder << "	textureColor = mix(tA, tB, f.y);" << std::endl;
 		}
 	}
+	else if(caps.texSourceMode == TEXTURE_SOURCE_MODE_STD && caps.texBilinearFilter)
+	{
+		// TexReplace: an HD texture standing in for a filtered indexed texture is read where the
+		// filter above reads that texture, half a native texel right of and below texCoord.
+		shaderBuilder << "	textureColor = expandAlpha(texture(g_texture, texCoord.st + 0.5 * g_texelSize));" << std::endl;
+	}
 	else if(caps.texSourceMode == TEXTURE_SOURCE_MODE_STD)
 	{
 		shaderBuilder << "	textureColor = expandAlpha(texture(g_texture, texCoord.st));" << std::endl;

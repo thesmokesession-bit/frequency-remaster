@@ -766,6 +766,14 @@ ACanvas *PsTex::LockMipBitmap(int nMip, [[maybe_unused]] int nReserved, int nFla
     return mGsMips[nMip].mVramBitmap;
 }
 
+#ifdef RESONANCE_HOST
+} // namespace Rnd
+void HostTexGenerated(const char *, int, int, int, const void *, int); // host/gfx/gfx.cpp
+namespace Rnd {
+#endif
+#ifndef RESONANCE_HOST
+#line 768
+#endif
 void PsTex::UnlockMipBitmap() {
     if (mLoadedBitmaps.empty()) {
         return;
@@ -775,6 +783,15 @@ void PsTex::UnlockMipBitmap() {
         return;
     }
     mDirtyMips |= 1u << mLockedMip;
+#ifdef RESONANCE_HOST
+    // HD textures leave the game's own drawing alone (host/gfx/ps2gfx/src/TexReplace.h).
+    const ABitmap *pDrawn = mLoadedBitmaps[mLockedMip];
+    HostTexGenerated(
+        mName.mStr, mGsPsm, pDrawn->mWidth, pDrawn->mHeight, pDrawn->mPixels, pDrawn->mBytesPerRow);
+#endif
+#ifndef RESONANCE_HOST
+#line 777
+#endif
 }
 
 void PsTex::SetPalette(APalette *pPalette, [[maybe_unused]] int nReserved) {
