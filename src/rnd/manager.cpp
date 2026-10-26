@@ -524,3 +524,68 @@ void Manager::DeleteLoadedObjects() {
 Manager TheManager;
 
 } // namespace Rnd
+
+#ifdef RESONANCE_HOST
+#include <cctype>
+#include <cstdio>
+#include <cstdlib>
+#include <set>
+#include <string>
+#include "rnd/drawable.h"
+
+namespace {
+
+// Object::mRefs is protected; a member pointer taken inside a derived class reads it legally.
+struct RefsOf : Rnd::Object {
+    static constexpr std::list<Rnd::Object *> Rnd::Object::*kRefs = &RefsOf::mRefs;
+};
+
+void PrintReferrers(Rnd::Object *pObject, int nDepth, std::set<Rnd::Object *> &seen) {
+    for (Rnd::Object *pRef : pObject->*RefsOf::kRefs) {
+        if (pRef == nullptr || !seen.insert(pRef).second) {
+            continue;
+        }
+        Rnd::Drawable *pDraw = dynamic_cast<Rnd::Drawable *>(pRef);
+        fprintf(stderr, "texrefs %*s%s \"%s\"%s\n", 2 * nDepth, "", pRef->ClassName().mStr,
+                pRef->mName.mStr ? pRef->mName.mStr : "",
+                pDraw ? (pDraw->GetShowing() ? " show=1" : " show=0") : "");
+        if (nDepth < 4) {
+            PrintReferrers(pRef, nDepth + 1, seen);
+        }
+    }
+}
+
+} // namespace
+
+// Test control (FREQ_INPUT's TEXREFS entry, host/io/pad.cpp): every loaded texture whose bitmap
+// file name or object name (lower case) is one of the comma-separated names in FREQ_TEST_TEXREFS (all with none), with the
+// objects that reference it, four levels up, and whether each drawable is showing.
+extern "C" void HostDumpTexRefs() {
+    const char *pszNames = getenv("FREQ_TEST_TEXREFS");
+    const std::string names = pszNames ? std::string(",") + pszNames + "," : "";
+    for (auto &entry : Rnd::TheManager.mObjects) {
+        Rnd::Tex *pTex = dynamic_cast<Rnd::Tex *>(entry.second);
+        if (pTex == nullptr) {
+            continue;
+        }
+        std::string path = pTex->GetRelativeBitmapPath().mStr ? pTex->GetRelativeBitmapPath().mStr : "";
+        const std::string::size_type nSlash = path.find_last_of("/\\");
+        std::string base = nSlash == std::string::npos ? path : path.substr(nSlash + 1);
+        for (char &c : base) {
+            c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+        }
+        std::string name = entry.first.mStr ? entry.first.mStr : "";
+        for (char &c : name) {
+            c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+        }
+        if (!names.empty() && (base.empty() || names.find("," + base + ",") == std::string::npos) &&
+            names.find("," + name + ",") == std::string::npos) {
+            continue;
+        }
+        fprintf(stderr, "texrefs Tex \"%s\" path=%s\n", entry.first.mStr ? entry.first.mStr : "", path.c_str());
+        std::set<Rnd::Object *> seen{pTex};
+        PrintReferrers(pTex, 1, seen);
+    }
+    fprintf(stderr, "texrefs end\n");
+}
+#endif

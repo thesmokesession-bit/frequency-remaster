@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <mutex>
+#include <cstring>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -45,6 +46,8 @@ namespace
 	// Texel hashes the game drew, with their texture's name. Written on the game's thread.
 	std::mutex g_generatedLock;
 	std::unordered_map<uint64, std::string> g_generated;
+	// Texel hashes of file textures' level 0 (reported as "file:<path>"), with the file's path.
+	std::unordered_map<uint64, std::string> g_loaded;
 
 	uint32 Width(const TEX0& tex0)
 	{
@@ -281,11 +284,14 @@ bool TexReplace::Bind(uint64 key, uint64 texelHash, uint8* ram, const TEX0& tex0
 	{
 		std::lock_guard<std::mutex> lock(g_generatedLock);
 		auto gen = g_generated.find(texelHash);
+		auto loaded = g_loaded.find(texelHash);
 		if(gen != g_generated.end())
 		{
 			kind = "gen";
 			name = gen->second;
 		}
+		else if(loaded != g_loaded.end())
+			name = loaded->second;
 	}
 	auto& e = Note(key, texelHash, kind, tex0, isNew);
 	if(isNew) e.name = name;
@@ -354,5 +360,21 @@ void TexReplace::Generated(const char* name, uint32 psm, uint32 width, uint32 he
 	}
 	uint64 hash = HashUnits(psm, width, height, units);
 	std::lock_guard<std::mutex> lock(g_generatedLock);
-	g_generated[hash] = name ? name : "";
+	if(name && strncmp(name, "file:", 5) == 0)
+	{
+		// <dump>/loaded.tsv lists every file texture uploaded, drawn or not (coverage of the disc).
+		auto& known = g_loaded[hash];
+		if(g_dumpDir && known != name + 5)
+		{
+			int fd = open((std::string(g_dumpDir) + "/loaded.tsv").c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
+			if(fd >= 0)
+			{
+				dprintf(fd, "%016llx\t%s\t0x%02x\t%u\t%u\n", static_cast<unsigned long long>(hash), name + 5, psm, width, height);
+				close(fd);
+			}
+		}
+		known = name + 5;
+	}
+	else
+		g_generated[hash] = name ? name : "";
 }

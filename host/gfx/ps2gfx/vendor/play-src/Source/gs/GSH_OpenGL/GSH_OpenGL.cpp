@@ -134,6 +134,9 @@ void CGSH_OpenGL::MarkNewFrame()
 	CGSHandler::MarkNewFrame();
 }
 
+// Frames presented, for FREQ_TEST_TEX_NODRAW (GS thread).
+static unsigned g_testFlips = 0;
+
 void CGSH_OpenGL::FlipImpl(const DISPLAY_INFO& dispInfo)
 {
 	FlushVertexBuffer();
@@ -241,6 +244,7 @@ void CGSH_OpenGL::FlipImpl(const DISPLAY_INFO& dispInfo)
 		glBindTexture(GL_TEXTURE_2D, 0);
 	}
 
+	g_testFlips++;
 	PresentBackbuffer();
 	CGSHandler::FlipImpl(dispInfo);
 }
@@ -1895,7 +1899,16 @@ void CGSH_OpenGL::DoRenderPass()
 		break;
 	}
 
-	glDrawArrays(primitiveMode, 0, m_vertexBuffer.size());
+	// FREQ_TEST_TEX_NODRAW=1, a test control for collecting textures (FREQ_TEX_DUMP): every texture
+	// is still set up, hashed and dumped, but no primitive is rasterised, so the picture is blank.
+	// FREQ_TEST_TEX_NODRAW=<n> above 1 rasterises from the n-th presented frame on (a fast way to a
+	// late shot at a high FREQ_SCALE; give the picture's feedback effects a few frames to settle).
+	static const unsigned drawFrom = [] {
+		const char* v = getenv("FREQ_TEST_TEX_NODRAW");
+		unsigned long n = v ? strtoul(v, nullptr, 10) : 0;
+		return v == nullptr ? 0U : n > 1 ? static_cast<unsigned>(n) : ~0U;
+	}();
+	if(g_testFlips >= drawFrom) glDrawArrays(primitiveMode, 0, m_vertexBuffer.size());
 
 	m_drawCallCount++;
 }

@@ -319,11 +319,29 @@ void GrooveWorld::Shutdown() {
     }
     DeletePlayers();
     delete mLevel;
+#ifndef RESONANCE_HOST
+#ifndef RESONANCE_HOST
+#line 311
+#endif
     delete mSongClock;
+#endif
+#ifndef RESONANCE_HOST
+#line 312
+#endif
     delete mCheatDetector;
     delete mForceFeedback;
     StopNoteDestroyer();
     DestroyNoteDestroyer();
+#ifdef RESONANCE_HOST
+    // The game deletes the song clock above, before StopNoteDestroyer() withdraws the destroyer's
+    // command through it (the retail image has the same order): a read of freed memory, latent on
+    // the PS2 heap. Once the host's allocator has reused that memory the withdraw follows a null
+    // scheduler, so the host deletes the clock last.
+    delete mSongClock;
+#endif
+#ifndef RESONANCE_HOST
+#line 316
+#endif
 }
 
 void GrooveWorld::PrepareLevel() {
