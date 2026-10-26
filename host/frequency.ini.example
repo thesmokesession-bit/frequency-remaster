@@ -18,6 +18,9 @@
 # Texture filtering: enhanced (default: the game's mip levels with 16x anisotropic filtering, no
 # shimmer on far tunnel walls) or original (the top level only, as before).
 #FREQ_TEX_FILTER=original
+# Colour depth of the Vulkan renderer (PS5): full (default: 16-bit pictures keep 8 bits a channel, no
+# banding in glows and trails) or original (5 bits a channel, as the PS2 stores them). OpenGL is always full.
+#FREQ_COLOR_DEPTH=original
 # Anti-aliasing of edges (FXAA on the finished frame): off (default) or on. It also softens HUD text a
 # little and can ripple near-flat edges when the picture is scaled up.
 #FREQ_AA=on
