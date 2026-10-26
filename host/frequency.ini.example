@@ -9,6 +9,9 @@
 #FREQ_FPS=120
 #FREQ_SCALE=6
 #FREQ_WIDESCREEN=1
+# With FREQ_SCALE, lines, points and the feedback blur keep the PS2's size: on (default), or off for
+# one-pixel lines and a sharper blur.
+#FREQ_SCALE_EFFECTS=off
 
 # Latency, in ms. Audio and video offsets play the sound and draw the picture that much later than
 # the game judges (negative: earlier). The input offset judges your presses that much earlier: the

@@ -174,6 +174,7 @@ CGSH_OpenGL::TEXTURE_INFO CGSH_OpenGL::SearchTextureFramebuffer(const TEX0& tex0
 		float scaleRatioY = static_cast<float>(tex0.GetHeight()) / static_cast<float>(framebuffer->m_height);
 
 		texInfo.textureHandle = framebuffer->m_texture;
+		texInfo.isFramebuffer = true;
 		texInfo.scaleRatioX = scaleRatioX;
 		texInfo.scaleRatioY = scaleRatioY;
 		return texInfo;

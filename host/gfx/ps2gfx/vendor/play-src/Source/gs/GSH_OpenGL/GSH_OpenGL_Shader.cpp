@@ -1,5 +1,6 @@
 #include "GSH_OpenGL.h"
 #include <assert.h>
+#include <cmath>
 #include <sstream>
 
 #ifdef GLES_COMPATIBILITY
@@ -301,6 +302,20 @@ Framework::OpenGl::CShader CGSH_OpenGL::GenerateFragmentShader(const SHADERCAPS&
 		// TexReplace: an HD texture standing in for a filtered indexed texture is read where the
 		// filter above reads that texture, half a native texel right of and below texCoord.
 		shaderBuilder << "	textureColor = expandAlpha(texture(g_texture, texCoord.st + 0.5 * g_texelSize));" << std::endl;
+	}
+	else if(caps.texSourceMode == TEXTURE_SOURCE_MODE_STD && caps.texScaledLinear)
+	{
+		//resonance: at 1x the linear filter spreads a sample over one texel, a tent of variance 1/6
+		//texel^2 per axis. Four taps sqrt(1/6) GS texels from the sample give the scaled framebuffer
+		//that spread; the plain filter would spread it over 1/m_lineScale of it. With FREQ_FPS=120 the
+		//feedback blur runs twice a field, so each pass spreads half the variance and a field as much
+		//as on the PS2. (ponytail: assumes every 120 Hz frame is half a field; a frame that spans a
+		//whole field blurs half as much as at 60 Hz.)
+		const char* fps = getenv("FREQ_FPS");
+		const double passesPerField = (fps && atoi(fps) == 120) ? 2 : 1;
+		shaderBuilder << "	vec2 tap = " << std::sqrt(1.0 / (6.0 * passesPerField)) * m_lineScale << " / vec2(textureSize(g_texture, 0));" << std::endl;
+		shaderBuilder << "	textureColor = 0.25 * (expandAlpha(texture(g_texture, texCoord.st - tap)) + expandAlpha(texture(g_texture, texCoord.st + tap)) +" << std::endl;
+		shaderBuilder << "		expandAlpha(texture(g_texture, texCoord.st + vec2(tap.x, -tap.y))) + expandAlpha(texture(g_texture, texCoord.st + vec2(-tap.x, tap.y))));" << std::endl;
 	}
 	else if(caps.texSourceMode == TEXTURE_SOURCE_MODE_STD)
 	{
