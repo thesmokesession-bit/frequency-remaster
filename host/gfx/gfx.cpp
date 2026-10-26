@@ -223,6 +223,7 @@ void Start() {
         _exit(70);
     }
     const SystemHeap systemHeap;
+#ifndef __PROSPERO__
     // Without a session bus, D-Bus would try to start one for SDL2 and wait on it for ever.
     setenv("DBUS_SESSION_BUS_ADDRESS", "disabled:", 0);
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
@@ -232,6 +233,7 @@ void Start() {
         }
         Fail("cannot open the display");
     }
+#endif
     const char *pszScale = getenv("FREQ_SCALE");
     const char *pszOutput = getenv("FREQ_OUTPUT");
     const int nScale = pszScale != nullptr ? std::max(atoi(pszScale), 1) : 1;
@@ -247,6 +249,12 @@ void Start() {
         _exit(70);
     }
 
+#ifdef __PROSPERO__
+    // The PS5 has no OpenGL: the Vulkan GS draws offscreen on the static RADV driver, and nothing
+    // presents its frames to the TV yet.
+    ps2gfx_config config = {};
+    config.renderer = PS2GFX_RENDERER_VULKAN;
+#else
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
@@ -262,10 +270,11 @@ void Start() {
     }
 
     ps2gfx_config config = {};
-    config.spr_base = reinterpret_cast<void *>(kHostScratchpad);
     config.renderer = PS2GFX_RENDERER_OPENGL;
     config.make_current = MakeCurrent;
     config.present = Present;
+#endif
+    config.spr_base = reinterpret_cast<void *>(kHostScratchpad);
     config.window_width = nWindowWidth;
     config.window_height = nWindowHeight;
     config.res_factor = nScale;

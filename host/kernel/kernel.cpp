@@ -92,7 +92,17 @@ unsigned long long g_llOrderClock = 0;
 
 // Held while interrupt handlers run and while a thread has interrupts disabled. A handler may
 // enable or disable a cause, which takes the lock again.
+#ifdef __PROSPERO__ // FreeBSD has no static initializer for a recursive mutex
+pthread_mutex_t g_interruptLock;
+__attribute__((constructor)) void MakeInterruptLock() {
+    pthread_mutexattr_t attributes;
+    pthread_mutexattr_init(&attributes);
+    pthread_mutexattr_settype(&attributes, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&g_interruptLock, &attributes);
+}
+#else
 pthread_mutex_t g_interruptLock = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
+#endif
 
 thread_local int t_nThreadId = 0;
 thread_local unsigned t_nGeneration = 0;

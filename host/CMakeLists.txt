@@ -77,9 +77,22 @@ target_link_libraries(
 target_link_options(resonance_host PRIVATE -Wl,--no-demangle)
 
 # host/mpeg decodes the movies with libavcodec (FFmpeg, LGPL), linked dynamically.
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(LIBAVCODEC REQUIRED IMPORTED_TARGET libavcodec libavutil)
-target_link_libraries(resonance_host PRIVATE PkgConfig::LIBAVCODEC)
+if(PS5)
+  # The PS5 title: PacBrew's static FFmpeg and what it needs (host/ps5/link-title.sh finds each
+  # -l name in the PacBrew sysroot) and the platform layer.
+  target_sources(resonance_host PRIVATE ps5/ps5.c)
+  target_link_libraries(resonance_host PRIVATE avcodec swresample avutil x264 lzma ssl crypto z)
+  # The game's gzip inflate() apart from zlib's, which the RADV archive links whole.
+  target_compile_definitions(resonance_os PRIVATE inflate=GzipInflate)
+  set_property(
+    TARGET resonance_host
+    APPEND
+    PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/ps5/link-title.sh")
+else()
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(LIBAVCODEC REQUIRED IMPORTED_TARGET libavcodec libavutil)
+  target_link_libraries(resonance_host PRIVATE PkgConfig::LIBAVCODEC)
+endif()
 
 # The OpenGL backend in host/gfx draws through libps2gfx (Play!, BSD-2) in an SDL2 window.
 find_package(SDL2 QUIET)

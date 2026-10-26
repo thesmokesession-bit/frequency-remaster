@@ -832,7 +832,9 @@ void RenderBlock(int nFrames) {
 void *RunAudio(void *) {
     HostUseSystemHeap(1);
     // The clock of the whole game runs here; ahead of the game's threads where that is allowed.
+#ifndef __PROSPERO__ // ponytail: the console's thread priority is left as it is until a run shows the need
     setpriority(PRIO_PROCESS, static_cast<id_t>(gettid()), -15);
+#endif
     int64_t nDeadline = NowNs();
     for (;;) {
         RenderBlock(kBlock);

@@ -28,6 +28,9 @@
 			#define MEMFUNC_MACHVM_STRICT_PROTECTION
 		#endif
 	#endif
+#elif defined(__PROSPERO__)
+	// The PS5 refuses executable mmap: code goes in direct memory made executable (resonance host/ps5).
+	#define MEMFUNC_USE_PS5
 #elif defined(__EMSCRIPTEN__)
 	#include <emscripten.h>
 	#define MEMFUNC_USE_WASM
@@ -43,6 +46,10 @@
 #elif defined(MEMFUNC_USE_MMAP)
 #include <sys/mman.h>
 #include <pthread.h>
+#elif defined(MEMFUNC_USE_PS5)
+#include <ps5platform/exec.h>
+// The region's record sits in front of the code, which Reset() frees it by.
+#define PS5_REGION_HEADER 0x40
 #elif defined(MEMFUNC_USE_WASM)
 EM_JS_DEPS(WasmMemoryFunction, "$addFunction,$removeFunction");
 EM_JS(int, WasmCreateFunction, (emscripten::EM_VAL moduleHandle),
@@ -128,6 +135,17 @@ CMemoryFunction::CMemoryFunction(const void* code, size_t size)
 #ifdef MEMFUNC_MMAP_REQUIRES_JIT_WRITE_PROTECT
 	pthread_jit_write_protect_np(true);
 #endif
+#elif defined(MEMFUNC_USE_PS5)
+	ps5_exec_request request = {};
+	request.bytes = size + PS5_REGION_HEADER;
+	ps5_exec_region region = {};
+	const int result = ps5_exec_alloc(&request, &region);
+	assert(result == 0);
+	(void)result;
+	memcpy(region.base, &region, sizeof(region));
+	m_size = size;
+	m_code = static_cast<uint8*>(region.base) + PS5_REGION_HEADER;
+	memcpy(m_code, code, size);
 #elif defined(MEMFUNC_USE_WASM)
 	m_wasmModule = emscripten::val::take_ownership(WasmCreateModule(reinterpret_cast<uintptr_t>(code), size));
 	m_size = size;
@@ -165,6 +183,10 @@ void CMemoryFunction::Reset()
 		vm_deallocate(mach_task_self(), reinterpret_cast<vm_address_t>(m_code), m_size);
 #elif defined(MEMFUNC_USE_MMAP)
 		munmap(m_code, m_size);
+#elif defined(MEMFUNC_USE_PS5)
+		ps5_exec_region region;
+		memcpy(&region, static_cast<uint8*>(m_code) - PS5_REGION_HEADER, sizeof(region));
+		ps5_exec_free(&region);
 #elif defined(MEMFUNC_USE_WASM)
 		WasmDeleteFunction(reinterpret_cast<int>(m_code));
 #endif

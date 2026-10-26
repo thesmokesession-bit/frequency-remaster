@@ -8,6 +8,7 @@
 //
 // ponytail: one movie at a time (one decoder, one input ring), which is all the game plays.
 
+#include <algorithm>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>

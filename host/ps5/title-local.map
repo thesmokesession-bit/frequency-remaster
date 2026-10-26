@@ -1,0 +1,5 @@
+/* A title exports nothing: the game defines names system modules export too (read, write, malloc,
+ * fopen, ...), and the title converter refuses an export. */
+{
+    local: *;
+};

@@ -52,9 +52,18 @@ uintptr_t g_heapBreak = 0;
     _exit(70);
 }
 
+#ifdef __PROSPERO__
+extern "C" int HostMapGameMemory(uintptr_t nBase, size_t nSize, const void *pContents, int bAlias);
+#endif
+
 // Maps nSize bytes of one shared memory object at nBase and again at the uncached alias above it.
 // With pContents, the object takes the bytes at pContents and replaces the mapping at nBase.
 void MapAliased(uintptr_t nBase, size_t nSize, const void *pContents) {
+#ifdef __PROSPERO__ // direct memory, mapped twice (host/ps5/ps5.c)
+    if (HostMapGameMemory(nBase, nSize, pContents, 1) != 0) {
+        Die("host: the low address range is taken\n");
+    }
+#else
     const int fd = memfd_create("resonance-ee-memory", MFD_CLOEXEC);
     if (fd < 0 || ftruncate(fd, static_cast<off_t>(nSize)) != 0) {
         Die("host: cannot create the low memory object\n");
@@ -71,6 +80,7 @@ void MapAliased(uintptr_t nBase, size_t nSize, const void *pContents) {
         Die("host: the low address range is taken\n");
     }
     syscall(SYS_close, fd);
+#endif
 }
 
 bool IsLow(const void *pAddress) {
@@ -96,6 +106,12 @@ void MapEmotionEngineMemory() {
     MapAliased(nDataStart, nDataEnd - nDataStart, reinterpret_cast<const void *>(nDataStart));
 
     void *pScratchpad = reinterpret_cast<void *>(kHostScratchpad);
+#ifdef __PROSPERO__
+    if (HostMapGameMemory(kHostScratchpad, kHostScratchpadSize, nullptr, 0) != 0) {
+        Die("host: the scratchpad address is taken\n");
+    }
+    (void)pScratchpad;
+#else
     if (mmap(pScratchpad,
              kHostScratchpadSize,
              PROT_READ | PROT_WRITE,
@@ -104,6 +120,7 @@ void MapEmotionEngineMemory() {
              0) != pScratchpad) {
         Die("host: the scratchpad address is taken\n");
     }
+#endif
 }
 
 // FREQ_SELFTEST=lowmem. Every kind of allocation the game makes, its static data, and this

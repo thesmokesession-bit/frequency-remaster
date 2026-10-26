@@ -46,3 +46,4 @@
 /session-recover.yaml
 /vcpkg_installed/
 node_modules/
+/build-ps5/

@@ -70,6 +70,10 @@ extern "C" FILE *fopen(const char *pszPath, const char *pszMode) {
         return nullptr;
     }
     if (nFlags != kReadOnly) {
+#ifdef __PROSPERO__ // the console's C library has no fopencookie; a write opens only host0:, absent
+        close(nFile);
+        return nullptr;
+#endif
         const cookie_io_functions_t functions = {ReadCookie, WriteCookie, SeekCookie, CloseCookie};
         return fopencookie(
             reinterpret_cast<void *>(static_cast<intptr_t>(nFile)), pszMode, functions);

@@ -22,7 +22,12 @@ void *HostMoreCore(ptrdiff_t nIncrement);
 #define MORECORE_CANNOT_TRIM 1
 #define USE_LOCKS 1
 #define MALLOC_ALIGNMENT 16
+#ifdef __PROSPERO__
+#include <malloc.h> // host/ps5/include: glibc's struct mallinfo, which dlmalloc then fills
+#define STRUCT_MALLINFO_DECLARED 1
+#else
 #define HAVE_USR_INCLUDE_MALLOC_H 1
+#endif
 #define USE_DL_PREFIX 1
 
 #include "dlmalloc.c"
@@ -40,6 +45,33 @@ static void *(*s_pfnSystemMemalign)(size_t, size_t);
 static void (*s_pfnSystemFree)(void *);
 static size_t (*s_pfnSystemUsableSize)(void *);
 
+#ifdef __PROSPERO__
+// A PS5 title links with the malloc family wrapped (host/ps5/link-title.sh): these definitions are
+// the wraps every reference reaches, and the system heap is the platform's title heap in direct
+// memory, its wraps renamed ps5_title_*. They take libc's own blocks (strdup) back to libc.
+void *ps5_title_malloc(size_t);
+void *ps5_title_calloc(size_t, size_t);
+void *ps5_title_realloc(void *, size_t);
+void *ps5_title_memalign(size_t, size_t);
+void ps5_title_free(void *);
+size_t ps5_title_malloc_usable_size(void *);
+#define malloc __wrap_malloc
+#define calloc __wrap_calloc
+#define memalign __wrap_memalign
+#define free __wrap_free
+#define realloc __wrap_realloc
+#define malloc_usable_size __wrap_malloc_usable_size
+#define posix_memalign __wrap_posix_memalign
+#define aligned_alloc __wrap_aligned_alloc
+static void FindSystemHeap(void) {
+    s_pfnSystemMalloc = ps5_title_malloc;
+    s_pfnSystemCalloc = ps5_title_calloc;
+    s_pfnSystemRealloc = ps5_title_realloc;
+    s_pfnSystemMemalign = ps5_title_memalign;
+    s_pfnSystemFree = ps5_title_free;
+    s_pfnSystemUsableSize = ps5_title_malloc_usable_size;
+}
+#else
 // The lookups allocate from the low heap, as the thread has not switched yet.
 static void FindSystemHeap(void) {
     s_pfnSystemMalloc = dlsym(RTLD_NEXT, "malloc");
@@ -49,6 +81,7 @@ static void FindSystemHeap(void) {
     s_pfnSystemFree = dlsym(RTLD_NEXT, "free");
     s_pfnSystemUsableSize = dlsym(RTLD_NEXT, "malloc_usable_size");
 }
+#endif
 
 /** Switch the calling thread to the C library's heap (nonzero) or back. The calls nest. */
 void HostUseSystemHeap(int bOn) {

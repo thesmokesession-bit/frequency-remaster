@@ -156,6 +156,10 @@ volatile uint32_t &Register(uintptr_t nAddress) {
     return *reinterpret_cast<volatile uint32_t *>(nAddress);
 }
 
+#ifdef __PROSPERO__
+extern "C" int HostMapGameMemory(uintptr_t nBase, size_t nSize, const void *pContents, int bAlias);
+#endif
+
 // The registers are plain memory from before the game's first instruction.
 __attribute__((constructor)) void MapRegisterPages() {
     const struct {
@@ -164,12 +168,16 @@ __attribute__((constructor)) void MapRegisterPages() {
     } aPages[] = {{kIoRegisters, kIoRegistersSize}, {kGsRegisters, kGsRegistersSize}};
     for (const auto &page : aPages) {
         void *pAddress = reinterpret_cast<void *>(page.nBase);
+#ifdef __PROSPERO__ // host/ps5/ps5.c
+        if (HostMapGameMemory(page.nBase, page.nSize, nullptr, 0) != 0) {
+#else
         if (mmap(pAddress,
                  page.nSize,
                  PROT_READ | PROT_WRITE,
                  MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE,
                  -1,
                  0) != pAddress) {
+#endif
             static const char kMessage[] = "host: the hardware register range is taken\n";
             syscall(SYS_write, STDERR_FILENO, kMessage, sizeof(kMessage) - 1);
             _exit(70);

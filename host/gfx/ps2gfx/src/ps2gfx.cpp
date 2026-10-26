@@ -26,7 +26,9 @@
 #include "ee/VuExecutor.h"
 #include "gs/GsDebuggerInterface.h"
 #include "gs/GSH_Null.h"
+#ifndef PS2GFX_NO_OPENGL
 #include "gs/GSH_OpenGL/GSH_OpenGL.h"
+#endif
 #ifdef PS2GFX_VULKAN
 #include "gs/GSH_Vulkan/GSH_VulkanOffscreen.h"
 #endif
@@ -43,6 +45,15 @@ namespace
 
 	ps2gfx_config g_cfg;
 
+#ifdef PS2GFX_NO_OPENGL
+	// No OpenGL GS in this build (the PS5): the casts to it find nothing, and it is never chosen.
+	class CGSH_OpenGLLib : public CGSH_Null
+	{
+	public:
+		bool capture = false;
+		Framework::CBitmap captured;
+	};
+#else
 	class CGSH_OpenGLLib : public CGSH_OpenGL
 	{
 	public:
@@ -78,6 +89,7 @@ namespace
 		bool capture = false;
 		Framework::CBitmap captured;
 	};
+#endif
 
 	struct State
 	{
@@ -304,7 +316,9 @@ extern "C" int ps2gfx_init(const ps2gfx_config* config)
 	{
 		gs = new CGSH_OpenGLLib();
 		auto& appConfig = CAppConfig::GetInstance();
+#ifndef PS2GFX_NO_OPENGL
 		if(config->res_factor > 1) appConfig.SetPreferenceInteger(PREF_CGSH_OPENGL_RESOLUTION_FACTOR, config->res_factor);
+#endif
 		appConfig.RegisterPreferenceBoolean("ps2gfx.aspect43", false);
 		appConfig.SetPreferenceBoolean("ps2gfx.aspect43", config->aspect == PS2GFX_ASPECT_4_3);
 		appConfig.SetPreferenceBoolean(PREF_CGSHANDLER_WIDESCREEN, config->aspect == PS2GFX_ASPECT_16_9);

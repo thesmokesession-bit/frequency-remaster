@@ -11,7 +11,7 @@ target_include_directories(
                   ${PS2GFX_PLAY}/deps/Framework/include
   PRIVATE ${PS2GFX_PLAY}/Source ${PS2GFX_PLAY}/Source/app_shared)
 target_compile_definitions(playspu2 PRIVATE NDEBUG)
-target_compile_options(playspu2 PRIVATE -w)
+target_compile_options(playspu2 PRIVATE -w $<$<CXX_COMPILER_ID:Clang>:-Wno-c++11-narrowing>)
 set_target_properties(playspu2 PROPERTIES CXX_STANDARD 17 CXX_EXTENSIONS ON)
 target_link_libraries(playspu2 PUBLIC ps2gfx)
 

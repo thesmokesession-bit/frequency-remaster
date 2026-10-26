@@ -19,9 +19,16 @@ CLoader::CLoader()
 	LoadLibrary();
 }
 
+#ifdef __PROSPERO__
+// The PS5 title links RADV statically (resonance host/ps5): its ICD entry point is the loader.
+extern "C" PFN_vkVoidFunction vk_icdGetInstanceProcAddr(VkInstance instance, const char* name);
+#endif
+
 void* CLoader::GetLibraryProcAddr(const char* procName)
 {
-#ifdef _WIN32
+#ifdef __PROSPERO__
+	return reinterpret_cast<void*>(vk_icdGetInstanceProcAddr(VK_NULL_HANDLE, procName));
+#elif defined(_WIN32)
 	return GetProcAddress(m_vulkanModule, procName);
 #else
 	return dlsym(m_vulkanDl, procName);
@@ -69,7 +76,7 @@ void CLoader::LoadLibrary()
 		throw std::runtime_error("Failed to load Vulkan library.");
 	}
 
-#else
+#elif !defined(__PROSPERO__)
 	assert(m_vulkanDl == nullptr);
 	
 	std::vector<const char*> libPaths;

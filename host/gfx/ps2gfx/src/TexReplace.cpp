@@ -369,7 +369,9 @@ void TexReplace::Generated(const char* name, uint32 psm, uint32 width, uint32 he
 			int fd = open((std::string(g_dumpDir) + "/loaded.tsv").c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
 			if(fd >= 0)
 			{
-				dprintf(fd, "%016llx\t%s\t0x%02x\t%u\t%u\n", static_cast<unsigned long long>(hash), name + 5, psm, width, height);
+				char line[512]; // no dprintf in the PS5's C library
+				const int n = snprintf(line, sizeof(line), "%016llx\t%s\t0x%02x\t%u\t%u\n", static_cast<unsigned long long>(hash), name + 5, psm, width, height);
+				if(n > 0) write(fd, line, std::min(static_cast<size_t>(n), sizeof(line) - 1));
 				close(fd);
 			}
 		}
