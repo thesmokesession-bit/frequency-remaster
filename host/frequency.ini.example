@@ -9,6 +9,9 @@
 #FREQ_FPS=120
 #FREQ_SCALE=6
 #FREQ_WIDESCREEN=1
+# PS5: FREQ_SCALE defaults to what covers the TV's lines (5 on a 4K set); FREQ_FPS=120 suits a TV
+# that the log shows at 119880 mHz. Linux: FREQ_GFX=vulkan draws with Vulkan (a -DPS2GFX_VULKAN=ON build).
+#FREQ_GFX=vulkan
 # With FREQ_SCALE, lines, points and the feedback blur keep the PS2's size: on (default), or off for
 # one-pixel lines and a sharper blur.
 #FREQ_SCALE_EFFECTS=off

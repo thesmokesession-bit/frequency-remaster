@@ -18,7 +18,7 @@ extern "C" {
 enum
 {
 	PS2GFX_RENDERER_OPENGL = 0,
-	PS2GFX_RENDERER_VULKAN = 1, /* offscreen (no present); needs a Vulkan ICD */
+	PS2GFX_RENDERER_VULKAN = 1, /* needs a Vulkan ICD; offscreen unless there is a surface (vk_surface) */
 	PS2GFX_RENDERER_NULL = 2,   /* draws nothing: tests and headless runs */
 };
 
@@ -30,16 +30,25 @@ typedef struct ps2gfx_config
 	void* spr_base;
 	void* user;
 	int renderer;
-	/* OpenGL: makes an OpenGL 3.2+ core context current on the calling (GS) thread. Required for OpenGL. */
+	/* OpenGL: makes an OpenGL 3.2+ core context current on the calling (GS) thread. Required for OpenGL.
+	   Vulkan: called first on the GS thread too, if set. */
 	void (*make_current)(void* user);
-	/* Called on the GS thread after a vsync drew the frame to GL framebuffer 0 (e.g. SDL_GL_SwapWindow).
-	   May be NULL. */
+	/* Called on the GS thread after a vsync drew the frame to GL framebuffer 0 (e.g. SDL_GL_SwapWindow), or
+	   after Vulkan queued it to the surface. May be NULL. */
 	void (*present)(void* user);
 	int window_width, window_height; /* presentation size for the default framebuffer, 0 = 640x448 */
-	/* The GS draws at res_factor times its resolution (0 or 1 = native; Vulkan: at most 8). */
+	/* The GS draws at res_factor times its resolution (0 or 1 = native; Vulkan: at most 8). -1 (Vulkan on
+	   the PS5's display): the smallest factor whose 448 lines cover the display's height. */
 	int res_factor;
 	/* Shape of the presented picture inside the window: 0 = the CRT's 640x448, 1 = 4:3, 2 = 16:9. */
 	int aspect;
+	/* Vulkan: presents each frame to a surface (vsync, FIFO) instead of drawing offscreen. Called once on the
+	   GS thread with the VkInstance, created with vk_extensions (e.g. SDL_Vulkan_GetInstanceExtensions);
+	   returns the VkSurfaceKHR, 0 for none. The picture fills the surface's size as aspect says. On the
+	   PS5 the library presents to the TV itself (VK_KHR_display) and this is not called. */
+	uint64_t (*vk_surface)(void* user, void* instance);
+	const char* const* vk_extensions;
+	unsigned vk_extension_count;
 } ps2gfx_config;
 
 enum
@@ -92,8 +101,8 @@ void ps2gfx_wait_frames(void);
 int ps2gfx_screenshot(const char* path);
 /* The same pixels as ps2gfx_screenshot, hashed (FNV-1a) instead of written. Returns 0 on success. */
 int ps2gfx_frame_hash(uint64_t* hash);
-/* OpenGL: presents the displayed framebuffer again and writes the whole window, at the window's
-   size, as PNG. Call after ps2gfx_vsync. Returns 0 on success. */
+/* Presents the displayed framebuffer again and writes the whole window (OpenGL) or the swapchain image
+   (Vulkan), at its size, as PNG. Call after ps2gfx_vsync. Returns 0 on success. */
 int ps2gfx_screenshot_output(const char* path);
 
 /* Debug/replay: loads a Play! state zip (VU1 + VIF1 + GIF + GS) as written by the trace capture. */

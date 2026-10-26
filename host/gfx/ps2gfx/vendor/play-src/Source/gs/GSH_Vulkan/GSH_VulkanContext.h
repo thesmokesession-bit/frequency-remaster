@@ -7,6 +7,7 @@
 #include "vulkan/Buffer.h"
 #include "vulkan/CommandBufferPool.h"
 #include "../GSHandler.h"
+#include "bitmap/Bitmap.h"
 
 #ifdef _DEBUG
 #define GSH_VULKAN_USE_ANNOTATIONS 1
@@ -49,6 +50,8 @@ namespace GSH_Vulkan
 		//write every plane, local copies copy each plane, and textures the GS drew read the plane of their
 		//sub-texel (CGSH_Vulkan tracks which pages draws wrote).
 		uint32 resFactor = 1;
+		//resonance: set, the next present also copies the swapchain image here (B, G, R, A bytes) and clears it.
+		Framework::CBitmap* presentCapture = nullptr;
 		uint32 GetPlaneCount() const
 		{
 			return resFactor * resFactor;

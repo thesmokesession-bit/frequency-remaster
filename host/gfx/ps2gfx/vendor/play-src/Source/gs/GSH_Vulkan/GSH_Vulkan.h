@@ -28,7 +28,8 @@ public:
 	CGSH_Vulkan();
 	virtual ~CGSH_Vulkan() = default;
 
-	static Framework::Vulkan::CInstance CreateInstance(bool);
+	//resonance: extraExtensions are the instance extensions a surface needs (SDL2's, VK_KHR_display).
+	static Framework::Vulkan::CInstance CreateInstance(bool, const std::vector<const char*>& extraExtensions = {});
 
 	void SetPresentationParams(const CGSHandler::PRESENTATION_PARAMS&) override;
 

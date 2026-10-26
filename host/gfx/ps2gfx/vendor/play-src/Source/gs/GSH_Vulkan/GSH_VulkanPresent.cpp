@@ -1,4 +1,5 @@
 #include "GSH_VulkanPresent.h"
+#include <algorithm>
 #include "GSH_VulkanMemoryUtils.h"
 #include "MemStream.h"
 #include "vulkan/StructDefs.h"
@@ -222,6 +223,37 @@ void CPresent::UpdateBackbuffer(uint32 imageIndex, const SWAPCHAIN_SEMAPHORES& s
 
 	m_context->device.vkCmdEndRenderPass(commandBuffer);
 
+	//resonance: ps2gfx_screenshot_output reads back the image presented.
+	Framework::Vulkan::CBuffer captureBuffer;
+	auto capture = m_canCapture ? m_context->presentCapture : nullptr;
+	if(capture)
+	{
+		captureBuffer = Framework::Vulkan::CBuffer(m_context->device, m_context->physicalDeviceMemoryProperties, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+		                                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+		                                           m_surfaceExtents.width * m_surfaceExtents.height * 4);
+		auto barrier = Framework::Vulkan::ImageMemoryBarrier();
+		barrier.image = swapChainImage;
+		barrier.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+		barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+		barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+		barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+		m_context->device.vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+		                                       0, 0, nullptr, 0, nullptr, 1, &barrier);
+		VkBufferImageCopy region = {};
+		region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+		region.imageExtent = {m_surfaceExtents.width, m_surfaceExtents.height, 1};
+		m_context->device.vkCmdCopyImageToBuffer(commandBuffer, swapChainImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, captureBuffer, 1, &region);
+		barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+		barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+		barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+		barrier.dstAccessMask = 0;
+		m_context->device.vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+		                                       0, 0, nullptr, 0, nullptr, 1, &barrier);
+	}
+
 	m_context->annotations.PopCommandLabel(commandBuffer);
 
 	m_context->device.vkEndCommandBuffer(commandBuffer);
@@ -239,6 +271,24 @@ void CPresent::UpdateBackbuffer(uint32 imageIndex, const SWAPCHAIN_SEMAPHORES& s
 		submitInfo.pSignalSemaphores = &swapChainSemaphores.renderCompleteSemaphore;
 		result = m_context->device.vkQueueSubmit(m_context->queue, 1, &submitInfo, frameCommandBuffer.execCompleteFence);
 		CHECKVULKANERROR(result);
+	}
+
+	if(capture)
+	{
+		result = m_context->device.vkWaitForFences(m_context->device, 1, &frameCommandBuffer.execCompleteFence, VK_TRUE, UINT64_MAX);
+		CHECKVULKANERROR(result);
+		void* data = nullptr;
+		result = m_context->device.vkMapMemory(m_context->device, captureBuffer.GetMemory(), 0, VK_WHOLE_SIZE, 0, &data);
+		CHECKVULKANERROR(result);
+		*capture = Framework::CBitmap(m_surfaceExtents.width, m_surfaceExtents.height, 32);
+		memcpy(capture->GetPixels(), data, capture->GetPixelsSize());
+		m_context->device.vkUnmapMemory(m_context->device, captureBuffer.GetMemory());
+		if(m_context->surfaceFormat.format == VK_FORMAT_R8G8B8A8_UNORM)
+		{
+			auto pixels = capture->GetPixels();
+			for(size_t i = 0; i < capture->GetPixelsSize(); i += 4) std::swap(pixels[i], pixels[i + 2]);
+		}
+		m_context->presentCapture = nullptr;
 	}
 }
 
@@ -358,16 +408,24 @@ void CPresent::CreateSwapChain()
 	swapChainCreateInfo.surface = m_context->surface;
 	//Make sure to check that MAX_FRAMES in CFrameCommandBuffer is at least as big as minImageCount
 	swapChainCreateInfo.minImageCount = 3; //Recommended by nVidia in UsingtheVulkanAPI_20160216.pdf
+	//resonance: within what the surface allows (the PS5's display plane sets its own count).
+	swapChainCreateInfo.minImageCount = std::max(swapChainCreateInfo.minImageCount, surfaceCaps.minImageCount);
+	if(surfaceCaps.maxImageCount != 0) swapChainCreateInfo.minImageCount = std::min(swapChainCreateInfo.minImageCount, surfaceCaps.maxImageCount);
 	swapChainCreateInfo.imageFormat = m_context->surfaceFormat.format;
 	swapChainCreateInfo.imageColorSpace = m_context->surfaceFormat.colorSpace;
 	swapChainCreateInfo.imageExtent = m_surfaceExtents;
 	swapChainCreateInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+	//resonance: readable for ps2gfx_screenshot_output where the surface allows it.
+	m_canCapture = (surfaceCaps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
+	if(m_canCapture) swapChainCreateInfo.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 	swapChainCreateInfo.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
 	swapChainCreateInfo.imageArrayLayers = 1;
 	swapChainCreateInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	swapChainCreateInfo.queueFamilyIndexCount = 0;
 	swapChainCreateInfo.pQueueFamilyIndices = nullptr;
-	swapChainCreateInfo.presentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+	//resonance: FIFO, a flip per vblank (vsync); every implementation has it, and the PS5's VideoOut
+	//swapchain has nothing else.
+	swapChainCreateInfo.presentMode = VK_PRESENT_MODE_FIFO_KHR;
 	swapChainCreateInfo.clipped = VK_TRUE;
 	swapChainCreateInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
 
@@ -733,32 +791,57 @@ Framework::Vulkan::CShaderModule CPresent::CreateFragmentShader(const PIPELINE_C
 		auto bufWidth = presentBufParams->y();
 		auto layerSize = presentRectParams->zw();
 
-		auto screenPos = ToInt(inputTexCoord->xy() * ToFloat(layerSize));
+		//resonance: the frame is resFactor times the layer's size, sub-pixel (sx, sy) of GS pixel (x, y) in
+		//plane sy * resFactor + sx (GSH_VulkanContext.h). Four of its pixels are filtered (bilinear) to the
+		//presented size, which the viewport sets (the TV's 2160 lines from 2240 at 5x, or 896 into 720).
+		auto factor = NewInt(b, m_context->resFactor);
+		auto readPixel = [&](Nuanceur::CIntValue x, Nuanceur::CIntValue y) -> Nuanceur::CFloat4Rvalue {
+			auto pixelPos = NewInt2(x / factor, y / factor);
+			auto planeAddress = bufAddress + ((y % factor) * factor + (x % factor)) * NewInt(b, CGSHandler::RAMSIZE);
+			switch(caps.bufPsm)
+			{
+			default:
+				assert(false);
+				[[fallthrough]];
+			case CGSHandler::PSMCT32:
+			case CGSHandler::PSMCT24:
+			{
+				auto address = CMemoryUtils::GetPixelAddress<CGsPixelFormats::STORAGEPSMCT32>(
+				    b, swizzleTable, planeAddress, bufWidth, pixelPos);
+				return CMemoryUtils::PSM32ToVec4(b, CMemoryUtils::Memory_Read32(b, memoryBuffer, address));
+			}
+			case CGSHandler::PSMCT16:
+			case CGSHandler::PSMCT16S:
+			{
+				auto address = CMemoryUtils::GetPixelAddress<CGsPixelFormats::STORAGEPSMCT16>(
+				    b, swizzleTable, planeAddress, bufWidth, pixelPos);
+				return CMemoryUtils::PSM16ToVec4(b, CMemoryUtils::Memory_Read16(b, memoryBuffer, address));
+			}
+			}
+		};
 
-		switch(caps.bufPsm)
-		{
-		default:
-			assert(false);
-			[[fallthrough]];
-		case CGSHandler::PSMCT32:
-		case CGSHandler::PSMCT24:
-		{
-			auto address = CMemoryUtils::GetPixelAddress<CGsPixelFormats::STORAGEPSMCT32>(
-			    b, swizzleTable, bufAddress, bufWidth, screenPos);
-			auto imageColor = CMemoryUtils::Memory_Read32(b, memoryBuffer, address);
-			outputColor = CMemoryUtils::PSM32ToVec4(b, imageColor);
-		}
-		break;
-		case CGSHandler::PSMCT16:
-		case CGSHandler::PSMCT16S:
-		{
-			auto address = CMemoryUtils::GetPixelAddress<CGsPixelFormats::STORAGEPSMCT16>(
-			    b, swizzleTable, bufAddress, bufWidth, screenPos);
-			auto imageColor = CMemoryUtils::Memory_Read16(b, memoryBuffer, address);
-			outputColor = CMemoryUtils::PSM16ToVec4(b, imageColor);
-		}
-		break;
-		}
+		//Sample centres are at uv * size - 0.5; pos is that + 1, >= 0.5, so ToInt is its floor.
+		auto frameSize = ToFloat(layerSize) * NewFloat2(b, m_context->resFactor, m_context->resFactor);
+		auto pos = inputTexCoord->xy() * frameSize + NewFloat2(b, 0.5f, 0.5f);
+		auto cellX = ToInt(pos->x());
+		auto cellY = ToInt(pos->y());
+		auto fracX = pos->x() - ToFloat(cellX);
+		auto fracY = pos->y() - ToFloat(cellY);
+		auto lastX = layerSize->x() * factor - NewInt(b, 1);
+		auto lastY = layerSize->y() * factor - NewInt(b, 1);
+		auto x0 = Clamp(cellX - NewInt(b, 1), NewInt(b, 0), lastX);
+		auto x1 = Clamp(cellX, NewInt(b, 0), lastX);
+		auto y0 = Clamp(cellY - NewInt(b, 1), NewInt(b, 0), lastY);
+		auto y1 = Clamp(cellY, NewInt(b, 0), lastY);
+		auto weightX = NewFloat4(fracX, fracX, fracX, fracX);
+		auto weightY = NewFloat4(fracY, fracY, fracY, fracY);
+		auto c00 = readPixel(x0, y0);
+		auto c10 = readPixel(x1, y0);
+		auto c01 = readPixel(x0, y1);
+		auto c11 = readPixel(x1, y1);
+		auto top = c00 + (c10 - c00) * weightX;
+		auto bottom = c01 + (c11 - c01) * weightX;
+		outputColor = top + (bottom - top) * weightY;
 	}
 
 	Framework::CMemStream shaderStream;

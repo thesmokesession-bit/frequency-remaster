@@ -1,4 +1,5 @@
 #include "GSH_Vulkan.h"
+#include <algorithm>
 #include <cstring>
 #include "std_experimental_map.h"
 #include "../GsPixelFormats.h"
@@ -52,7 +53,7 @@ CGSH_Vulkan::CGSH_Vulkan()
 	CAppConfig::GetInstance().RegisterPreferenceInteger(PREF_CGSH_VULKAN_RESOLUTION_FACTOR, 1);
 }
 
-Framework::Vulkan::CInstance CGSH_Vulkan::CreateInstance(bool useValidationLayers)
+Framework::Vulkan::CInstance CGSH_Vulkan::CreateInstance(bool useValidationLayers, const std::vector<const char*>& extraExtensions)
 {
 	auto instanceCreateInfo = Framework::Vulkan::InstanceCreateInfo();
 
@@ -100,6 +101,12 @@ Framework::Vulkan::CInstance CGSH_Vulkan::CreateInstance(bool useValidationLayer
 	extensions.push_back(VK_KHR_XCB_SURFACE_EXTENSION_NAME);
 #endif
 #endif
+
+	for(auto extension : extraExtensions)
+	{
+		if(std::none_of(extensions.begin(), extensions.end(), [&](const char* name) { return !strcmp(name, extension); }))
+			extensions.push_back(extension);
+	}
 
 	auto appInfo = Framework::Vulkan::ApplicationInfo();
 	appInfo.pApplicationName = "Play!";

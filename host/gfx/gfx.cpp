@@ -2,7 +2,9 @@
 // and draws each blank's frame in an SDL2 window.
 //
 // FREQ_GFX=null draws nothing, as the null backend does. Without FREQ_GFX, a missing display also
-// leads to the null backend.
+// leads to the null backend. FREQ_GFX=vulkan draws with libps2gfx's Vulkan GS in an SDL2 Vulkan
+// window instead (a build with -DPS2GFX_VULKAN=ON); the PS5 always does, on the TV, and there
+// FREQ_SCALE defaults to the smallest scale whose lines cover the TV's (5 on a 4K set).
 //
 // FREQ_SHOT=<directory> and FREQ_SHOT_AT=<BREADCRUMB>:<blank>[,<blank>...] save the displayed frame
 // as <directory>/<BREADCRUMB>+<blank>.png, where blank 0 is the first blank after the breadcrumb.
@@ -14,7 +16,8 @@
 //
 // FREQ_SCALE=<n> draws the GS at n times its resolution, FREQ_OUTPUT=<width>x<height> sizes the
 // window, and FREQ_WIDESCREEN=1 presents 16:9. With any of them, the picture keeps a TV's 4:3 (or
-// 16:9) inside the window, the window defaults to 448n pixels high, and a shot is the whole window.
+// 16:9) inside the window, the window defaults to 448n pixels high, and a shot is the whole window
+// (with Vulkan the swapchain image, and the GS framebuffer beside it as <shot>.gs.png).
 //
 // FREQ_TEX_DUMP=<directory> and FREQ_TEX_REPLACE=<directory> dump the textures the GS draws and draw
 // HD replacements in their place (host/gfx/ps2gfx/src/TexReplace.h).
@@ -32,12 +35,18 @@
 #include <vector>
 
 #include <SDL.h>
+#ifndef __PROSPERO__
+#include <SDL_vulkan.h>
+#endif
 
 #include "../core/lowmem.h"
 #include "../gfx-null/gfxnull.h"
 #include "ps2gfx.h"
 
 extern "C" void HostUseSystemHeap(int bOn); // host/core/heap.c
+#ifdef __PROSPERO__
+extern "C" int sceSystemServiceHideSplashScreen(void);
+#endif
 void RunLongOperationPollProc();            // src/app/longop.cpp: MainLoop::PumpTimers()
 
 namespace {
@@ -81,6 +90,7 @@ pthread_once_t g_startOnce = PTHREAD_ONCE_INIT;
 bool g_bDrawing = false;
 SDL_Window *g_pWindow = nullptr;
 SDL_GLContext g_context = nullptr;
+bool g_bVulkan = false;
 
 const char *g_pszShotDirectory = nullptr;
 // Whether shots save the window rather than the GS framebuffer.
@@ -142,20 +152,54 @@ void PresentLocked(unsigned nTick) {
     _exit(70);
 }
 
-// The GS thread of ps2gfx runs both callbacks. The context is current there from the first.
+// The GS thread of ps2gfx runs both callbacks. It allocates from the C library's heap, and the
+// OpenGL context is current there, from the first.
 void MakeCurrent(void *) {
     HostUseSystemHeap(1);
-    SDL_GL_MakeCurrent(g_pWindow, g_context);
+    if (g_context != nullptr) {
+        SDL_GL_MakeCurrent(g_pWindow, g_context);
+    }
 }
 
 void Present(void *) {
-    SDL_GL_SwapWindow(g_pWindow);
+    if (g_context != nullptr) {
+        SDL_GL_SwapWindow(g_pWindow);
+    }
     ++g_nPresents;
+#ifdef __PROSPERO__
+    // The system's splash screen stays up until the first picture (as Perfect Eye does), then the
+    // rate the TV shows frames at, every 600.
+    static timespec start;
+    if (g_nPresents == 1) {
+        sceSystemServiceHideSplashScreen();
+        clock_gettime(CLOCK_MONOTONIC, &start);
+        fprintf(stderr, "gfx: first frame on the TV, splash screen down\n");
+    } else if (g_nPresents % 600 == 1) {
+        timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        const double flSeconds = static_cast<double>(now.tv_sec - start.tv_sec) +
+                                 static_cast<double>(now.tv_nsec - start.tv_nsec) / 1e9;
+        fprintf(stderr, "gfx: 600 frames in %.2f s (%.2f a second)\n", flSeconds, 600 / flSeconds);
+        start = now;
+    }
+#else
     SDL_PumpEvents();
     if (SDL_PeepEvents(nullptr, 1, SDL_PEEKEVENT, SDL_QUIT, SDL_QUIT) > 0) {
         _exit(0);
     }
+#endif
 }
+
+#ifndef __PROSPERO__
+// The Vulkan GS's surface: the SDL2 window's (ps2gfx_config.vk_surface, on the GS thread).
+uint64_t CreateSurface(void *, void *pInstance) {
+    VkSurfaceKHR surface{};
+    if (!SDL_Vulkan_CreateSurface(g_pWindow, static_cast<VkInstance>(pInstance), &surface)) {
+        Fail("cannot create the Vulkan surface");
+    }
+    return (uint64_t)surface;
+}
+#endif
 
 void *RunPresents(void *) {
     HostUseSystemHeap(1);
@@ -218,8 +262,9 @@ void Start() {
     if (pszMode != nullptr && strcmp(pszMode, "null") == 0) {
         return;
     }
-    if (pszMode != nullptr && strcmp(pszMode, "ps2gfx") != 0) {
-        fprintf(stderr, "host: FREQ_GFX=%s is neither null nor ps2gfx\n", pszMode);
+    g_bVulkan = pszMode != nullptr && strcmp(pszMode, "vulkan") == 0;
+    if (pszMode != nullptr && strcmp(pszMode, "ps2gfx") != 0 && !g_bVulkan) {
+        fprintf(stderr, "host: FREQ_GFX=%s is not null, ps2gfx or vulkan\n", pszMode);
         _exit(70);
     }
     const SystemHeap systemHeap;
@@ -239,6 +284,9 @@ void Start() {
     const int nScale = pszScale != nullptr ? std::max(atoi(pszScale), 1) : 1;
     const bool bWidescreen = HostWidescreen() != 0;
     g_bOutputShots = nScale > 1 || pszOutput != nullptr || bWidescreen;
+#ifdef __PROSPERO__
+    g_bVulkan = g_bOutputShots = true; // a TV, 4:3 or 16:9
+#endif
     int nWindowHeight = kScreenHeight * nScale;
     int nWindowWidth = g_bOutputShots ?
                            nWindowHeight * (bWidescreen ? 16 : 4) / (bWidescreen ? 9 : 3) :
@@ -249,35 +297,59 @@ void Start() {
         _exit(70);
     }
 
-#ifdef __PROSPERO__
-    // The PS5 has no OpenGL: the Vulkan GS draws offscreen on the static RADV driver, and nothing
-    // presents its frames to the TV yet.
     ps2gfx_config config = {};
-    config.renderer = PS2GFX_RENDERER_VULKAN;
-#else
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
-    g_pWindow = SDL_CreateWindow("FreQuency",
-                                 SDL_WINDOWPOS_UNDEFINED,
-                                 SDL_WINDOWPOS_UNDEFINED,
-                                 nWindowWidth,
-                                 nWindowHeight,
-                                 SDL_WINDOW_OPENGL);
-    if (g_pWindow == nullptr || (g_context = SDL_GL_CreateContext(g_pWindow)) == nullptr ||
-        SDL_GL_MakeCurrent(g_pWindow, nullptr) != 0) {
-        Fail("cannot create the OpenGL window");
-    }
-
-    ps2gfx_config config = {};
-    config.renderer = PS2GFX_RENDERER_OPENGL;
     config.make_current = MakeCurrent;
     config.present = Present;
+#ifdef __PROSPERO__
+    // The PS5 has no OpenGL: the Vulkan GS on the static RADV driver presents to the TV itself.
+    config.renderer = PS2GFX_RENDERER_VULKAN;
+#else
+    static std::vector<const char *> extensions;
+    if (g_bVulkan) {
+        g_pWindow = SDL_CreateWindow("FreQuency",
+                                     SDL_WINDOWPOS_UNDEFINED,
+                                     SDL_WINDOWPOS_UNDEFINED,
+                                     nWindowWidth,
+                                     nWindowHeight,
+                                     SDL_WINDOW_VULKAN);
+        unsigned nExtensions = 0;
+        if (g_pWindow == nullptr ||
+            !SDL_Vulkan_GetInstanceExtensions(g_pWindow, &nExtensions, nullptr)) {
+            Fail("cannot create the Vulkan window");
+        }
+        extensions.resize(nExtensions);
+        SDL_Vulkan_GetInstanceExtensions(g_pWindow, &nExtensions, extensions.data());
+        config.renderer = PS2GFX_RENDERER_VULKAN;
+        config.vk_surface = CreateSurface;
+        config.vk_extensions = extensions.data();
+        config.vk_extension_count = nExtensions;
+    } else {
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+        g_pWindow = SDL_CreateWindow("FreQuency",
+                                     SDL_WINDOWPOS_UNDEFINED,
+                                     SDL_WINDOWPOS_UNDEFINED,
+                                     nWindowWidth,
+                                     nWindowHeight,
+                                     SDL_WINDOW_OPENGL);
+        if (g_pWindow == nullptr || (g_context = SDL_GL_CreateContext(g_pWindow)) == nullptr ||
+            SDL_GL_MakeCurrent(g_pWindow, nullptr) != 0) {
+            Fail("cannot create the OpenGL window");
+        }
+
+        config.renderer = PS2GFX_RENDERER_OPENGL;
+    }
 #endif
     config.spr_base = reinterpret_cast<void *>(kHostScratchpad);
     config.window_width = nWindowWidth;
     config.window_height = nWindowHeight;
     config.res_factor = nScale;
+#ifdef __PROSPERO__
+    if (pszScale == nullptr) {
+        config.res_factor = -1; // the TV's lines
+    }
+#endif
     if (g_bOutputShots) {
         config.aspect = bWidescreen ? PS2GFX_ASPECT_16_9 : PS2GFX_ASPECT_4_3;
     }
@@ -333,6 +405,11 @@ void TakeShots(unsigned nVblank) {
                      nOffset);
             const int nResult =
                 g_bOutputShots ? ps2gfx_screenshot_output(szPath) : ps2gfx_screenshot(szPath);
+            if (g_bOutputShots && g_bVulkan) {
+                std::string gsPath = szPath;
+                gsPath.replace(gsPath.size() - 4, 4, ".gs.png");
+                ps2gfx_screenshot(gsPath.c_str());
+            }
             timespec now;
             clock_gettime(CLOCK_MONOTONIC, &now);
             const double flSeconds =

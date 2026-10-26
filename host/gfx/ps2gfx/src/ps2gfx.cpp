@@ -30,7 +30,8 @@
 #include "gs/GSH_OpenGL/GSH_OpenGL.h"
 #endif
 #ifdef PS2GFX_VULKAN
-#include "gs/GSH_Vulkan/GSH_VulkanOffscreen.h"
+#include <algorithm>
+#include "gs/GSH_Vulkan/GSH_Vulkan.h"
 #endif
 
 namespace
@@ -88,6 +89,124 @@ namespace
 	public:
 		bool capture = false;
 		Framework::CBitmap captured;
+	};
+#endif
+
+#ifdef PS2GFX_VULKAN
+#ifdef __PROSPERO__
+	// RADV linked into the title (host/ps5): its ICD entry point stands in for the loader.
+	extern "C" PFN_vkVoidFunction vk_icdGetInstanceProcAddr(VkInstance instance, const char* name);
+
+	// The TV, through VK_KHR_display on the console's VideoOut, as Perfect Eye presents (Dab's Mod
+	// gfx_vulkan.cpp, __PROSPERO__): the display's first mode is the output the system set (3840x2160 on a
+	// 4K set; 119.88 Hz listed first when param.json declares high-frame-rate output and the TV takes it),
+	// and a display plane surface has that mode's extent.
+	VkSurfaceKHR CreateDisplaySurface(VkInstance instance, uint32& height)
+	{
+#define PS2GFX_GET(name) auto name = reinterpret_cast<PFN_##name>(vk_icdGetInstanceProcAddr(instance, #name))
+		PS2GFX_GET(vkEnumeratePhysicalDevices);
+		PS2GFX_GET(vkGetPhysicalDeviceDisplayPropertiesKHR);
+		PS2GFX_GET(vkGetDisplayModePropertiesKHR);
+		PS2GFX_GET(vkCreateDisplayPlaneSurfaceKHR);
+#undef PS2GFX_GET
+		if(!vkEnumeratePhysicalDevices || !vkGetPhysicalDeviceDisplayPropertiesKHR || !vkGetDisplayModePropertiesKHR || !vkCreateDisplayPlaneSurfaceKHR)
+		{
+			fprintf(stderr, "ps2gfx: no VK_KHR_display, so nothing reaches the TV\n");
+			return VK_NULL_HANDLE;
+		}
+		uint32_t count = 1;
+		VkPhysicalDevice device = VK_NULL_HANDLE;
+		VkResult result = vkEnumeratePhysicalDevices(instance, &count, &device);
+		VkDisplayPropertiesKHR display = {};
+		uint32_t displays = 1;
+		if((result == VK_SUCCESS || result == VK_INCOMPLETE) && count)
+			result = vkGetPhysicalDeviceDisplayPropertiesKHR(device, &displays, &display);
+		std::vector<VkDisplayModePropertiesKHR> modes;
+		if((result == VK_SUCCESS || result == VK_INCOMPLETE) && count && displays)
+		{
+			count = 0;
+			vkGetDisplayModePropertiesKHR(device, display.display, &count, nullptr);
+			modes.resize(count);
+			result = vkGetDisplayModePropertiesKHR(device, display.display, &count, modes.data());
+		}
+		for(uint32 i = 0; i < modes.size(); i++)
+		{
+			const auto& mode = modes[i].parameters;
+			fprintf(stderr, "ps2gfx: display mode %u: %ux%u at %u mHz\n", i, mode.visibleRegion.width, mode.visibleRegion.height, mode.refreshRate);
+		}
+		if(modes.empty())
+		{
+			fprintf(stderr, "ps2gfx: no display mode (%d), so nothing reaches the TV\n", static_cast<int>(result));
+			return VK_NULL_HANDLE;
+		}
+		VkDisplaySurfaceCreateInfoKHR info = {VK_STRUCTURE_TYPE_DISPLAY_SURFACE_CREATE_INFO_KHR};
+		info.displayMode = modes[0].displayMode;
+		info.transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+		info.alphaMode = VK_DISPLAY_PLANE_ALPHA_OPAQUE_BIT_KHR;
+		info.imageExtent = modes[0].parameters.visibleRegion;
+		VkSurfaceKHR surface = VK_NULL_HANDLE;
+		result = vkCreateDisplayPlaneSurfaceKHR(instance, &info, nullptr, &surface);
+		if(result != VK_SUCCESS)
+		{
+			fprintf(stderr, "ps2gfx: vkCreateDisplayPlaneSurfaceKHR failed (%d), so nothing reaches the TV\n", static_cast<int>(result));
+			return VK_NULL_HANDLE;
+		}
+		height = info.imageExtent.height;
+		return surface;
+	}
+#endif
+
+	// The Vulkan GS, presenting to the surface config.vk_surface gives (the PS5: the TV), else offscreen.
+	class CGSH_VulkanLib : public CGSH_Vulkan
+	{
+	public:
+		// Presents the displayed frame again and reads the swapchain image back (B, G, R, A).
+		bool Capture(Framework::CBitmap& bitmap)
+		{
+			if(!m_context->surface) return false;
+			m_context->presentCapture = &bitmap;
+			Flip(FLIP_FLAG_FORCE | FLIP_FLAG_WAIT);
+			bool captured = m_context->presentCapture == nullptr;
+			m_context->presentCapture = nullptr;
+			return captured && !bitmap.IsEmpty();
+		}
+
+	protected:
+		void InitializeImpl() override // on the GS thread
+		{
+			if(g_cfg.make_current) g_cfg.make_current(g_cfg.user);
+			std::vector<const char*> extensions(g_cfg.vk_extensions, g_cfg.vk_extensions + g_cfg.vk_extension_count);
+			uint32 height = g_cfg.window_height;
+#ifdef __PROSPERO__
+			extensions.push_back(VK_KHR_DISPLAY_EXTENSION_NAME);
+			m_instance = CreateInstance(true, extensions);
+			m_context->surface = CreateDisplaySurface(m_instance, height);
+#else
+			m_instance = CreateInstance(true, extensions);
+			if(g_cfg.vk_surface)
+				m_context->surface = reinterpret_cast<VkSurfaceKHR>(static_cast<uintptr_t>(g_cfg.vk_surface(g_cfg.user, static_cast<VkInstance>(m_instance))));
+#endif
+			if(g_cfg.res_factor < 0)
+				CAppConfig::GetInstance().SetPreferenceInteger(PREF_CGSH_VULKAN_RESOLUTION_FACTOR, std::clamp<int>((height + 447) / 448, 1, 8));
+			CGSH_Vulkan::InitializeImpl();
+			if(!m_context->surface) return;
+			VkSurfaceCapabilitiesKHR caps = {};
+			m_instance.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(m_context->physicalDevice, m_context->surface, &caps);
+			PRESENTATION_PARAMS pp;
+			pp.windowWidth = caps.currentExtent.width;
+			pp.windowHeight = caps.currentExtent.height;
+			pp.mode = PRESENTATION_MODE_FIT;
+			SetPresentationParams(pp);
+			auto viewport = GetPresentationViewport();
+			fprintf(stderr, "ps2gfx: Vulkan presents to a %ux%u surface (picture %dx%d at %d,%d), GS at %ux (%ux%u)\n",
+			        pp.windowWidth, pp.windowHeight, viewport.width, viewport.height, viewport.offsetX, viewport.offsetY,
+			        m_context->resFactor, 640 * m_context->resFactor, 448 * m_context->resFactor);
+		}
+
+		void PresentBackbuffer() override
+		{
+			if(g_cfg.present) g_cfg.present(g_cfg.user);
+		}
 	};
 #endif
 
@@ -315,20 +434,16 @@ extern "C" int ps2gfx_init(const ps2gfx_config* config)
 	if(config->renderer == PS2GFX_RENDERER_OPENGL && config->make_current)
 	{
 		gs = new CGSH_OpenGLLib();
-		auto& appConfig = CAppConfig::GetInstance();
 #ifndef PS2GFX_NO_OPENGL
-		if(config->res_factor > 1) appConfig.SetPreferenceInteger(PREF_CGSH_OPENGL_RESOLUTION_FACTOR, config->res_factor);
+		if(config->res_factor > 1) CAppConfig::GetInstance().SetPreferenceInteger(PREF_CGSH_OPENGL_RESOLUTION_FACTOR, config->res_factor);
 #endif
-		appConfig.RegisterPreferenceBoolean("ps2gfx.aspect43", false);
-		appConfig.SetPreferenceBoolean("ps2gfx.aspect43", config->aspect == PS2GFX_ASPECT_4_3);
-		appConfig.SetPreferenceBoolean(PREF_CGSHANDLER_WIDESCREEN, config->aspect == PS2GFX_ASPECT_16_9);
 	}
 	else if(config->renderer == PS2GFX_RENDERER_NULL)
 		gs = new CGSH_Null();
 #ifdef PS2GFX_VULKAN
 	else if(config->renderer == PS2GFX_RENDERER_VULKAN)
 	{
-		gs = new CGSH_VulkanOffscreen();
+		gs = new CGSH_VulkanLib();
 		if(config->res_factor > 1) CAppConfig::GetInstance().SetPreferenceInteger(PREF_CGSH_VULKAN_RESOLUTION_FACTOR, config->res_factor);
 	}
 #endif
@@ -337,6 +452,11 @@ extern "C" int ps2gfx_init(const ps2gfx_config* config)
 		g.reset();
 		return -1;
 	}
+	// The picture's shape in the window or on the surface (CGSHandler::GetPresentationViewport).
+	auto& appConfig = CAppConfig::GetInstance();
+	appConfig.RegisterPreferenceBoolean("ps2gfx.aspect43", false);
+	appConfig.SetPreferenceBoolean("ps2gfx.aspect43", config->aspect == PS2GFX_ASPECT_4_3);
+	appConfig.SetPreferenceBoolean(PREF_CGSHANDLER_WIDESCREEN, config->aspect == PS2GFX_ASPECT_16_9);
 	g->gs = gs;
 	gs->SetIntc(&g->intc);
 	gs->Initialize();
@@ -344,7 +464,7 @@ extern "C" int ps2gfx_init(const ps2gfx_config* config)
 	pp.windowWidth = config->window_width ? config->window_width : 640;
 	pp.windowHeight = config->window_height ? config->window_height : 448;
 	pp.mode = CGSHandler::PRESENTATION_MODE_FIT;
-	if(config->renderer == PS2GFX_RENDERER_OPENGL) gs->SetPresentationParams(pp); // Vulkan offscreen has no swapchain
+	if(config->renderer == PS2GFX_RENDERER_OPENGL) gs->SetPresentationParams(pp); // Vulkan sizes to its surface
 	gs->Reset();
 	return 0;
 }
@@ -480,6 +600,13 @@ extern "C" int ps2gfx_frame_hash(uint64_t* hash)
 
 extern "C" int ps2gfx_screenshot_output(const char* path)
 {
+#ifdef PS2GFX_VULKAN
+	if(auto vk = dynamic_cast<CGSH_VulkanLib*>(g->gs))
+	{
+		Framework::CBitmap bmp;
+		return vk->Capture(bmp) && WritePng(path, bmp, bmp.GetWidth(), bmp.GetHeight()) ? 0 : -1;
+	}
+#endif
 	auto gs = dynamic_cast<CGSH_OpenGLLib*>(g->gs);
 	if(!gs) return -1;
 	gs->capture = true;
