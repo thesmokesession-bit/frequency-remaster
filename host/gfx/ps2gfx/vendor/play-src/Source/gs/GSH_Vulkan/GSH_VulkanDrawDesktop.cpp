@@ -18,6 +18,8 @@ enum DESCRIPTORS
 	DESCRIPTOR_LOCATION_IMAGE_SWIZZLETABLE_FB,
 	DESCRIPTOR_LOCATION_IMAGE_SWIZZLETABLE_DEPTH,
 	DESCRIPTOR_LOCATION_UNIFORM_MIPPARAMS,
+	DESCRIPTOR_LOCATION_BUFFER_COLORSHADOW,
+	DESCRIPTOR_LOCATION_BUFFER_COLORSHADOW_COPY,
 };
 
 //resonance: set 1, binding 0 (Nuanceur: a texture unit's bits 8 and up are its descriptor set).
@@ -145,6 +147,19 @@ PIPELINE CDrawDesktop::CreateDrawPipeline(const PIPELINE_CAPS& caps)
 			setLayoutBinding.descriptorCount = 1;
 			setLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 			setLayoutBindings.push_back(setLayoutBinding);
+		}
+
+		if(m_context->colorShadow)
+		{
+			for(uint32 binding : {DESCRIPTOR_LOCATION_BUFFER_COLORSHADOW, DESCRIPTOR_LOCATION_BUFFER_COLORSHADOW_COPY})
+			{
+				VkDescriptorSetLayoutBinding setLayoutBinding = {};
+				setLayoutBinding.binding = binding;
+				setLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+				setLayoutBinding.descriptorCount = 1;
+				setLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+				setLayoutBindings.push_back(setLayoutBinding);
+			}
 		}
 
 		{
@@ -351,6 +366,14 @@ VkDescriptorSet CDrawDesktop::PrepareDescriptorSet(VkDescriptorSetLayout descrip
 		descriptorMemoryCopyBufferInfo.buffer = m_context->memoryBufferCopy;
 		descriptorMemoryCopyBufferInfo.range = VK_WHOLE_SIZE;
 
+		VkDescriptorBufferInfo descriptorColorShadowInfo = {};
+		descriptorColorShadowInfo.buffer = m_context->colorShadowBuffer;
+		descriptorColorShadowInfo.range = VK_WHOLE_SIZE;
+
+		VkDescriptorBufferInfo descriptorColorShadowCopyInfo = {};
+		descriptorColorShadowCopyInfo.buffer = m_context->colorShadowBufferCopy;
+		descriptorColorShadowCopyInfo.range = VK_WHOLE_SIZE;
+
 		VkDescriptorBufferInfo descriptorClutBufferInfo = {};
 		descriptorClutBufferInfo.buffer = m_context->clutBuffer;
 		descriptorClutBufferInfo.range = sizeof(uint32) * CGSHandler::CLUTENTRYCOUNT;
@@ -390,6 +413,20 @@ VkDescriptorSet CDrawDesktop::PrepareDescriptorSet(VkDescriptorSetLayout descrip
 			writeSet.descriptorCount = 1;
 			writeSet.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			writeSet.pBufferInfo = &descriptorMemoryCopyBufferInfo;
+			writes.push_back(writeSet);
+		}
+
+		if(m_context->colorShadow)
+		{
+			auto writeSet = Framework::Vulkan::WriteDescriptorSet();
+			writeSet.dstSet = descriptorSet;
+			writeSet.dstBinding = DESCRIPTOR_LOCATION_BUFFER_COLORSHADOW;
+			writeSet.descriptorCount = 1;
+			writeSet.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			writeSet.pBufferInfo = &descriptorColorShadowInfo;
+			writes.push_back(writeSet);
+			writeSet.dstBinding = DESCRIPTOR_LOCATION_BUFFER_COLORSHADOW_COPY;
+			writeSet.pBufferInfo = &descriptorColorShadowCopyInfo;
 			writes.push_back(writeSet);
 		}
 
@@ -476,6 +513,10 @@ Framework::Vulkan::CShaderModule CDrawDesktop::CreateFragmentShader(const PIPELI
 		auto memoryBuffer = CArrayUintValue(b.CreateUniformArrayUint("memoryBuffer", DESCRIPTOR_LOCATION_BUFFER_MEMORY, Nuanceur::SYMBOL_ATTRIBUTE_COHERENT));
 		auto memoryBufferCopy = CArrayUintValue(b.CreateUniformArrayUint("memoryBufferCopy", DESCRIPTOR_LOCATION_BUFFER_MEMORY_COPY));
 		auto clutBuffer = CArrayUintValue(b.CreateUniformArrayUint("clutBuffer", DESCRIPTOR_LOCATION_IMAGE_CLUT));
+		//resonance: FREQ_COLOR_DEPTH=full, see GSH_VulkanContext.h colorShadow.
+		bool colorShadow = m_context->colorShadow;
+		auto colorShadowBuffer = colorShadow ? CArrayUintValue(b.CreateUniformArrayUint("colorShadow", DESCRIPTOR_LOCATION_BUFFER_COLORSHADOW, Nuanceur::SYMBOL_ATTRIBUTE_COHERENT)) : clutBuffer;
+		auto colorShadowCopy = colorShadow ? CArrayUintValue(b.CreateUniformArrayUint("colorShadowCopy", DESCRIPTOR_LOCATION_BUFFER_COLORSHADOW_COPY)) : clutBuffer;
 		auto texSwizzleTable = CImageUint2DValue(b.CreateImage2DUint(DESCRIPTOR_LOCATION_IMAGE_SWIZZLETABLE_TEX));
 		auto fbSwizzleTable = CImageUint2DValue(b.CreateImage2DUint(DESCRIPTOR_LOCATION_IMAGE_SWIZZLETABLE_FB));
 		auto depthSwizzleTable = CImageUint2DValue(b.CreateImage2DUint(DESCRIPTOR_LOCATION_IMAGE_SWIZZLETABLE_DEPTH));
@@ -550,8 +591,10 @@ Framework::Vulkan::CShaderModule CDrawDesktop::CreateFragmentShader(const PIPELI
 				    auto clampTexel = clampCoordinates(texel);
 				    auto mipIuv = clampTexel->xy() / (NewInt2(b, 1, 1) << texMipLevel->xx());
 				    auto textureSource = caps.textureUseMemoryCopy ? memoryBufferCopy : memoryBuffer;
+				    auto shadowSource = caps.textureUseMemoryCopy ? colorShadowCopy : colorShadowBuffer;
 				    textureColor = CDrawUtils::GetTextureColor(b, caps.textureFormat, caps.clutFormat, mipIuv,
-				                                               textureSource, clutBuffer, texSwizzleTable, texBufAddress + planeOffset, texBufWidth, texCsa);
+				                                               textureSource, clutBuffer, texSwizzleTable, texBufAddress + planeOffset, texBufWidth, texCsa,
+				                                               colorShadow ? &shadowSource : nullptr);
 				    if(caps.textureHasAlpha)
 				    {
 					    CDrawUtils::ExpandAlpha(b, caps.textureFormat, caps.clutFormat, caps.textureBlackIsTransparent, textureColor, texA0, texA1);
@@ -869,7 +912,7 @@ Framework::Vulkan::CShaderModule CDrawDesktop::CreateFragmentShader(const PIPELI
 			case CGSHandler::PSMZ16S:
 			{
 				dstPixel = CMemoryUtils::Memory_Read16(b, memoryBuffer, fbAddress);
-				dstIColor = CMemoryUtils::PSM16ToIVec4(b, dstPixel);
+				dstIColor = colorShadow ? CMemoryUtils::PSM16ToIVec4Shadow(b, colorShadowBuffer, fbAddress, dstPixel) : CMemoryUtils::PSM16ToIVec4(b, dstPixel);
 			}
 			break;
 			}
@@ -981,6 +1024,14 @@ Framework::Vulkan::CShaderModule CDrawDesktop::CreateFragmentShader(const PIPELI
 			finalPixel = (finalPixel & fbWriteMask) | (dstPixel & ~fbWriteMask);
 
 			CDrawUtils::WriteToFramebuffer(b, caps.framebufferFormat, memoryBuffer, fbAddress, finalPixel);
+			bool is16 = (caps.framebufferFormat == CGSHandler::PSMCT16) || (caps.framebufferFormat == CGSHandler::PSMCT16S) ||
+			            (caps.framebufferFormat == CGSHandler::PSMZ16S);
+			if(colorShadow && is16)
+			{
+				//A write mask keeps some of the old bits: the shadow then holds what the pixel holds.
+				auto shadowColor = caps.maskColor ? CMemoryUtils::PSM16ToIVec4(b, finalPixel) : finalIColor->xyzw();
+				Store(colorShadowBuffer, fbAddress / NewInt(b, 2), CMemoryUtils::ShadowWord(b, shadowColor));
+			}
 		}
 		EndIf(b);
 
@@ -1027,6 +1078,18 @@ void CDrawDesktop::FlushVertices()
 
 		m_context->device.vkCmdCopyBuffer(commandBuffer, m_context->memoryBuffer, m_context->memoryBufferCopy,
 		                                  static_cast<uint32>(bufferCopies.size()), bufferCopies.data());
+		if(m_context->colorShadow)
+		{
+			//The shadow holds 4 bytes per 16-bit unit: twice the offsets and sizes.
+			for(auto& bufferCopy : bufferCopies)
+			{
+				bufferCopy.srcOffset *= 2;
+				bufferCopy.dstOffset *= 2;
+				bufferCopy.size *= 2;
+			}
+			m_context->device.vkCmdCopyBuffer(commandBuffer, m_context->colorShadowBuffer, m_context->colorShadowBufferCopy,
+			                                  static_cast<uint32>(bufferCopies.size()), bufferCopies.data());
+		}
 
 		m_memoryCopyRegion.Reset();
 	}

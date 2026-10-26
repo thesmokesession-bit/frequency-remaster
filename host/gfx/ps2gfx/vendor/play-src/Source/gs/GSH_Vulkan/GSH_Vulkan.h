@@ -201,8 +201,10 @@ private:
 		return bitmap;
 	}
 
+	//resonance: shadow (FREQ_COLOR_DEPTH=full): the colour shadow's words, ram being plane planeOffset / RAMSIZE.
 	template <typename PixelIndexor>
-	static Framework::CBitmap ReadImage16(uint8* ram, uint32 bufferPtr, uint32 bufferWidth, uint32 width, uint32 height)
+	static Framework::CBitmap ReadImage16(uint8* ram, uint32 bufferPtr, uint32 bufferWidth, uint32 width, uint32 height,
+	                                      const uint32* shadow = nullptr, uint32 planeOffset = 0)
 	{
 		auto bitmap = Framework::CBitmap(width, height, 32);
 		auto bitmapPixels = reinterpret_cast<uint32*>(bitmap.GetPixels());
@@ -218,6 +220,19 @@ private:
 				r |= r >> 5; // ps2gfx: bit replication, matches PSM16ToIVec4
 				g |= g >> 5;
 				b |= b >> 5;
+				if(shadow)
+				{
+					uint32 offset = static_cast<uint32>(reinterpret_cast<uint8*>(indexor.GetPixelAddress(x, y)) - ram);
+					uint32 word = shadow[(planeOffset + offset) / 2];
+					uint32 sr = word & 0xFF, sg = (word >> 8) & 0xFF, sb = (word >> 16) & 0xFF;
+					auto q5 = [](uint32 c) { return (c * 31 + 127) / 255; };
+					if((q5(sr) | (q5(sg) << 5) | (q5(sb) << 10)) == (pixel & 0x7FFFU))
+					{
+						r = sr;
+						g = sg;
+						b = sb;
+					}
+				}
 				uint32 a = (((pixel & 0x8000) >> 15) != 0) ? 0xFF : 0;
 				(*bitmapPixels) = b | (g << 8) | (r << 16) | (a << 24);
 				bitmapPixels++;
@@ -252,6 +267,7 @@ private:
 	GSH_Vulkan::TransferLocalPtr m_transferLocal;
 
 	uint8* m_memoryCache = nullptr;
+	std::vector<uint32> m_colorShadowCache; //resonance: GetFramebuffer's copy of the colour shadow
 	//resonance: GS memory pages last written by a draw (at resFactor), not by the host.
 	PageSet m_scaledPages;
 

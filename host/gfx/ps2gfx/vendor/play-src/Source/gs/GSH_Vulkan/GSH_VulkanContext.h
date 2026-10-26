@@ -50,6 +50,13 @@ namespace GSH_Vulkan
 		//write every plane, local copies copy each plane, and textures the GS drew read the plane of their
 		//sub-texel (CGSH_Vulkan tracks which pages draws wrote).
 		uint32 resFactor = 1;
+		//resonance: FREQ_COLOR_DEPTH=full (default): a 16-bit colour pixel also keeps the 8-bit RGB a draw wrote,
+		//one uint32 (R, G, B, 0) per 16-bit unit of every plane (index = plane address / 2). Reads use it while
+		//its 5-bit form still equals the pixel's RGB, else the pixel (a transfer or another format rewrote it):
+		//no invalidation needed, alpha and every read-back to the EE stay the 16 bits.
+		bool colorShadow = false;
+		Framework::Vulkan::CBuffer colorShadowBuffer;
+		Framework::Vulkan::CBuffer colorShadowBufferCopy;
 		//resonance: set, the next present also copies the swapchain image here (B, G, R, A bytes) and clears it.
 		Framework::CBitmap* presentCapture = nullptr;
 		uint32 GetPlaneCount() const

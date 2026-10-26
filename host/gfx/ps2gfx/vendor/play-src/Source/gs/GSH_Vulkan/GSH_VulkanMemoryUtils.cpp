@@ -210,3 +210,40 @@ Nuanceur::CUintRvalue CMemoryUtils::IVec4ToPSM16(Nuanceur::CShaderBuilder& b, Nu
 	auto colorA = ToUint(inputColor->w()) >> NewUint(b, 7) << NewUint(b, 15);
 	return colorR | colorG | colorB | colorA;
 }
+
+Nuanceur::CInt4Rvalue CMemoryUtils::PSM16ToIVec4Shadow(Nuanceur::CShaderBuilder& b, Nuanceur::CArrayUintValue shadowBuffer,
+                                                      Nuanceur::CIntValue address, Nuanceur::CUintValue inputColor)
+{
+	using namespace Nuanceur;
+	auto color = CInt4Lvalue(b.CreateVariableInt("shadowColor"));
+	color = PSM16ToIVec4(b, inputColor);
+	auto shadow = PSM32ToIVec4(b, Load(shadowBuffer, address / NewInt(b, 2)));
+	BeginIf(b, IVec4ToPSM16(b, NewInt4(shadow->xyz(), NewInt(b, 0))) == (inputColor & NewUint(b, 0x7FFF)));
+	{
+		color = NewInt4(shadow->xyz(), color->w());
+	}
+	EndIf(b);
+	return color->xyzw();
+}
+
+Nuanceur::CFloat4Rvalue CMemoryUtils::PSM16ToVec4Shadow(Nuanceur::CShaderBuilder& b, Nuanceur::CArrayUintValue shadowBuffer,
+                                                       Nuanceur::CIntValue address, Nuanceur::CUintValue inputColor)
+{
+	using namespace Nuanceur;
+	auto color = CFloat4Lvalue(b.CreateVariableFloat("shadowColor"));
+	color = PSM16ToVec4(b, inputColor);
+	auto shadow = PSM32ToIVec4(b, Load(shadowBuffer, address / NewInt(b, 2)));
+	BeginIf(b, IVec4ToPSM16(b, NewInt4(shadow->xyz(), NewInt(b, 0))) == (inputColor & NewUint(b, 0x7FFF)));
+	{
+		auto shadowFloat = ToFloat(shadow) / NewFloat4(b, 255.f, 255.f, 255.f, 255.f);
+		color = NewFloat4(shadowFloat->xyz(), color->w());
+	}
+	EndIf(b);
+	return color->xyzw();
+}
+
+Nuanceur::CUintRvalue CMemoryUtils::ShadowWord(Nuanceur::CShaderBuilder& b, Nuanceur::CInt4Value color)
+{
+	using namespace Nuanceur;
+	return IVec4ToPSM32(b, color & NewInt4(b, 0xFF, 0xFF, 0xFF, 0));
+}

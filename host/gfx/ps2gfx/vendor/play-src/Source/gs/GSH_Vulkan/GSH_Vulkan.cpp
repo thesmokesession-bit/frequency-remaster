@@ -292,6 +292,8 @@ void CGSH_Vulkan::ReleaseImpl()
 	m_context->memoryBuffer.Reset();
 	m_context->memoryBufferCopy.Reset();
 	m_context->memoryBufferTransfer.Reset();
+	m_context->colorShadowBuffer.Reset();
+	m_context->colorShadowBufferCopy.Reset();
 	m_context->commandBufferPool.Reset();
 	m_context->device.Reset();
 
@@ -638,6 +640,32 @@ void CGSH_Vulkan::CreateMemoryBuffer()
 	                                                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
 	                                                             RAMSIZE);
 	m_context->annotations.SetBufferName(m_context->memoryBufferTransfer, "GS Memory Transfer");
+
+	//resonance: FREQ_COLOR_DEPTH=original keeps 16-bit colour as the GS stores it (5 bits a channel).
+	const char* colorDepth = getenv("FREQ_COLOR_DEPTH");
+	m_context->colorShadow = !(colorDepth && !strcmp(colorDepth, "original"));
+	if(m_context->colorShadow)
+	{
+		for(auto* buffer : {&m_context->colorShadowBuffer, &m_context->colorShadowBufferCopy})
+		{
+			*buffer = Framework::Vulkan::CBuffer(m_context->device, m_context->physicalDeviceMemoryProperties,
+			                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+			                                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, memorySize * 2);
+		}
+		auto commandBuffer = m_context->commandBufferPool.AllocateBuffer();
+		auto beginInfo = Framework::Vulkan::CommandBufferBeginInfo();
+		beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+		m_context->device.vkBeginCommandBuffer(commandBuffer, &beginInfo);
+		m_context->device.vkCmdFillBuffer(commandBuffer, m_context->colorShadowBuffer, 0, VK_WHOLE_SIZE, 0);
+		m_context->device.vkCmdFillBuffer(commandBuffer, m_context->colorShadowBufferCopy, 0, VK_WHOLE_SIZE, 0);
+		m_context->device.vkEndCommandBuffer(commandBuffer);
+		auto submitInfo = Framework::Vulkan::SubmitInfo();
+		submitInfo.commandBufferCount = 1;
+		submitInfo.pCommandBuffers = &commandBuffer;
+		m_context->device.vkQueueSubmit(m_context->queue, 1, &submitInfo, VK_NULL_HANDLE);
+		m_context->device.vkQueueWaitIdle(m_context->queue);
+		m_context->commandBufferPool.FreeBuffer(commandBuffer);
+	}
 }
 
 void CGSH_Vulkan::CreateClutBuffer()
@@ -2226,6 +2254,16 @@ Framework::CBitmap CGSH_Vulkan::GetFramebufferImpl(uint64 frameReg)
 	uint32 frameHeight = 1024;
 	Framework::CBitmap bitmap;
 
+	//resonance: a 16-bit frame as the presenter shows it, through the colour shadow (FREQ_COLOR_DEPTH=full).
+	const uint32* shadow = nullptr;
+	if(m_context->colorShadow && ((frame.nPsm == PSMCT16) || (frame.nPsm == PSMCT16S)))
+	{
+		m_colorShadowCache.resize(RAMSIZE / 2 * m_context->GetPlaneCount());
+		m_context->colorShadowBuffer.Read(m_context->queue, m_context->commandBufferPool,
+		                                  m_context->physicalDeviceMemoryProperties, m_colorShadowCache.data());
+		shadow = m_colorShadowCache.data();
+	}
+
 	switch(frame.nPsm)
 	{
 	case PSMCT32:
@@ -2243,13 +2281,13 @@ Framework::CBitmap CGSH_Vulkan::GetFramebufferImpl(uint64 frameReg)
 	case PSMCT16:
 	{
 		bitmap = ReadImage16<CGsPixelFormats::CPixelIndexorPSMCT16>(GetRam(), frame.GetBasePtr(),
-		                                                            frame.nWidth, frameWidth, frameHeight);
+		                                                            frame.nWidth, frameWidth, frameHeight, shadow);
 	}
 	break;
 	case PSMCT16S:
 	{
 		bitmap = ReadImage16<CGsPixelFormats::CPixelIndexorPSMCT16S>(GetRam(), frame.GetBasePtr(),
-		                                                             frame.nWidth, frameWidth, frameHeight);
+		                                                             frame.nWidth, frameWidth, frameHeight, shadow);
 	}
 	break;
 	default:
@@ -2273,9 +2311,9 @@ Framework::CBitmap CGSH_Vulkan::GetFramebufferImpl(uint64 frameReg)
 				case PSMCT24:
 					return ReadImage32<CGsPixelFormats::CPixelIndexorPSMCT32, 0x00FFFFFF>(ram, frame.GetBasePtr(), frame.nWidth, frameWidth, frameHeight);
 				case PSMCT16:
-					return ReadImage16<CGsPixelFormats::CPixelIndexorPSMCT16>(ram, frame.GetBasePtr(), frame.nWidth, frameWidth, frameHeight);
+					return ReadImage16<CGsPixelFormats::CPixelIndexorPSMCT16>(ram, frame.GetBasePtr(), frame.nWidth, frameWidth, frameHeight, shadow, plane * RAMSIZE);
 				default:
-					return ReadImage16<CGsPixelFormats::CPixelIndexorPSMCT16S>(ram, frame.GetBasePtr(), frame.nWidth, frameWidth, frameHeight);
+					return ReadImage16<CGsPixelFormats::CPixelIndexorPSMCT16S>(ram, frame.GetBasePtr(), frame.nWidth, frameWidth, frameHeight, shadow, plane * RAMSIZE);
 				}
 			}();
 			auto planePixels = reinterpret_cast<const uint32*>(planeBitmap.GetPixels());

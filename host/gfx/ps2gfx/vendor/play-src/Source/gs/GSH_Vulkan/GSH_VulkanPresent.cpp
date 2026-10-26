@@ -10,6 +10,7 @@ using namespace GSH_Vulkan;
 
 #define DESCRIPTOR_LOCATION_BUFFER_MEMORY 0
 #define DESCRIPTOR_LOCATION_IMAGE_SWIZZLETABLE 2
+#define DESCRIPTOR_LOCATION_BUFFER_COLORSHADOW 3
 
 //Module responsible for presenting frame buffer to surface
 
@@ -357,7 +358,22 @@ VkDescriptorSet CPresent::PrepareDescriptorSet(VkDescriptorSetLayout descriptorS
 		descriptorSwizzleTableImageInfo.imageView = m_context->GetSwizzleTable(bufPsm);
 		descriptorSwizzleTableImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
+		VkDescriptorBufferInfo descriptorColorShadowInfo = {};
+		descriptorColorShadowInfo.buffer = m_context->colorShadowBuffer;
+		descriptorColorShadowInfo.range = VK_WHOLE_SIZE;
+
 		std::vector<VkWriteDescriptorSet> writes;
+
+		if(m_context->colorShadow)
+		{
+			auto writeSet = Framework::Vulkan::WriteDescriptorSet();
+			writeSet.dstSet = descriptorSet;
+			writeSet.dstBinding = DESCRIPTOR_LOCATION_BUFFER_COLORSHADOW;
+			writeSet.descriptorCount = 1;
+			writeSet.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			writeSet.pBufferInfo = &descriptorColorShadowInfo;
+			writes.push_back(writeSet);
+		}
 
 		{
 			auto writeSet = Framework::Vulkan::WriteDescriptorSet();
@@ -594,6 +610,16 @@ PIPELINE CPresent::CreateDrawPipeline(const PIPELINE_CAPS& caps)
 			setLayoutBindings.push_back(setLayoutBinding);
 		}
 
+		if(m_context->colorShadow)
+		{
+			VkDescriptorSetLayoutBinding setLayoutBinding = {};
+			setLayoutBinding.binding = DESCRIPTOR_LOCATION_BUFFER_COLORSHADOW;
+			setLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			setLayoutBinding.descriptorCount = 1;
+			setLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+			setLayoutBindings.push_back(setLayoutBinding);
+		}
+
 		{
 			VkDescriptorSetLayoutBinding setLayoutBinding = {};
 			setLayoutBinding.binding = DESCRIPTOR_LOCATION_IMAGE_SWIZZLETABLE;
@@ -784,6 +810,8 @@ Framework::Vulkan::CShaderModule CPresent::CreateFragmentShader(const PIPELINE_C
 		auto outputColor = CFloat4Lvalue(b.CreateOutput(Nuanceur::SEMANTIC_SYSTEM_COLOR));
 		auto memoryBuffer = CArrayUintValue(b.CreateUniformArrayUint("memoryBuffer", DESCRIPTOR_LOCATION_BUFFER_MEMORY));
 		auto swizzleTable = CImageUint2DValue(b.CreateImage2DUint(DESCRIPTOR_LOCATION_IMAGE_SWIZZLETABLE));
+		//resonance: FREQ_COLOR_DEPTH=full, see GSH_VulkanContext.h colorShadow.
+		auto colorShadowBuffer = m_context->colorShadow ? CArrayUintValue(b.CreateUniformArrayUint("colorShadow", DESCRIPTOR_LOCATION_BUFFER_COLORSHADOW)) : memoryBuffer;
 
 		auto presentBufParams = CInt4Lvalue(b.CreateUniformInt4("presentBufParams", Nuanceur::UNIFORM_UNIT_PUSHCONSTANT));
 		auto presentRectParams = CInt4Lvalue(b.CreateUniformInt4("presentRectParams", Nuanceur::UNIFORM_UNIT_PUSHCONSTANT));
@@ -815,6 +843,10 @@ Framework::Vulkan::CShaderModule CPresent::CreateFragmentShader(const PIPELINE_C
 			{
 				auto address = CMemoryUtils::GetPixelAddress<CGsPixelFormats::STORAGEPSMCT16>(
 				    b, swizzleTable, planeAddress, bufWidth, pixelPos);
+				if(m_context->colorShadow)
+				{
+					return CMemoryUtils::PSM16ToVec4Shadow(b, colorShadowBuffer, address, CMemoryUtils::Memory_Read16(b, memoryBuffer, address));
+				}
 				return CMemoryUtils::PSM16ToVec4(b, CMemoryUtils::Memory_Read16(b, memoryBuffer, address));
 			}
 			}

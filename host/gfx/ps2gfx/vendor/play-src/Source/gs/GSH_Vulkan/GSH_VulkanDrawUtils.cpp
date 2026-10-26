@@ -90,7 +90,7 @@ static Nuanceur::CFloat4Rvalue GetClutColor(Nuanceur::CShaderBuilder& b,
 Nuanceur::CFloat4Rvalue CDrawUtils::GetTextureColor(Nuanceur::CShaderBuilder& b, uint32 textureFormat, uint32 clutFormat,
                                                     Nuanceur::CInt2Value texelPos, Nuanceur::CArrayUintValue memoryBuffer, Nuanceur::CArrayUintValue clutBuffer,
                                                     Nuanceur::CImageUint2DValue texSwizzleTable, Nuanceur::CIntValue texBufAddress, Nuanceur::CIntValue texBufWidth,
-                                                    Nuanceur::CIntValue texCsa)
+                                                    Nuanceur::CIntValue texCsa, const Nuanceur::CArrayUintValue* colorShadow)
 {
 	using namespace Nuanceur;
 
@@ -124,6 +124,10 @@ Nuanceur::CFloat4Rvalue CDrawUtils::GetTextureColor(Nuanceur::CShaderBuilder& b,
 		auto texAddress = CMemoryUtils::GetPixelAddress<CGsPixelFormats::STORAGEPSMCT16>(
 		    b, texSwizzleTable, texBufAddress, texBufWidth, texelPos);
 		auto texPixel = CMemoryUtils::Memory_Read16(b, memoryBuffer, texAddress);
+		if(colorShadow && ((textureFormat == CGSHandler::PSMCT16) || (textureFormat == CGSHandler::PSMCT16S)))
+		{
+			return CMemoryUtils::PSM16ToVec4Shadow(b, *colorShadow, texAddress, texPixel);
+		}
 		return CMemoryUtils::PSM16ToVec4(b, texPixel);
 	}
 	case CGSHandler::PSMT8:

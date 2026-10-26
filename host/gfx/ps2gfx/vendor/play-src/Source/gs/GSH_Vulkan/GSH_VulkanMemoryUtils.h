@@ -49,5 +49,12 @@ namespace GSH_Vulkan
 
 		static Nuanceur::CUintRvalue IVec4ToPSM32(Nuanceur::CShaderBuilder&, Nuanceur::CInt4Value);
 		static Nuanceur::CUintRvalue IVec4ToPSM16(Nuanceur::CShaderBuilder&, Nuanceur::CInt4Value);
+
+		//resonance: a 16-bit pixel read through the colour shadow (GSH_VulkanContext.h colorShadow), address its
+		//byte address in the planes: the shadow's 8-bit RGB while its 5-bit form equals the pixel's, else the pixel.
+		static Nuanceur::CInt4Rvalue PSM16ToIVec4Shadow(Nuanceur::CShaderBuilder&, Nuanceur::CArrayUintValue, Nuanceur::CIntValue, Nuanceur::CUintValue);
+		static Nuanceur::CFloat4Rvalue PSM16ToVec4Shadow(Nuanceur::CShaderBuilder&, Nuanceur::CArrayUintValue, Nuanceur::CIntValue, Nuanceur::CUintValue);
+		//The value a 16-bit write leaves in the shadow: the RGB drawn (0..255 each).
+		static Nuanceur::CUintRvalue ShadowWord(Nuanceur::CShaderBuilder&, Nuanceur::CInt4Value);
 	};
 }
