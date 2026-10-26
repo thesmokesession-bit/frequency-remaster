@@ -14,6 +14,7 @@
 #include "vulkan/StructDefs.h"
 #include "vulkan/StructChain.h"
 #include "vulkan/Utils.h"
+#include "TexReplace.h"
 
 #define LOG_NAME ("gsh_vulkan")
 
@@ -177,6 +178,18 @@ void CGSH_Vulkan::InitializeImpl()
 	CreateMemoryBuffer();
 	CreateClutBuffer();
 
+	m_textureImagesEnabled = TexReplace::Active();
+	if(m_textureImagesEnabled)
+	{
+		VkDescriptorPoolSize poolSize = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 0x1000};
+		auto descriptorPoolCreateInfo = Framework::Vulkan::DescriptorPoolCreateInfo();
+		descriptorPoolCreateInfo.poolSizeCount = 1;
+		descriptorPoolCreateInfo.pPoolSizes = &poolSize;
+		descriptorPoolCreateInfo.maxSets = 0x1000;
+		auto result = m_context->device.vkCreateDescriptorPool(m_context->device, &descriptorPoolCreateInfo, nullptr, &m_textureImagePool);
+		CHECKVULKANERROR(result);
+	}
+
 	m_swizzleTablePSMCT32 = CreateSwizzleTable<CGsPixelFormats::STORAGEPSMCT32>(m_context->device, m_context->physicalDeviceMemoryProperties, m_context->queue, m_context->commandBufferPool);
 	m_swizzleTablePSMCT16 = CreateSwizzleTable<CGsPixelFormats::STORAGEPSMCT16>(m_context->device, m_context->physicalDeviceMemoryProperties, m_context->queue, m_context->commandBufferPool);
 	m_swizzleTablePSMCT16S = CreateSwizzleTable<CGsPixelFormats::STORAGEPSMCT16S>(m_context->device, m_context->physicalDeviceMemoryProperties, m_context->queue, m_context->commandBufferPool);
@@ -240,6 +253,14 @@ void CGSH_Vulkan::ReleaseImpl()
 
 	//Flush any pending rendering commands
 	m_context->device.vkQueueWaitIdle(m_context->queue);
+
+	ReleaseTextureImages();
+	for(const auto& sampler : m_textureImageSamplers)
+	{
+		m_context->device.vkDestroySampler(m_context->device, sampler.second, nullptr);
+	}
+	m_textureImageSamplers.clear();
+	m_context->device.vkDestroyDescriptorPool(m_context->device, m_textureImagePool, nullptr);
 
 	m_clutLoad.reset();
 	m_draw.reset();
@@ -314,6 +335,7 @@ void CGSH_Vulkan::FlipImpl(const DISPLAY_INFO& dispInfo)
 	}
 
 	PresentBackbuffer();
+	m_textureImageEpoch++; //TexReplace counts the presents a texture is drawn in
 	for(auto& xferHistoryPair : m_xferHistory)
 	{
 		xferHistoryPair.second.Advance();
@@ -481,6 +503,18 @@ void CGSH_Vulkan::CreateDevice(VkPhysicalDevice physicalDevice)
 #if GSH_VULKAN_IS_DESKTOP
 		physicalDeviceFeatures2.features.shaderInt16 = VK_TRUE;
 #endif
+		//resonance: FREQ_TEX_FILTER's 16x anisotropic filtering, where the device has it.
+		VkPhysicalDeviceFeatures supportedFeatures = {};
+		auto getFeatures = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures>(
+		    Framework::Vulkan::CLoader::GetInstance().vkGetInstanceProcAddr(m_instance, "vkGetPhysicalDeviceFeatures"));
+		if(getFeatures) getFeatures(physicalDevice, &supportedFeatures);
+		physicalDeviceFeatures2.features.samplerAnisotropy = supportedFeatures.samplerAnisotropy;
+		if(supportedFeatures.samplerAnisotropy)
+		{
+			VkPhysicalDeviceProperties properties = {};
+			m_instance.vkGetPhysicalDeviceProperties(physicalDevice, &properties);
+			m_maxAnisotropy = std::min(16.0f, properties.limits.maxSamplerAnisotropy);
+		}
 		createDeviceStructs.AddStruct(physicalDeviceFeatures2);
 	}
 
@@ -1015,6 +1049,54 @@ void CGSH_Vulkan::SetRenderingContext(uint64 primReg)
 		}
 	}
 
+	//resonance: a texture the host sent is drawn from an RGBA image when it has an HD replacement (or,
+	//FREQ_TEX_FILTER=enhanced, mip levels); one a draw or a local copy wrote is sampled from GS memory.
+	//Every primitive comes here: the result is kept while the registers and GS memory's state stay.
+	uint64 textureImageKey[] = {tex0, tex1, clamp, test, frame, zbuf, scissor, pipelineCaps, m_textureImageEpoch};
+	if(m_textureImagesEnabled && !memcmp(textureImageKey, m_lastTextureImageKey, sizeof(textureImageKey)))
+	{
+		if(m_lastTextureImageSet != VK_NULL_HANDLE)
+		{
+			pipelineCaps.textureImage = 1;
+			pipelineCaps.textureUseDynamicMipLOD = 0;
+		}
+	}
+	else if(m_textureImagesEnabled)
+	{
+		memcpy(m_lastTextureImageKey, textureImageKey, sizeof(textureImageKey));
+		VkDescriptorSet textureImageSet = VK_NULL_HANDLE;
+		if(pipelineCaps.hasTexture)
+		{
+			CGsCachedArea textureArea;
+			textureArea.SetArea(tex0.nPsm, tex0.nBufPtr, tex0.GetBufWidth(), tex0.GetHeight());
+			if(HasPages(m_unmirroredPages, tex0.GetBufPtr(), textureArea.GetSize()))
+			{
+				if(TexReplace::Active()) TexReplace::BindRenderTarget(tex0);
+			}
+			else
+			{
+				bool depthTested = test.nDepthEnabled && (test.nDepthMethod != DEPTH_TEST_ALWAYS);
+				textureImageSet = PrepareTextureImage(tex0, tex1, clamp, depthTested, pipelineCaps.textureUseLinearFiltering);
+			}
+		}
+		if(textureImageSet != VK_NULL_HANDLE)
+		{
+			pipelineCaps.textureImage = 1;
+			pipelineCaps.textureUseDynamicMipLOD = 0;
+		}
+		CGsCachedArea frameArea;
+		frameArea.SetArea(frame.nPsm, frame.nPtr, frame.GetWidth(), scissor.scay1 + 1);
+		MarkPages(m_unmirroredPages, frame.GetBasePtr(), frameArea.GetSize(), true);
+		if(pipelineCaps.writeDepth)
+		{
+			CGsCachedArea depthArea;
+			depthArea.SetArea(zbuf.nPsm | 0x30, zbuf.nPtr, frame.GetWidth(), scissor.scay1 + 1);
+			MarkPages(m_unmirroredPages, zbuf.GetBasePtr(), depthArea.GetSize(), true);
+		}
+		m_lastTextureImageSet = textureImageSet;
+	}
+	if(m_textureImagesEnabled) m_draw->SetTextureImage(m_lastTextureImageSet);
+
 	m_draw->SetPipelineCaps(pipelineCaps);
 	m_draw->SetFramebufferParams(frame.GetBasePtr(), frame.GetWidth(), fbWriteMask);
 	m_draw->SetDepthbufferParams(zbuf.GetBasePtr(), frame.GetWidth());
@@ -1497,6 +1579,12 @@ void CGSH_Vulkan::ProcessHostToLocalTransfer()
 	m_transferHost->DoTransfer(m_xferBuffer);
 	auto [dstAddress, dstSize] = GsTransfer::GetDstRange(bltBuf, trxReg, trxPos);
 	MarkPages(m_scaledPages, dstAddress, dstSize, false);
+	if(m_textureImagesEnabled)
+	{
+		MarkPages(m_unmirroredPages, dstAddress, dstSize, false);
+		m_textureHashes.InvalidateRange(dstAddress, dstSize);
+		m_textureImageEpoch++;
+	}
 
 	m_xferBuffer.clear();
 }
@@ -1631,6 +1719,8 @@ void CGSH_Vulkan::ProcessLocalToLocalTransfer()
 	auto [srcAddress, srcSize] = GsTransfer::GetSrcRange(bltBuf, trxReg, trxPos);
 	auto [dstAddress, dstSize] = GsTransfer::GetDstRange(bltBuf, trxReg, trxPos);
 	MarkPages(m_scaledPages, dstAddress, dstSize, HasPages(m_scaledPages, srcAddress, srcSize));
+	MarkPages(m_unmirroredPages, dstAddress, dstSize, true);
+	m_textureImageEpoch++;
 }
 
 void CGSH_Vulkan::ProcessClutTransfer(uint32 csa, uint32)
@@ -1646,6 +1736,7 @@ void CGSH_Vulkan::BeginTransferWrite()
 void CGSH_Vulkan::TransferWrite(const uint8* imageData, uint32 length)
 {
 	m_xferBuffer.insert(m_xferBuffer.end(), imageData, imageData + length);
+	if(m_textureImagesEnabled) CGSHandler::TransferWrite(imageData, length); //into the m_pRAM mirror
 }
 
 void CGSH_Vulkan::WriteBackMemoryCache()
@@ -1655,6 +1746,13 @@ void CGSH_Vulkan::WriteBackMemoryCache()
 	for(uint32 plane = 1; plane < m_context->GetPlaneCount(); plane++)
 	{
 		memcpy(m_memoryCache + plane * RAMSIZE, m_memoryCache, RAMSIZE);
+	}
+	if(m_textureImagesEnabled)
+	{
+		memcpy(m_pRAM, m_memoryCache, RAMSIZE);
+		m_unmirroredPages.reset();
+		m_textureHashes.Flush();
+		m_textureImageEpoch++;
 	}
 	m_frameCommandBuffer->Flush();
 	m_context->device.vkQueueWaitIdle(m_context->queue);
@@ -1686,6 +1784,16 @@ void CGSH_Vulkan::SyncCLUT(const TEX0& tex0)
 			m_draw->SetClutBufferOffset(clutBufferOffset);
 		}
 		return;
+	}
+
+	if(m_textureImagesEnabled)
+	{
+		//The CLUT as GSH_OpenGL reads it, for TexReplace keys and decoded textures.
+		if(CGsPixelFormats::IsPsmIDTEX8(tex0.nPsm))
+			ReadCLUT8(tex0);
+		else
+			ReadCLUT4(tex0);
+		m_textureImageEpoch++;
 	}
 
 	auto texClut = make_convertible<TEXCLUT>(m_nReg[GS_REG_TEXCLUT]);
@@ -1723,6 +1831,242 @@ void CGSH_Vulkan::SyncCLUT(const TEX0& tex0)
 	{
 		m_lastClutFillCacheIndex = -1;
 	}
+}
+
+VkDescriptorSet CGSH_Vulkan::PrepareTextureImage(const TEX0& tex0, const TEX1& tex1, const CLAMP& clamp, bool depthTested, bool linear)
+{
+	//A sampler wraps as REPEAT and CLAMP do; the region modes stay in GS memory (Frequency uses neither).
+	if((clamp.nWMS >= CLAMP_MODE_REGION_CLAMP) || (clamp.nWMT >= CLAMP_MODE_REGION_CLAMP)) return VK_NULL_HANDLE;
+
+	auto texture = m_textureHashes.Search(tex0);
+	if(!texture)
+	{
+		m_textureHashes.Insert(tex0, 0);
+		texture = m_textureHashes.Search(tex0);
+		texture->m_version = 0;
+	}
+	if((texture->m_version == 0) || texture->m_cachedArea.HasDirtyPages())
+	{
+		texture->m_contentHash = TexReplace::Active() ? TexReplace::HashTexels(m_pRAM, tex0) : 0;
+		texture->m_version = ++m_textureVersion;
+		texture->m_cachedArea.ClearDirtyPages();
+	}
+
+	uint32 width = std::min<uint32>(tex0.GetWidth(), TEX0_MAX_TEXTURE_SIZE);
+	uint32 height = std::min<uint32>(tex0.GetHeight(), TEX0_MAX_TEXTURE_SIZE);
+	bool indexed = CGsPixelFormats::IsPsmIDTEX(tex0.nPsm);
+	std::array<uint32, 256> clut;
+	if(indexed) MakeLinearCLUT(tex0, clut);
+
+	if(TexReplace::Active())
+	{
+		//The key's CLUT is the one this draw looks its indices up in (as GSH_OpenGL::SetupTexture).
+		uint64 key = TexReplace::Key(texture->m_contentHash, tex0, clut.data());
+		TexReplace::Image hd;
+		if(TexReplace::Bind(key, texture->m_contentHash, m_pRAM, tex0, indexed ? clut.data() : nullptr, clamp, hd))
+		{
+			auto hdImage = m_hdImages.find(key);
+			if(hdImage == m_hdImages.end())
+			{
+				if(hd.rgba.empty()) return VK_NULL_HANDLE;
+				hdImage = m_hdImages.emplace(key, CreateTextureImage(hd.width, hd.height, hd.rgba.data())).first;
+			}
+			//Levels down to the native size only: the GS samples the original without levels, so minified
+			//HD texels look as the original's do. Sampled where the GS samples the original: GetTextureColor's
+			//filter is centred (no half-texel offset, unlike GSH_OpenGL's indexed filter).
+			const auto& image = m_textureImages[hdImage->second];
+			uint32 maxLevel = 0;
+			while(((image.width >> (maxLevel + 1)) >= width) && ((image.height >> (maxLevel + 1)) >= height)) maxLevel++;
+			return GetTextureImageSet(hdImage->second, linear, maxLevel, clamp, false);
+		}
+	}
+	return VK_NULL_HANDLE;
+}
+
+uint32 CGSH_Vulkan::CreateTextureImage(uint32 width, uint32 height, const uint32* rgba)
+{
+	//Every level down to 1x1, each a box average of the one above (glGenerateMipmap's filter).
+	std::vector<uint32> texels(rgba, rgba + width * height);
+	std::vector<VkBufferImageCopy> copies;
+	for(uint32 w = width, h = height, src = 0;;)
+	{
+		VkBufferImageCopy copy = {};
+		copy.bufferOffset = src * sizeof(uint32);
+		copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, static_cast<uint32>(copies.size()), 0, 1};
+		copy.imageExtent = {w, h, 1};
+		copies.push_back(copy);
+		if((w == 1) && (h == 1)) break;
+		uint32 nw = std::max<uint32>(w / 2, 1), nh = std::max<uint32>(h / 2, 1);
+		uint32 dst = static_cast<uint32>(texels.size());
+		texels.resize(dst + nw * nh);
+		for(uint32 y = 0; y < nh; y++)
+		{
+			for(uint32 x = 0; x < nw; x++)
+			{
+				uint32 x0 = std::min(2 * x, w - 1), x1 = std::min(2 * x + 1, w - 1);
+				uint32 y0 = std::min(2 * y, h - 1), y1 = std::min(2 * y + 1, h - 1);
+				uint32 c[4] = {texels[src + y0 * w + x0], texels[src + y0 * w + x1], texels[src + y1 * w + x0], texels[src + y1 * w + x1]};
+				uint32 out = 0;
+				for(uint32 shift = 0; shift < 32; shift += 8)
+				{
+					uint32 sum = 2;
+					for(uint32 i = 0; i < 4; i++) sum += (c[i] >> shift) & 0xFF;
+					out |= (sum / 4) << shift;
+				}
+				texels[dst + y * nw + x] = out;
+			}
+		}
+		src = dst;
+		w = nw;
+		h = nh;
+	}
+
+	auto& device = m_context->device;
+	TEXTURE_IMAGE image;
+	image.width = width;
+	image.height = height;
+	image.levels = static_cast<uint32>(copies.size());
+
+	auto imageCreateInfo = Framework::Vulkan::ImageCreateInfo();
+	imageCreateInfo.imageType = VK_IMAGE_TYPE_2D;
+	imageCreateInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+	imageCreateInfo.extent = {width, height, 1};
+	imageCreateInfo.mipLevels = image.levels;
+	imageCreateInfo.arrayLayers = 1;
+	imageCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+	imageCreateInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+	imageCreateInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	imageCreateInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	auto result = device.vkCreateImage(device, &imageCreateInfo, nullptr, &image.image);
+	CHECKVULKANERROR(result);
+
+	VkMemoryRequirements memoryRequirements = {};
+	device.vkGetImageMemoryRequirements(device, image.image, &memoryRequirements);
+	auto memoryAllocateInfo = Framework::Vulkan::MemoryAllocateInfo();
+	memoryAllocateInfo.allocationSize = memoryRequirements.size;
+	memoryAllocateInfo.memoryTypeIndex = Framework::Vulkan::GetMemoryTypeIndex(m_context->physicalDeviceMemoryProperties,
+	                                                                           memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+	result = device.vkAllocateMemory(device, &memoryAllocateInfo, nullptr, &image.memory);
+	CHECKVULKANERROR(result);
+	result = device.vkBindImageMemory(device, image.image, image.memory, 0);
+	CHECKVULKANERROR(result);
+
+	auto staging = Framework::Vulkan::CBuffer(device, m_context->physicalDeviceMemoryProperties, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+	                                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, texels.size() * sizeof(uint32));
+	{
+		void* stagingPtr = nullptr;
+		result = device.vkMapMemory(device, staging.GetMemory(), 0, VK_WHOLE_SIZE, 0, &stagingPtr);
+		CHECKVULKANERROR(result);
+		memcpy(stagingPtr, texels.data(), texels.size() * sizeof(uint32));
+		device.vkUnmapMemory(device, staging.GetMemory());
+	}
+
+	auto commandBuffer = m_context->commandBufferPool.AllocateBuffer();
+	auto beginInfo = Framework::Vulkan::CommandBufferBeginInfo();
+	beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+	result = device.vkBeginCommandBuffer(commandBuffer, &beginInfo);
+	CHECKVULKANERROR(result);
+	auto barrier = Framework::Vulkan::ImageMemoryBarrier();
+	barrier.image = image.image;
+	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, image.levels, 0, 1};
+	barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+	barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+	device.vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+	device.vkCmdCopyBufferToImage(commandBuffer, staging, image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, static_cast<uint32>(copies.size()), copies.data());
+	barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+	barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+	barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	device.vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+	result = device.vkEndCommandBuffer(commandBuffer);
+	CHECKVULKANERROR(result);
+	//Submitted ahead of the frame being recorded, so the image is filled before any draw samples it.
+	auto submitInfo = Framework::Vulkan::SubmitInfo();
+	submitInfo.commandBufferCount = 1;
+	submitInfo.pCommandBuffers = &commandBuffer;
+	result = device.vkQueueSubmit(m_context->queue, 1, &submitInfo, VK_NULL_HANDLE);
+	CHECKVULKANERROR(result);
+	result = device.vkQueueWaitIdle(m_context->queue);
+	CHECKVULKANERROR(result);
+	m_context->commandBufferPool.FreeBuffer(commandBuffer);
+
+	auto viewCreateInfo = Framework::Vulkan::ImageViewCreateInfo();
+	viewCreateInfo.image = image.image;
+	viewCreateInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+	viewCreateInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+	viewCreateInfo.components = {VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A};
+	viewCreateInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, image.levels, 0, 1};
+	result = device.vkCreateImageView(device, &viewCreateInfo, nullptr, &image.view);
+	CHECKVULKANERROR(result);
+
+	m_textureImages.push_back(image);
+	return static_cast<uint32>(m_textureImages.size() - 1);
+}
+
+VkDescriptorSet CGSH_Vulkan::GetTextureImageSet(uint32 image, bool linear, uint32 maxLevel, const CLAMP& clamp, bool anisotropic)
+{
+	anisotropic &= (m_maxAnisotropy > 1);
+	uint32 samplerKey = (linear ? 1 : 0) | ((clamp.nWMS == CLAMP_MODE_CLAMP) ? 2 : 0) | ((clamp.nWMT == CLAMP_MODE_CLAMP) ? 4 : 0) |
+	                    (anisotropic ? 8 : 0) | (maxLevel << 4);
+	auto& sampler = m_textureImageSamplers[samplerKey];
+	if(sampler == VK_NULL_HANDLE)
+	{
+		auto samplerCreateInfo = Framework::Vulkan::SamplerCreateInfo();
+		samplerCreateInfo.magFilter = linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+		samplerCreateInfo.minFilter = samplerCreateInfo.magFilter;
+		samplerCreateInfo.mipmapMode = linear ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
+		samplerCreateInfo.addressModeU = (clamp.nWMS == CLAMP_MODE_CLAMP) ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_REPEAT;
+		samplerCreateInfo.addressModeV = (clamp.nWMT == CLAMP_MODE_CLAMP) ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_REPEAT;
+		samplerCreateInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+		samplerCreateInfo.anisotropyEnable = anisotropic;
+		samplerCreateInfo.maxAnisotropy = anisotropic ? m_maxAnisotropy : 1;
+		samplerCreateInfo.minLod = 0;
+		samplerCreateInfo.maxLod = static_cast<float>(maxLevel);
+		auto result = m_context->device.vkCreateSampler(m_context->device, &samplerCreateInfo, nullptr, &sampler);
+		CHECKVULKANERROR(result);
+	}
+
+	auto& set = m_textureImageSets[(static_cast<uint64>(image) << 32) | samplerKey];
+	if(set == VK_NULL_HANDLE)
+	{
+		auto setLayout = m_draw->GetTextureImageSetLayout();
+		auto allocateInfo = Framework::Vulkan::DescriptorSetAllocateInfo();
+		allocateInfo.descriptorPool = m_textureImagePool;
+		allocateInfo.descriptorSetCount = 1;
+		allocateInfo.pSetLayouts = &setLayout;
+		auto result = m_context->device.vkAllocateDescriptorSets(m_context->device, &allocateInfo, &set);
+		CHECKVULKANERROR(result);
+
+		VkDescriptorImageInfo imageInfo = {};
+		imageInfo.sampler = sampler;
+		imageInfo.imageView = m_textureImages[image].view;
+		imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		auto writeSet = Framework::Vulkan::WriteDescriptorSet();
+		writeSet.dstSet = set;
+		writeSet.dstBinding = 0;
+		writeSet.descriptorCount = 1;
+		writeSet.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		writeSet.pImageInfo = &imageInfo;
+		m_context->device.vkUpdateDescriptorSets(m_context->device, 1, &writeSet, 0, nullptr);
+	}
+	return set;
+}
+
+void CGSH_Vulkan::ReleaseTextureImages()
+{
+	for(const auto& image : m_textureImages)
+	{
+		m_context->device.vkDestroyImageView(m_context->device, image.view, nullptr);
+		m_context->device.vkDestroyImage(m_context->device, image.image, nullptr);
+		m_context->device.vkFreeMemory(m_context->device, image.memory, nullptr);
+	}
+	m_textureImages.clear();
+	m_hdImages.clear();
+	m_textureImageSets.clear();
+	if(m_textureImagePool != VK_NULL_HANDLE) m_context->device.vkResetDescriptorPool(m_context->device, m_textureImagePool, 0);
 }
 
 void CGSH_Vulkan::MarkPages(PageSet& pages, uint32 address, uint32 size, bool value)

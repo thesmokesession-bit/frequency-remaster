@@ -205,6 +205,7 @@ namespace
 
 		void PresentBackbuffer() override
 		{
+			if(TexReplace::Active()) TexReplace::Present();
 			if(g_cfg.present) g_cfg.present(g_cfg.user);
 		}
 	};

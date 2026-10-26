@@ -66,10 +66,11 @@ namespace GSH_Vulkan
 			uint32 dstAlphaTestRef : 1;
 
 			uint32 textureFormat : 6;
-			uint32 clutFormat : 6;
+			uint32 clutFormat : 4; //resonance: TEX0.CPSM is 4 bits
 			uint32 framebufferFormat : 6;
 			uint32 depthbufferFormat : 6;
 			uint32 textureScaled : 1; //resonance: sample the texture in sub-texels (it was drawn at resFactor)
+			uint32 textureImage : 1;  //resonance: sample the RGBA image bound in set 1 (HD replacement, FREQ_TEX_FILTER)
 		};
 		static_assert(sizeof(PIPELINE_CAPS) <= sizeof(PipelineCapsInt), "PIPELINE_CAPS too big for PipelineCapsInt");
 
@@ -100,6 +101,12 @@ namespace GSH_Vulkan
 		void SetAlphaTestParams(uint32);
 		virtual void SetScissor(uint32, uint32, uint32, uint32);
 		void SetMemoryCopyParams(uint32, uint32);
+		//resonance: the RGBA image (set 1, a combined image sampler) a textureImage draw samples.
+		void SetTextureImage(VkDescriptorSet);
+		VkDescriptorSetLayout GetTextureImageSetLayout() const
+		{
+			return m_textureImageSetLayout;
+		}
 
 		void AddVertices(const PRIM_VERTEX*, const PRIM_VERTEX*);
 		virtual void FlushVertices() = 0;
@@ -225,6 +232,9 @@ namespace GSH_Vulkan
 		uint32 m_memoryCopySize = 0;
 
 		CGsSpriteRegion m_memoryCopyRegion;
+
+		VkDescriptorSetLayout m_textureImageSetLayout = VK_NULL_HANDLE;
+		VkDescriptorSet m_textureImageSet = VK_NULL_HANDLE;
 	};
 
 	typedef std::shared_ptr<CDraw> DrawPtr;

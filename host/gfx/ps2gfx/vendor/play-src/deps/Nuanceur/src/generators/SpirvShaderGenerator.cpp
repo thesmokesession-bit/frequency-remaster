@@ -1397,8 +1397,9 @@ void CSpirvShaderGenerator::DecorateTextureIds()
 		if(symbol.location != CShaderBuilder::SYMBOL_LOCATION_TEXTURE) continue;
 		assert(m_texturePointerIds.find(symbol.unit) != std::end(m_texturePointerIds));
 		auto pointerId = m_texturePointerIds[symbol.unit];
-		WriteOp(spv::OpDecorate, pointerId, spv::DecorationDescriptorSet, 0);
-		WriteOp(spv::OpDecorate, pointerId, spv::DecorationBinding, symbol.unit);
+		//resonance: unit bits 8 and up select the descriptor set (0 for every unit Play! uses).
+		WriteOp(spv::OpDecorate, pointerId, spv::DecorationDescriptorSet, symbol.unit >> 8);
+		WriteOp(spv::OpDecorate, pointerId, spv::DecorationBinding, symbol.unit & 0xFF);
 		if(
 		    (symbol.type == CShaderBuilder::SYMBOL_TYPE_SUBPASSINPUT) ||
 		    (symbol.type == CShaderBuilder::SYMBOL_TYPE_SUBPASSINPUTUINT))

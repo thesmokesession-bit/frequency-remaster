@@ -20,6 +20,9 @@ enum DESCRIPTORS
 	DESCRIPTOR_LOCATION_UNIFORM_MIPPARAMS,
 };
 
+//resonance: set 1, binding 0 (Nuanceur: a texture unit's bits 8 and up are its descriptor set).
+#define TEXTURE_IMAGE_UNIT 0x100
+
 using namespace GSH_Vulkan;
 
 CDrawDesktop::CDrawDesktop(const ContextPtr& context, const FrameCommandBufferPtr& frameCommandBuffer)
@@ -211,8 +214,9 @@ PIPELINE CDrawDesktop::CreateDrawPipeline(const PIPELINE_CAPS& caps)
 		auto pipelineLayoutCreateInfo = Framework::Vulkan::PipelineLayoutCreateInfo();
 		pipelineLayoutCreateInfo.pushConstantRangeCount = 1;
 		pipelineLayoutCreateInfo.pPushConstantRanges = &pushConstantInfo;
-		pipelineLayoutCreateInfo.setLayoutCount = 1;
-		pipelineLayoutCreateInfo.pSetLayouts = &drawPipeline.descriptorSetLayout;
+		VkDescriptorSetLayout setLayouts[2] = {drawPipeline.descriptorSetLayout, m_textureImageSetLayout};
+		pipelineLayoutCreateInfo.setLayoutCount = caps.textureImage ? 2 : 1;
+		pipelineLayoutCreateInfo.pSetLayouts = setLayouts;
 
 		result = m_context->device.vkCreatePipelineLayout(m_context->device, &pipelineLayoutCreateInfo, nullptr, &drawPipeline.pipelineLayout);
 		CHECKVULKANERROR(result);
@@ -557,7 +561,18 @@ Framework::Vulkan::CShaderModule CDrawDesktop::CreateFragmentShader(const PIPELI
 			auto textureSt = CFloat2Lvalue(b.CreateVariableFloat("textureSt"));
 			textureSt = inputTexCoord->xy() / inputTexCoord->zz();
 
-			if(caps.textureUseDynamicMipLOD)
+			if(caps.textureImage)
+			{
+				//resonance: an RGBA image (HD replacement, FREQ_TEX_FILTER levels) sampled by its sampler (filters,
+				//wrap, levels), at the coordinates the GS reads: its colours are what GetTextureColor returns.
+				auto textureImage = CTexture2DValue(b.CreateTexture2D(TEXTURE_IMAGE_UNIT));
+				textureColor = Sample(textureImage, textureSt);
+				if(caps.textureHasAlpha)
+				{
+					CDrawUtils::ExpandAlpha(b, caps.textureFormat, caps.clutFormat, caps.textureBlackIsTransparent, textureColor, texA0, texA1);
+				}
+			}
+			else if(caps.textureUseDynamicMipLOD)
 			{
 				auto mipBuf1 = mipParams0->xy();
 				auto mipBuf2 = mipParams0->zw();
@@ -593,7 +608,10 @@ Framework::Vulkan::CShaderModule CDrawDesktop::CreateFragmentShader(const PIPELI
 #undef ASSIGN_MIP
 			}
 
-			if(caps.textureUseLinearFiltering)
+			if(caps.textureImage)
+			{
+			}
+			else if(caps.textureUseLinearFiltering)
 			{
 				//Linear Sampling
 				//-------------------------------------
@@ -1074,6 +1092,12 @@ void CDrawDesktop::FlushVertices()
 
 	m_context->device.vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawPipeline->pipelineLayout,
 	                                          0, 1, &descriptorSet, static_cast<uint32_t>(descriptorDynamicOffsets.size()), descriptorDynamicOffsets.data());
+	if(m_pipelineCaps.textureImage)
+	{
+		assert(m_textureImageSet != VK_NULL_HANDLE);
+		m_context->device.vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawPipeline->pipelineLayout,
+		                                          1, 1, &m_textureImageSet, 0, nullptr);
+	}
 
 	m_context->device.vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawPipeline->pipeline);
 

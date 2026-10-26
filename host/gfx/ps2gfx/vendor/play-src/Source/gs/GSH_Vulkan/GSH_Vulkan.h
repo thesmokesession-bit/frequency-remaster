@@ -13,6 +13,7 @@
 #include <bitset>
 #include <vector>
 #include <map>
+#include <unordered_map>
 #include <cstring>
 #include "../GSHandler.h"
 #include "../GsDebuggerInterface.h"
@@ -251,6 +252,37 @@ private:
 	uint8* m_memoryCache = nullptr;
 	//resonance: GS memory pages last written by a draw (at resFactor), not by the host.
 	PageSet m_scaledPages;
+
+	//resonance: HD textures (TexReplace) and FREQ_TEX_FILTER=enhanced draw a texture the host sent from an
+	//RGBA image (set 1 of the draw pipeline) instead of GS memory. The host's writes are mirrored in
+	//m_pRAM (and the CLUT in m_pCLUT), as GSH_OpenGL keeps them, to hash and decode textures.
+	struct TEXTURE_IMAGE
+	{
+		VkImage image = VK_NULL_HANDLE;
+		VkDeviceMemory memory = VK_NULL_HANDLE;
+		VkImageView view = VK_NULL_HANDLE;
+		uint32 width = 0;
+		uint32 height = 0;
+		uint32 levels = 0;
+	};
+	VkDescriptorSet PrepareTextureImage(const TEX0&, const TEX1&, const CLAMP&, bool depthTested, bool linear);
+	uint32 CreateTextureImage(uint32 width, uint32 height, const uint32* rgba);
+	VkDescriptorSet GetTextureImageSet(uint32 image, bool linear, uint32 maxLevel, const CLAMP&, bool anisotropic);
+	void ReleaseTextureImages();
+
+	bool m_textureImagesEnabled = false;
+	PageSet m_unmirroredPages; // written by draws or local copies: m_pRAM does not hold them
+	CGsTextureCache<uint32> m_textureHashes;
+	uint64 m_textureVersion = 0;
+	std::vector<TEXTURE_IMAGE> m_textureImages;
+	std::unordered_map<uint64, uint32> m_hdImages; // TexReplace key -> m_textureImages index
+	std::unordered_map<uint32, VkSampler> m_textureImageSamplers;
+	std::unordered_map<uint64, VkDescriptorSet> m_textureImageSets; // image << 32 | sampler key
+	VkDescriptorPool m_textureImagePool = VK_NULL_HANDLE;
+	float m_maxAnisotropy = 1;
+	uint64 m_textureImageEpoch = 0; // bumped when GS memory, the CLUT or the present changes
+	uint64 m_lastTextureImageKey[9] = {};
+	VkDescriptorSet m_lastTextureImageSet = VK_NULL_HANDLE;
 
 	//Draw context
 	VERTEX m_vtxBuffer[3];

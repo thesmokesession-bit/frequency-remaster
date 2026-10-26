@@ -45,10 +45,24 @@ CDraw::CDraw(const ContextPtr& context, const FrameCommandBufferPtr& frameComman
 	}
 
 	m_pipelineCaps <<= 0;
+
+	{
+		VkDescriptorSetLayoutBinding binding = {};
+		binding.binding = 0;
+		binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		binding.descriptorCount = 1;
+		binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+		auto setLayoutCreateInfo = Framework::Vulkan::DescriptorSetLayoutCreateInfo();
+		setLayoutCreateInfo.bindingCount = 1;
+		setLayoutCreateInfo.pBindings = &binding;
+		auto result = m_context->device.vkCreateDescriptorSetLayout(m_context->device, &setLayoutCreateInfo, nullptr, &m_textureImageSetLayout);
+		CHECKVULKANERROR(result);
+	}
 }
 
 CDraw::~CDraw()
 {
+	m_context->device.vkDestroyDescriptorSetLayout(m_context->device, m_textureImageSetLayout, nullptr);
 	for(auto& frame : m_frames)
 	{
 		m_context->device.vkUnmapMemory(m_context->device, frame.vertexBuffer.GetMemory());
@@ -218,6 +232,13 @@ void CDraw::SetMemoryCopyParams(uint32 memoryCopyAddress, uint32 memoryCopySize)
 	FlushRenderPass();
 	m_memoryCopyAddress = memoryCopyAddress;
 	m_memoryCopySize = memoryCopySize;
+}
+
+void CDraw::SetTextureImage(VkDescriptorSet textureImageSet)
+{
+	if(textureImageSet == m_textureImageSet) return;
+	FlushVertices();
+	m_textureImageSet = textureImageSet;
 }
 
 void CDraw::AddVertices(const PRIM_VERTEX* vertexBeginPtr, const PRIM_VERTEX* vertexEndPtr)
