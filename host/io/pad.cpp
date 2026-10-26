@@ -12,6 +12,8 @@
 // pad. P2 alone connects a second pad in port 2; P3 or P4 connect a multitap in port 1 instead,
 // with players 1 to 4 in its slots A to D. Without such entries only the pad in port 1 exists. Frames count from the start, or from the blank of the last "after <BREADCRUMB>" line's
 // breadcrumb (see HostBreadcrumb()); entries under an "after" line wait for its breadcrumb.
+// Test controls: LUP, LDOWN, LLEFT, LRIGHT and RUP... RRIGHT push the left or right stick fully that
+// way; TEXREFS (player 1) prints the loaded textures' referrers once (see HostDumpTexRefs()).
 
 #include <algorithm>
 #include <fcntl.h>
@@ -45,7 +47,7 @@ constexpr int kPressureButtonCount = 12;
 
 struct ButtonName {
     const char *pszName;
-    unsigned short nBit;
+    unsigned nBit;
     int nPressureIndex;
 };
 
@@ -67,11 +69,21 @@ constexpr ButtonName kButtons[] = {{"SELECT", 0x0100, -1},
                                    {"CROSS", 0x0040, 2},
                                    {"SQUARE", 0x0080, 3}};
 
+// The test controls above the button word: the stick pushes, in report byte order (right X, right
+// Y, left X, left Y; each pair low then high), and the texture reference dump.
+constexpr unsigned kStickShift = 16;
+constexpr ButtonName kSticks[] = {{"RLEFT", 1u << 16, -1}, {"RRIGHT", 1u << 17, -1},
+                                  {"RUP", 1u << 18, -1},   {"RDOWN", 1u << 19, -1},
+                                  {"LLEFT", 1u << 20, -1}, {"LRIGHT", 1u << 21, -1},
+                                  {"LUP", 1u << 22, -1},   {"LDOWN", 1u << 23, -1}};
+constexpr unsigned kTexRefs = 1u << 24;
+
 struct InputEvent {
     std::string anchor;
     unsigned nFrame;
-    unsigned short nButtons;
+    unsigned nButtons;
     int nPort;
+    bool bFired;
 };
 
 struct Anchor {
@@ -85,8 +97,10 @@ std::vector<Anchor> g_anchors;
 pthread_once_t g_scriptOnce = PTHREAD_ONCE_INIT;
 int g_nPlayers = 1; // pads the script plays; above 2, through a multitap in port 1
 
-unsigned short ParseButtons(const char *pszButtons, int nLine) {
-    unsigned short nButtons = 0;
+extern "C" void HostDumpTexRefs() __attribute__((weak));
+
+unsigned ParseButtons(const char *pszButtons, int nLine) {
+    unsigned nButtons = 0;
     std::string remaining(pszButtons);
     std::string::size_type nStart = 0;
     while (nStart <= remaining.size()) {
@@ -101,6 +115,16 @@ unsigned short ParseButtons(const char *pszButtons, int nLine) {
                 nButtons |= button.nBit;
                 bKnown = true;
             }
+        }
+        for (const ButtonName &stick : kSticks) {
+            if (name == stick.pszName) {
+                nButtons |= stick.nBit;
+                bKnown = true;
+            }
+        }
+        if (name == "TEXREFS") {
+            nButtons |= kTexRefs;
+            bKnown = true;
         }
         if (!bKnown) {
             fprintf(stderr, "host: FREQ_INPUT line %d: unknown button %s\n", nLine, name.c_str());
@@ -136,7 +160,7 @@ void LoadScript() {
             const bool bPlayer = szWord[0] == 'P' && szWord[1] >= '2' && szWord[1] <= '4' && szWord[2] == ':';
             const int nPlayer = bPlayer ? szWord[1] - '1' : 0;
             g_nPlayers = std::max(g_nPlayers, nPlayer + 1);
-            g_events.push_back(InputEvent{anchor, nFrame, ParseButtons(szWord + (bPlayer ? 3 : 0), nLine), nPlayer});
+            g_events.push_back(InputEvent{anchor, nFrame, ParseButtons(szWord + (bPlayer ? 3 : 0), nLine), nPlayer, false});
         } else {
             fprintf(stderr, "host: FREQ_INPUT line %d is not understood\n", nLine);
         }
@@ -145,12 +169,13 @@ void LoadScript() {
 }
 
 // The buttons the script holds on player nPlayer's pad at this vertical blank.
-unsigned short HeldButtons(int nPlayer) {
+unsigned HeldButtons(int nPlayer) {
     pthread_once(&g_scriptOnce, LoadScript);
     const unsigned nNow = HostVblankCount();
-    unsigned short nButtons = 0;
+    unsigned nButtons = 0;
+    bool bDump = false;
     pthread_mutex_lock(&g_inputLock);
-    for (const InputEvent &event : g_events) {
+    for (InputEvent &event : g_events) {
         if (event.nPort != nPlayer) {
             continue;
         }
@@ -165,9 +190,14 @@ unsigned short HeldButtons(int nPlayer) {
         const unsigned nStart = nOrigin + event.nFrame;
         if (bArmed && nNow >= nStart && nNow < nStart + kHoldFrames) {
             nButtons |= event.nButtons;
+            bDump |= (event.nButtons & kTexRefs) != 0 && !event.bFired;
+            event.bFired = true;
         }
     }
     pthread_mutex_unlock(&g_inputLock);
+    if (bDump && HostDumpTexRefs != nullptr) {
+        HostDumpTexRefs();
+    }
     return nButtons;
 }
 
@@ -318,12 +348,18 @@ int scePadRead(int nPort, int nSlot, unsigned char *pData) {
     if (!Connected(nPort, nSlot)) {
         return 0;
     }
-    const unsigned short nHeld = HeldButtons(PlayerAt(nPort, nSlot));
+    const unsigned nHeld = HeldButtons(PlayerAt(nPort, nSlot));
     const unsigned short nWire = static_cast<unsigned short>(~nHeld);
     pData[1] = kDualShockPressureMode;
     pData[2] = static_cast<unsigned char>(nWire >> 8);
     pData[3] = static_cast<unsigned char>(nWire);
     memset(pData + 4, kAnalogCentre, 4);
+    for (int nAxis = 0; nAxis < 4; ++nAxis) {
+        const unsigned nPush = (nHeld >> (kStickShift + 2 * nAxis)) & 3;
+        if (nPush == 1 || nPush == 2) {
+            pData[4 + nAxis] = nPush == 1 ? 0x00 : 0xff;
+        }
+    }
     for (const ButtonName &button : kButtons) {
         if (button.nPressureIndex >= 0 && (nHeld & button.nBit) != 0) {
             pData[8 + button.nPressureIndex] = kFullPressure;
