@@ -856,6 +856,27 @@ void CGSH_Vulkan::SetRenderingContext(uint64 primReg)
 		pipelineCaps.primitiveType = CDraw::PIPELINE_PRIMITIVE_POINT;
 		break;
 	}
+	//resonance: scaled lines and points are drawn as quads (Prim_Line, Prim_Point).
+	if(ExpandLines()) pipelineCaps.primitiveType = CDraw::PIPELINE_PRIMITIVE_TRIANGLE;
+
+	//resonance: PS2GFX_DRAW_ONLY=lines (a measurement aid, as GSH_OpenGL) leaves out triangles and textured
+	//sprites and draws untextured sprites (the clear) black, so only lines and points show. With
+	//=lines+feedback, sprites textured from a framebuffer (the feedback blur) draw too.
+	static const char* drawOnly = getenv("PS2GFX_DRAW_ONLY");
+	m_drawOnlySkip = m_drawOnlyBlack = false;
+	if(drawOnly && !strncmp(drawOnly, "lines", 5))
+	{
+		bool feedback = !strcmp(drawOnly, "lines+feedback") && (m_primitiveType == PRIM_SPRITE) && prim.nTexture &&
+		                m_drawOnlyFrames.count(tex0.GetBufPtr());
+		bool triangles = (m_primitiveType != PRIM_LINE) && (m_primitiveType != PRIM_LINESTRIP) && (m_primitiveType != PRIM_POINT);
+		if(triangles && !feedback)
+		{
+			m_drawOnlySkip = (m_primitiveType != PRIM_SPRITE) || prim.nTexture;
+			m_drawOnlyBlack = !m_drawOnlySkip;
+			if(m_drawOnlyBlack) pipelineCaps.hasAlphaBlending = 0;
+		}
+		m_drawOnlyFrames.insert(frame.GetBasePtr());
+	}
 
 	uint32 fbWriteMask = ~frame.nMask;
 
@@ -1147,6 +1168,12 @@ void CGSH_Vulkan::SetRenderingContext(uint64 primReg)
 	m_regState.miptbp2 = miptbp2;
 }
 
+bool CGSH_Vulkan::ExpandLines() const
+{
+	return (m_context->resFactor > 1) && CDraw::ScaleEffects() &&
+	       ((m_primitiveType == PRIM_LINE) || (m_primitiveType == PRIM_LINESTRIP) || (m_primitiveType == PRIM_POINT));
+}
+
 void CGSH_Vulkan::Prim_Point()
 {
 	auto xyz = make_convertible<XYZ>(m_vtxBuffer[0].position);
@@ -1171,6 +1198,19 @@ void CGSH_Vulkan::Prim_Point()
 	};
 	// clang-format on
 
+	if(ExpandLines())
+	{
+		//resonance: a GS point is one pixel: a quad over it, resFactor sub-pixels square (GL's wide point).
+		CDraw::PRIM_VERTEX quad[6] = {vertex, vertex, vertex, vertex, vertex, vertex};
+		const float corners[6][2] = {{-0.5f, -0.5f}, {0.5f, -0.5f}, {-0.5f, 0.5f}, {-0.5f, 0.5f}, {0.5f, -0.5f}, {0.5f, 0.5f}};
+		for(int i = 0; i < 6; i++)
+		{
+			quad[i].x += corners[i][0];
+			quad[i].y += corners[i][1];
+		}
+		m_draw->AddVertices(std::begin(quad), std::end(quad));
+		return;
+	}
 	m_draw->AddVertices(&vertex, &vertex + 1);
 }
 
@@ -1247,11 +1287,28 @@ void CGSH_Vulkan::Prim_Line()
 	};
 	// clang-format on
 
+	if(ExpandLines())
+	{
+		//resonance: a GS line is one pixel across its minor axis: a quad +-0.5 GS pixel across it, its ends
+		//not extended (GL's wide line), so it spans resFactor sub-pixels as on the PS2.
+		bool xMajor = std::abs(x2 - x1) >= std::abs(y2 - y1);
+		float ox = xMajor ? 0 : 0.5f, oy = xMajor ? 0.5f : 0;
+		CDraw::PRIM_VERTEX quad[6] = {vertices[0], vertices[0], vertices[1], vertices[1], vertices[0], vertices[1]};
+		const float side[6] = {-1, 1, -1, -1, 1, 1};
+		for(int i = 0; i < 6; i++)
+		{
+			quad[i].x += side[i] * ox;
+			quad[i].y += side[i] * oy;
+		}
+		m_draw->AddVertices(std::begin(quad), std::end(quad));
+		return;
+	}
 	m_draw->AddVertices(std::begin(vertices), std::end(vertices));
 }
 
 void CGSH_Vulkan::Prim_Triangle()
 {
+	if(m_drawOnlySkip) return;
 	XYZ pos[3];
 	pos[0] <<= m_vtxBuffer[2].position;
 	pos[1] <<= m_vtxBuffer[1].position;
@@ -1356,6 +1413,7 @@ void CGSH_Vulkan::Prim_Triangle()
 
 void CGSH_Vulkan::Prim_Sprite()
 {
+	if(m_drawOnlySkip) return;
 	XYZ pos[2];
 	pos[0] <<= m_vtxBuffer[1].position;
 	pos[1] <<= m_vtxBuffer[0].position;
@@ -1421,6 +1479,7 @@ void CGSH_Vulkan::Prim_Sprite()
 	auto color = MakeColor(
 	    rgbaq[1].nR, rgbaq[1].nG,
 	    rgbaq[1].nB, rgbaq[1].nA);
+	if(m_drawOnlyBlack) color = 0;
 
 	// clang-format off
 	CDraw::PRIM_VERTEX vertices[] =

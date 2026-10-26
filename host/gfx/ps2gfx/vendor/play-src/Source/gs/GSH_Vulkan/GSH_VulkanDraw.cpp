@@ -1,4 +1,7 @@
 #include "GSH_VulkanDraw.h"
+#include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include "GSH_VulkanMemoryUtils.h"
 #include "MemStream.h"
 #include "vulkan/StructDefs.h"
@@ -45,6 +48,14 @@ CDraw::CDraw(const ContextPtr& context, const FrameCommandBufferPtr& frameComman
 	}
 
 	m_pipelineCaps <<= 0;
+
+	if((m_context->resFactor > 1) && ScaleEffects())
+	{
+		//With FREQ_FPS=120 the feedback blur runs twice a field, so each pass spreads half the variance.
+		//(ponytail: assumes every 120 Hz frame is half a field, as GSH_OpenGL does.)
+		const char* fps = getenv("FREQ_FPS");
+		m_scaledLinearTap = static_cast<float>(std::sqrt(1.0 / (6.0 * ((fps && atoi(fps) == 120) ? 2 : 1))));
+	}
 
 	{
 		VkDescriptorSetLayoutBinding binding = {};
@@ -232,6 +243,15 @@ void CDraw::SetMemoryCopyParams(uint32 memoryCopyAddress, uint32 memoryCopySize)
 	FlushRenderPass();
 	m_memoryCopyAddress = memoryCopyAddress;
 	m_memoryCopySize = memoryCopySize;
+}
+
+bool CDraw::ScaleEffects()
+{
+	static const bool on = [] {
+		const char* setting = getenv("FREQ_SCALE_EFFECTS");
+		return !(setting && !strcmp(setting, "off"));
+	}();
+	return on;
 }
 
 void CDraw::SetTextureImage(VkDescriptorSet textureImageSet)

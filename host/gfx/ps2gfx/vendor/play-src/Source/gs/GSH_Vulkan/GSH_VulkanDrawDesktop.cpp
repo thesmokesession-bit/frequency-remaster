@@ -616,38 +616,63 @@ Framework::Vulkan::CShaderModule CDrawDesktop::CreateFragmentShader(const PIPELI
 				//Linear Sampling
 				//-------------------------------------
 
-				auto textureLinearPos = CFloat2Lvalue(b.CreateVariableFloat("textureLinearPos"));
-				auto textureLinearAb = CFloat2Lvalue(b.CreateVariableFloat("textureLinearAb"));
-				auto textureIuv0 = CInt2Lvalue(b.CreateVariableInt("textureIuv0"));
-				auto textureIuv1 = CInt2Lvalue(b.CreateVariableInt("textureIuv1"));
-				auto textureColorA = CFloat4Lvalue(b.CreateVariableFloat("textureColorA"));
-				auto textureColorB = CFloat4Lvalue(b.CreateVariableFloat("textureColorB"));
-				auto textureColorC = CFloat4Lvalue(b.CreateVariableFloat("textureColorC"));
-				auto textureColorD = CFloat4Lvalue(b.CreateVariableFloat("textureColorD"));
+				auto linearSample = [&](CFloat2Value textureSt, CFloat4Lvalue& textureColor) {
+					auto textureLinearPos = CFloat2Lvalue(b.CreateVariableFloat("textureLinearPos"));
+					auto textureLinearAb = CFloat2Lvalue(b.CreateVariableFloat("textureLinearAb"));
+					auto textureIuv0 = CInt2Lvalue(b.CreateVariableInt("textureIuv0"));
+					auto textureIuv1 = CInt2Lvalue(b.CreateVariableInt("textureIuv1"));
+					auto textureColorA = CFloat4Lvalue(b.CreateVariableFloat("textureColorA"));
+					auto textureColorB = CFloat4Lvalue(b.CreateVariableFloat("textureColorB"));
+					auto textureColorC = CFloat4Lvalue(b.CreateVariableFloat("textureColorC"));
+					auto textureColorD = CFloat4Lvalue(b.CreateVariableFloat("textureColorD"));
 
-				textureLinearPos = (textureSt * ToFloat(texSize * NewInt2(factor, factor))) + NewFloat2(b, -0.5f, -0.5f);
-				//Check if ST is infinite due to being divided by a Q equal to zero.
-				//Happens in map rendering for Simple 2000 Series Vol. 90 - The OneeChambara 2.
-				textureLinearAb = Mix(Fract(textureLinearPos), NewFloat2(b, 0, 0), IsInf(textureSt));
+					textureLinearPos = (textureSt * ToFloat(texSize * NewInt2(factor, factor))) + NewFloat2(b, -0.5f, -0.5f);
+					//Check if ST is infinite due to being divided by a Q equal to zero.
+					//Happens in map rendering for Simple 2000 Series Vol. 90 - The OneeChambara 2.
+					textureLinearAb = Mix(Fract(textureLinearPos), NewFloat2(b, 0, 0), IsInf(textureSt));
 
-				textureIuv0 = ToInt(textureLinearPos);
-				textureIuv1 = textureIuv0 + NewInt2(b, 1, 1);
+					textureIuv0 = ToInt(textureLinearPos);
+					textureIuv1 = textureIuv0 + NewInt2(b, 1, 1);
 
-				getTextureColor(NewInt2(textureIuv0->x(), textureIuv0->y()), texMipLevel, textureColorA);
-				getTextureColor(NewInt2(textureIuv1->x(), textureIuv0->y()), texMipLevel, textureColorB);
-				getTextureColor(NewInt2(textureIuv0->x(), textureIuv1->y()), texMipLevel, textureColorC);
-				getTextureColor(NewInt2(textureIuv1->x(), textureIuv1->y()), texMipLevel, textureColorD);
+					getTextureColor(NewInt2(textureIuv0->x(), textureIuv0->y()), texMipLevel, textureColorA);
+					getTextureColor(NewInt2(textureIuv1->x(), textureIuv0->y()), texMipLevel, textureColorB);
+					getTextureColor(NewInt2(textureIuv0->x(), textureIuv1->y()), texMipLevel, textureColorC);
+					getTextureColor(NewInt2(textureIuv1->x(), textureIuv1->y()), texMipLevel, textureColorD);
 
-				auto factorA = (NewFloat(b, 1.0f) - textureLinearAb->x()) * (NewFloat(b, 1.0f) - textureLinearAb->y());
-				auto factorB = textureLinearAb->x() * (NewFloat(b, 1.0f) - textureLinearAb->y());
-				auto factorC = (NewFloat(b, 1.0f) - textureLinearAb->x()) * textureLinearAb->y();
-				auto factorD = textureLinearAb->x() * textureLinearAb->y();
+					auto factorA = (NewFloat(b, 1.0f) - textureLinearAb->x()) * (NewFloat(b, 1.0f) - textureLinearAb->y());
+					auto factorB = textureLinearAb->x() * (NewFloat(b, 1.0f) - textureLinearAb->y());
+					auto factorC = (NewFloat(b, 1.0f) - textureLinearAb->x()) * textureLinearAb->y();
+					auto factorD = textureLinearAb->x() * textureLinearAb->y();
 
-				textureColor =
-				    textureColorA * factorA->xxxx() +
-				    textureColorB * factorB->xxxx() +
-				    textureColorC * factorC->xxxx() +
-				    textureColorD * factorD->xxxx();
+					textureColor =
+					    textureColorA * factorA->xxxx() +
+					    textureColorB * factorB->xxxx() +
+					    textureColorC * factorC->xxxx() +
+					    textureColorD * factorD->xxxx();
+				};
+
+				if(caps.textureScaled && (m_scaledLinearTap > 0))
+				{
+					//resonance (FREQ_SCALE_EFFECTS): at 1x the linear filter spreads a sample over one texel, a
+					//tent of variance 1/6 texel^2 per axis. Four taps m_scaledLinearTap GS texels from the sample
+					//give a framebuffer drawn at resFactor that spread (GSH_OpenGL's texScaledLinear); the plain
+					//filter would spread it over 1/resFactor of it (the feedback blur's trails turn crisp).
+					auto tapX = NewFloat(b, m_scaledLinearTap) / ToFloat(texSize->x());
+					auto tapY = NewFloat(b, m_scaledLinearTap) / ToFloat(texSize->y());
+					auto tapColor0 = CFloat4Lvalue(b.CreateVariableFloat("tapColor0"));
+					auto tapColor1 = CFloat4Lvalue(b.CreateVariableFloat("tapColor1"));
+					auto tapColor2 = CFloat4Lvalue(b.CreateVariableFloat("tapColor2"));
+					auto tapColor3 = CFloat4Lvalue(b.CreateVariableFloat("tapColor3"));
+					linearSample(textureSt + NewFloat2(NewFloat(b, 0) - tapX, NewFloat(b, 0) - tapY), tapColor0);
+					linearSample(textureSt + NewFloat2(tapX, tapY), tapColor1);
+					linearSample(textureSt + NewFloat2(tapX, NewFloat(b, 0) - tapY), tapColor2);
+					linearSample(textureSt + NewFloat2(NewFloat(b, 0) - tapX, tapY), tapColor3);
+					textureColor = (tapColor0 + tapColor1 + tapColor2 + tapColor3) * NewFloat4(b, 0.25f, 0.25f, 0.25f, 0.25f);
+				}
+				else
+				{
+					linearSample(textureSt, textureColor);
+				}
 			}
 			else
 			{

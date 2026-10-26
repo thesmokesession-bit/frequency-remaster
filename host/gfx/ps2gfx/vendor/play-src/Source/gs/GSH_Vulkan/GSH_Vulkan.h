@@ -13,6 +13,7 @@
 #include <bitset>
 #include <vector>
 #include <map>
+#include <set>
 #include <unordered_map>
 #include <cstring>
 #include "../GSHandler.h"
@@ -159,6 +160,7 @@ private:
 	void VertexKick(uint8, uint64);
 	void SetRenderingContext(uint64);
 
+	bool ExpandLines() const;
 	void Prim_Point();
 	void Prim_Line();
 	void Prim_Triangle();
@@ -280,6 +282,9 @@ private:
 	std::unordered_map<uint64, VkDescriptorSet> m_textureImageSets; // image << 32 | sampler key
 	VkDescriptorPool m_textureImagePool = VK_NULL_HANDLE;
 	float m_maxAnisotropy = 1;
+	bool m_drawOnlySkip = false;  // PS2GFX_DRAW_ONLY
+	bool m_drawOnlyBlack = false;
+	std::set<uint32> m_drawOnlyFrames;
 	uint64 m_textureImageEpoch = 0; // bumped when GS memory, the CLUT or the present changes
 	uint64 m_lastTextureImageKey[9] = {};
 	VkDescriptorSet m_lastTextureImageSet = VK_NULL_HANDLE;

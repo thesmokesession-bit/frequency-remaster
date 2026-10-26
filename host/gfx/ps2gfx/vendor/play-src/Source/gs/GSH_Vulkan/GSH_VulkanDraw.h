@@ -208,6 +208,13 @@ namespace GSH_Vulkan
 
 		static constexpr float DEPTH_MAX = 4294967296.0f;
 
+	public:
+		//resonance: FREQ_SCALE_EFFECTS (default on): at a resolution factor a line or point covers one GS pixel
+		//and the feedback blur's filter spreads as at 1x. off keeps one sub-pixel lines and a plain filter.
+		static bool ScaleEffects();
+
+	protected:
+
 		ContextPtr m_context;
 		FrameCommandBufferPtr m_frameCommandBuffer;
 		PipelineCache m_pipelineCache;
@@ -232,6 +239,10 @@ namespace GSH_Vulkan
 		uint32 m_memoryCopySize = 0;
 
 		CGsSpriteRegion m_memoryCopyRegion;
+
+		//resonance: FREQ_SCALE_EFFECTS at resFactor > 1: a scaled framebuffer read through a linear filter takes
+		//four taps this many GS texels from the sample; 0 = one bilinear fetch.
+		float m_scaledLinearTap = 0;
 
 		VkDescriptorSetLayout m_textureImageSetLayout = VK_NULL_HANDLE;
 		VkDescriptorSet m_textureImageSet = VK_NULL_HANDLE;
