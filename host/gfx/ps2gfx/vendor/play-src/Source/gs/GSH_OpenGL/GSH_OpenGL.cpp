@@ -36,10 +36,12 @@ namespace
 		static const bool enhanced = !SettingIs("FREQ_TEX_FILTER", "original");
 		return enhanced;
 	}
-	// FREQ_AA=on (default) smooths edges with FXAA on the frame being presented; off presents it as drawn.
+	// FREQ_AA=on smooths edges with FXAA on the frame being presented; off (default) presents it as drawn.
+	// ponytail: FXAA runs per output pixel, so an upscaled frame (1080p from FREQ_SCALE 1) gets ripples on
+	// near-horizontal edges and softer HUD digits; off by default until it runs at GS size before scaling.
 	bool AntiAliasing()
 	{
-		static const bool on = !SettingIs("FREQ_AA", "off");
+		static const bool on = SettingIs("FREQ_AA", "on");
 		return on;
 	}
 }

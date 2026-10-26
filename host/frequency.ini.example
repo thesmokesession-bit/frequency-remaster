@@ -12,8 +12,9 @@
 # Texture filtering: enhanced (default: the game's mip levels with 16x anisotropic filtering, no
 # shimmer on far tunnel walls) or original (the top level only, as before).
 #FREQ_TEX_FILTER=original
-# Anti-aliasing of edges (FXAA on the finished frame): on (default) or off.
-#FREQ_AA=off
+# Anti-aliasing of edges (FXAA on the finished frame): off (default) or on. It also softens HUD text a
+# little and can ripple near-flat edges when the picture is scaled up.
+#FREQ_AA=on
 
 # Latency, in ms. Audio and video offsets play the sound and draw the picture that much later than
 # the game judges (negative: earlier). The input offset judges your presses that much earlier: the
