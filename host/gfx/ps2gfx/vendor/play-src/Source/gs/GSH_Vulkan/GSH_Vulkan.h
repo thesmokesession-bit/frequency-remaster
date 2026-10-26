@@ -283,9 +283,27 @@ private:
 		uint32 height = 0;
 		uint32 levels = 0;
 	};
-	VkDescriptorSet PrepareTextureImage(const TEX0&, const TEX1&, const CLAMP&, bool depthTested, bool linear);
-	uint32 CreateTextureImage(uint32 width, uint32 height, const uint32* rgba);
-	VkDescriptorSet GetTextureImageSet(uint32 image, bool linear, uint32 maxLevel, const CLAMP&, bool anisotropic);
+	struct SAMPLING
+	{
+		bool magLinear;
+		bool minLinear;
+		bool mipLinear;
+		uint32 maxLevel;
+		bool anisotropic;
+	};
+	struct MIP_IMAGE
+	{
+		uint32 image = 0;
+		std::array<uint64, 7> versions = {};
+	};
+	uint64 TextureVersion(const TEX0&, uint64* contentHash = nullptr);
+	VkDescriptorSet PrepareTextureImage(const TEX0&, const TEX1&, const CLAMP&, uint64 miptbp1, uint64 miptbp2, bool depthTested, bool linear);
+	//texels: levels levels in a row; one level: the chain down to 1x1 is made from it.
+	uint32 CreateTextureImage(uint32 width, uint32 height, std::vector<uint32> texels, uint32 levels);
+	void UploadTextureImage(uint32 image, std::vector<uint32> texels, uint32 levels);
+	VkDescriptorSet GetTextureImageSet(uint32 image, const SAMPLING&, const CLAMP&);
+	void DestroyTextureImage(uint32 image);
+	void ReleaseMipImages();
 	void ReleaseTextureImages();
 
 	bool m_textureImagesEnabled = false;
@@ -293,7 +311,10 @@ private:
 	CGsTextureCache<uint32> m_textureHashes;
 	uint64 m_textureVersion = 0;
 	std::vector<TEXTURE_IMAGE> m_textureImages;
+	std::vector<uint32> m_freeTextureImages;
 	std::unordered_map<uint64, uint32> m_hdImages; // TexReplace key -> m_textureImages index
+	std::unordered_map<uint64, MIP_IMAGE> m_mipImages; // FREQ_TEX_FILTER=enhanced: texture, levels, CLUT -> image
+	uint64 m_textureImageUploads = 0;
 	std::unordered_map<uint32, VkSampler> m_textureImageSamplers;
 	std::unordered_map<uint64, VkDescriptorSet> m_textureImageSets; // image << 32 | sampler key
 	VkDescriptorPool m_textureImagePool = VK_NULL_HANDLE;

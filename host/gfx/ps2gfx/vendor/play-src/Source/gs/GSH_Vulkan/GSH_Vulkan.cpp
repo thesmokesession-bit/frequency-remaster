@@ -1,6 +1,9 @@
 #include "GSH_Vulkan.h"
 #include <algorithm>
+#include <array>
 #include <cstring>
+#include <functional>
+#include <string_view>
 #include "std_experimental_map.h"
 #include "../GsPixelFormats.h"
 #include "../GsTransferRange.h"
@@ -19,6 +22,17 @@
 #define LOG_NAME ("gsh_vulkan")
 
 using namespace GSH_Vulkan;
+
+//resonance: FREQ_TEX_FILTER=original samples GS memory as Play! does; enhanced (default, as GSH_OpenGL) draws
+//filtered textures from RGBA images with mip levels and 16x anisotropic filtering.
+static bool TexFilterEnhanced()
+{
+	static const bool enhanced = [] {
+		const char* setting = getenv("FREQ_TEX_FILTER");
+		return !(setting && !strcmp(setting, "original"));
+	}();
+	return enhanced;
+}
 
 static uint32 MakeColor(uint8 r, uint8 g, uint8 b, uint8 a)
 {
@@ -178,7 +192,10 @@ void CGSH_Vulkan::InitializeImpl()
 	CreateMemoryBuffer();
 	CreateClutBuffer();
 
-	m_textureImagesEnabled = TexReplace::Active();
+	m_textureImagesEnabled = TexReplace::Active() || TexFilterEnhanced();
+	fprintf(stderr, "ps2gfx: Vulkan GS: colour %s, scale effects %s, texture filter %s (anisotropy %gx)%s\n",
+	        m_context->colorShadow ? "full" : "original", CDraw::ScaleEffects() ? "on" : "off",
+	        TexFilterEnhanced() ? "enhanced" : "original", m_maxAnisotropy, TexReplace::Active() ? ", HD textures" : "");
 	if(m_textureImagesEnabled)
 	{
 		VkDescriptorPoolSize poolSize = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 0x1000};
@@ -254,6 +271,11 @@ void CGSH_Vulkan::ReleaseImpl()
 	//Flush any pending rendering commands
 	m_context->device.vkQueueWaitIdle(m_context->queue);
 
+	if(m_textureImagesEnabled)
+	{
+		fprintf(stderr, "ps2gfx: %zu HD and %zu filtered texture images, %llu uploads\n", m_hdImages.size(), m_mipImages.size(),
+		        static_cast<unsigned long long>(m_textureImageUploads));
+	}
 	ReleaseTextureImages();
 	for(const auto& sampler : m_textureImageSamplers)
 	{
@@ -1125,7 +1147,7 @@ void CGSH_Vulkan::SetRenderingContext(uint64 primReg)
 			else
 			{
 				bool depthTested = test.nDepthEnabled && (test.nDepthMethod != DEPTH_TEST_ALWAYS);
-				textureImageSet = PrepareTextureImage(tex0, tex1, clamp, depthTested, pipelineCaps.textureUseLinearFiltering);
+				textureImageSet = PrepareTextureImage(tex0, tex1, clamp, miptbp1, miptbp2, depthTested, pipelineCaps.textureUseLinearFiltering);
 			}
 		}
 		if(textureImageSet != VK_NULL_HANDLE)
@@ -1920,11 +1942,9 @@ void CGSH_Vulkan::SyncCLUT(const TEX0& tex0)
 	}
 }
 
-VkDescriptorSet CGSH_Vulkan::PrepareTextureImage(const TEX0& tex0, const TEX1& tex1, const CLAMP& clamp, bool depthTested, bool linear)
+uint64 CGSH_Vulkan::TextureVersion(const TEX0& tex0, uint64* contentHash)
 {
-	//A sampler wraps as REPEAT and CLAMP do; the region modes stay in GS memory (Frequency uses neither).
-	if((clamp.nWMS >= CLAMP_MODE_REGION_CLAMP) || (clamp.nWMT >= CLAMP_MODE_REGION_CLAMP)) return VK_NULL_HANDLE;
-
+	//Changes with every host upload to the texture's pages (CGsTextureCache's dirty pages).
 	auto texture = m_textureHashes.Search(tex0);
 	if(!texture)
 	{
@@ -1938,81 +1958,128 @@ VkDescriptorSet CGSH_Vulkan::PrepareTextureImage(const TEX0& tex0, const TEX1& t
 		texture->m_version = ++m_textureVersion;
 		texture->m_cachedArea.ClearDirtyPages();
 	}
+	if(contentHash) *contentHash = texture->m_contentHash;
+	return texture->m_version;
+}
+
+VkDescriptorSet CGSH_Vulkan::PrepareTextureImage(const TEX0& tex0, const TEX1& tex1, const CLAMP& clamp, uint64 miptbp1Reg, uint64 miptbp2Reg,
+                                                 bool depthTested, bool linear)
+{
+	//A sampler wraps as REPEAT and CLAMP do; the region modes stay in GS memory (Frequency uses neither).
+	if((clamp.nWMS >= CLAMP_MODE_REGION_CLAMP) || (clamp.nWMT >= CLAMP_MODE_REGION_CLAMP)) return VK_NULL_HANDLE;
+
+	uint64 contentHash = 0;
+	TextureVersion(tex0, &contentHash);
 
 	uint32 width = std::min<uint32>(tex0.GetWidth(), TEX0_MAX_TEXTURE_SIZE);
 	uint32 height = std::min<uint32>(tex0.GetHeight(), TEX0_MAX_TEXTURE_SIZE);
 	bool indexed = CGsPixelFormats::IsPsmIDTEX(tex0.nPsm);
-	std::array<uint32, 256> clut;
+	std::array<uint32, 256> clut = {};
 	if(indexed) MakeLinearCLUT(tex0, clut);
+	bool enhanced = TexFilterEnhanced() && (tex1.nMinFilter != MIN_FILTER_NEAREST) && (tex1.nMinFilter <= MIN_FILTER_LINEAR_MIP_LINEAR);
 
 	if(TexReplace::Active())
 	{
 		//The key's CLUT is the one this draw looks its indices up in (as GSH_OpenGL::SetupTexture).
-		uint64 key = TexReplace::Key(texture->m_contentHash, tex0, clut.data());
+		uint64 key = TexReplace::Key(contentHash, tex0, clut.data());
 		TexReplace::Image hd;
-		if(TexReplace::Bind(key, texture->m_contentHash, m_pRAM, tex0, indexed ? clut.data() : nullptr, clamp, hd))
+		if(TexReplace::Bind(key, contentHash, m_pRAM, tex0, indexed ? clut.data() : nullptr, clamp, hd))
 		{
 			auto hdImage = m_hdImages.find(key);
 			if(hdImage == m_hdImages.end())
 			{
 				if(hd.rgba.empty()) return VK_NULL_HANDLE;
-				hdImage = m_hdImages.emplace(key, CreateTextureImage(hd.width, hd.height, hd.rgba.data())).first;
+				hdImage = m_hdImages.emplace(key, CreateTextureImage(hd.width, hd.height, std::move(hd.rgba), 1)).first;
 			}
 			//Levels down to the native size only: the GS samples the original without levels, so minified
-			//HD texels look as the original's do. Sampled where the GS samples the original: GetTextureColor's
-			//filter is centred (no half-texel offset, unlike GSH_OpenGL's indexed filter).
+			//HD texels look as the original's do (FREQ_TEX_FILTER=enhanced: on down to 1 texel for depth-tested
+			//draws, as the native texture's levels go). Sampled where the GS samples the original:
+			//GetTextureColor's filter is centred (no half-texel offset, unlike GSH_OpenGL's indexed filter).
 			const auto& image = m_textureImages[hdImage->second];
-			uint32 maxLevel = 0;
-			while(((image.width >> (maxLevel + 1)) >= width) && ((image.height >> (maxLevel + 1)) >= height)) maxLevel++;
-			return GetTextureImageSet(hdImage->second, linear, maxLevel, clamp, false);
+			SAMPLING sampling = {linear, linear, linear, 0, TexFilterEnhanced()};
+			while(((image.width >> (sampling.maxLevel + 1)) >= width) && ((image.height >> (sampling.maxLevel + 1)) >= height)) sampling.maxLevel++;
+			if(enhanced && depthTested) sampling.maxLevel = image.levels - 1;
+			return GetTextureImageSet(hdImage->second, sampling, clamp);
 		}
 	}
-	return VK_NULL_HANDLE;
+
+	//FREQ_TEX_FILTER=enhanced (GSH_OpenGL::PrepareMipTexture): a filtered texture is drawn from an RGBA copy
+	//with the levels the game gave it (TEX0 is level 0, MIPTBP1/2 place levels 1..MXL), or, for a
+	//depth-tested draw (the 3D world; HUD, text and portraits stay as sharp as the PS2 draws them), a
+	//chain averaged from level 0; the level comes from the pixel's texel footprint, 16x anisotropic.
+	if(!enhanced) return VK_NULL_HANDLE;
+	auto miptbp1 = make_convertible<MIPTBP1>(miptbp1Reg);
+	auto miptbp2 = make_convertible<MIPTBP2>(miptbp2Reg);
+	bool gameMips = (tex1.nMaxMip != 0) && (tex1.nMinFilter >= MIN_FILTER_NEAREST_MIP_NEAREST) && !tex1.nMipBaseAddr;
+	if(!gameMips && !depthTested) return VK_NULL_HANDLE;
+	uint32 levels = gameMips ? std::min<uint32>({tex1.nMaxMip, tex0.nWidth, static_cast<uint32>(__builtin_ctz(tex0.GetHeight())), 6u}) + 1 : 1;
+	const uint32 tbp[7] = {0, miptbp1.GetTbp1(), miptbp1.GetTbp2(), miptbp1.GetTbp3(), miptbp2.GetTbp4(), miptbp2.GetTbp5(), miptbp2.GetTbp6()};
+	const uint32 tbw[7] = {0, miptbp1.GetTbw1(), miptbp1.GetTbw2(), miptbp1.GetTbw3(), miptbp2.GetTbw4(), miptbp2.GetTbw5(), miptbp2.GetTbw6()};
+	std::array<TEX0, 7> level;
+	std::array<uint64, 7> versions = {};
+	for(uint32 n = 0; n < levels; n++)
+	{
+		level[n] = tex0;
+		if(n != 0)
+		{
+			level[n].nBufPtr = tbp[n] / 256;
+			level[n].nBufWidth = tbw[n] / 64;
+			uint32 heightLog2 = __builtin_ctz(tex0.GetHeight()) - n;
+			level[n].nWidth -= n;
+			level[n].nPad0 = heightLog2 & 3;
+			level[n].nPad1 = heightLog2 >> 2;
+		}
+		CGsCachedArea area;
+		area.SetArea(level[n].nPsm, level[n].nBufPtr, level[n].GetBufWidth(), level[n].GetHeight());
+		if(HasPages(m_unmirroredPages, level[n].GetBufPtr(), area.GetSize())) return VK_NULL_HANDLE; //a level a draw wrote
+		versions[n] = TextureVersion(level[n]);
+	}
+
+	uint64 key[5] = {static_cast<uint64>(tex0) & TEX0_CLUTINFO_MASK, levels, gameMips ? miptbp1Reg : 0, gameMips ? miptbp2Reg : 0,
+	                 indexed ? std::hash<std::string_view>()(std::string_view(reinterpret_cast<const char*>(clut.data()), sizeof(clut))) : 0};
+	if(m_mipImages.size() >= 512) ReleaseMipImages(); // ponytail: drop them all when full, as GSH_OpenGL; an LRU if songs rebuild them often
+	auto [entry, isNew] = m_mipImages.try_emplace(std::hash<std::string_view>()(std::string_view(reinterpret_cast<const char*>(key), sizeof(key))));
+	if(isNew || (entry->second.versions != versions))
+	{
+		std::vector<uint32> texels;
+		for(uint32 n = 0; n < levels; n++)
+		{
+			auto rgba = TexReplace::Decode(m_pRAM, level[n], clut.data());
+			texels.insert(texels.end(), rgba.begin(), rgba.end());
+		}
+		if(isNew)
+		{
+			entry->second.image = CreateTextureImage(width, height, std::move(texels), levels);
+		}
+		else
+		{
+			//New texels for an image this frame may already have drawn with: what was recorded goes first.
+			m_frameCommandBuffer->Flush();
+			m_regState.isValid = false;
+			UploadTextureImage(entry->second.image, std::move(texels), levels);
+		}
+		entry->second.versions = versions;
+	}
+
+	//Between levels: TEX1's mip filter for the game's levels, linear between generated ones. An indexed
+	//texture filtered either way is filtered both ways (its GS filter reads the CLUT colours).
+	bool minLinear = (tex1.nMinFilter == MIN_FILTER_LINEAR) || (tex1.nMinFilter == MIN_FILTER_LINEAR_MIP_NEAREST) || (tex1.nMinFilter == MIN_FILTER_LINEAR_MIP_LINEAR);
+	bool magLinear = (tex1.nMagFilter == MAG_FILTER_LINEAR);
+	if(indexed) minLinear = magLinear = minLinear || magLinear;
+	bool mipLinear = (tex1.nMinFilter == MIN_FILTER_NEAREST_MIP_LINEAR) || (tex1.nMinFilter == MIN_FILTER_LINEAR_MIP_LINEAR) ||
+	                 (tex1.nMinFilter < MIN_FILTER_NEAREST_MIP_NEAREST);
+	SAMPLING sampling = {magLinear, minLinear, mipLinear, m_textureImages[entry->second.image].levels - 1, true};
+	return GetTextureImageSet(entry->second.image, sampling, clamp);
 }
 
-uint32 CGSH_Vulkan::CreateTextureImage(uint32 width, uint32 height, const uint32* rgba)
+uint32 CGSH_Vulkan::CreateTextureImage(uint32 width, uint32 height, std::vector<uint32> texels, uint32 levels)
 {
-	//Every level down to 1x1, each a box average of the one above (glGenerateMipmap's filter).
-	std::vector<uint32> texels(rgba, rgba + width * height);
-	std::vector<VkBufferImageCopy> copies;
-	for(uint32 w = width, h = height, src = 0;;)
-	{
-		VkBufferImageCopy copy = {};
-		copy.bufferOffset = src * sizeof(uint32);
-		copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, static_cast<uint32>(copies.size()), 0, 1};
-		copy.imageExtent = {w, h, 1};
-		copies.push_back(copy);
-		if((w == 1) && (h == 1)) break;
-		uint32 nw = std::max<uint32>(w / 2, 1), nh = std::max<uint32>(h / 2, 1);
-		uint32 dst = static_cast<uint32>(texels.size());
-		texels.resize(dst + nw * nh);
-		for(uint32 y = 0; y < nh; y++)
-		{
-			for(uint32 x = 0; x < nw; x++)
-			{
-				uint32 x0 = std::min(2 * x, w - 1), x1 = std::min(2 * x + 1, w - 1);
-				uint32 y0 = std::min(2 * y, h - 1), y1 = std::min(2 * y + 1, h - 1);
-				uint32 c[4] = {texels[src + y0 * w + x0], texels[src + y0 * w + x1], texels[src + y1 * w + x0], texels[src + y1 * w + x1]};
-				uint32 out = 0;
-				for(uint32 shift = 0; shift < 32; shift += 8)
-				{
-					uint32 sum = 2;
-					for(uint32 i = 0; i < 4; i++) sum += (c[i] >> shift) & 0xFF;
-					out |= (sum / 4) << shift;
-				}
-				texels[dst + y * nw + x] = out;
-			}
-		}
-		src = dst;
-		w = nw;
-		h = nh;
-	}
-
 	auto& device = m_context->device;
 	TEXTURE_IMAGE image;
 	image.width = width;
 	image.height = height;
-	image.levels = static_cast<uint32>(copies.size());
+	//One level given: every level down to 1x1 is made from it.
+	image.levels = (levels == 1) ? 32 - __builtin_clz(std::max(width, height)) : levels;
 
 	auto imageCreateInfo = Framework::Vulkan::ImageCreateInfo();
 	imageCreateInfo.imageType = VK_IMAGE_TYPE_2D;
@@ -2038,11 +2105,77 @@ uint32 CGSH_Vulkan::CreateTextureImage(uint32 width, uint32 height, const uint32
 	result = device.vkBindImageMemory(device, image.image, image.memory, 0);
 	CHECKVULKANERROR(result);
 
+	auto viewCreateInfo = Framework::Vulkan::ImageViewCreateInfo();
+	viewCreateInfo.image = image.image;
+	viewCreateInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+	viewCreateInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+	viewCreateInfo.components = {VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A};
+	viewCreateInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, image.levels, 0, 1};
+	result = device.vkCreateImageView(device, &viewCreateInfo, nullptr, &image.view);
+	CHECKVULKANERROR(result);
+
+	uint32 id = 0;
+	if(!m_freeTextureImages.empty())
+	{
+		id = m_freeTextureImages.back();
+		m_freeTextureImages.pop_back();
+		m_textureImages[id] = image;
+	}
+	else
+	{
+		id = static_cast<uint32>(m_textureImages.size());
+		m_textureImages.push_back(image);
+	}
+	UploadTextureImage(id, std::move(texels), levels);
+	return id;
+}
+
+void CGSH_Vulkan::UploadTextureImage(uint32 id, std::vector<uint32> texels, uint32 levels)
+{
+	const auto& image = m_textureImages[id];
+	std::vector<VkBufferImageCopy> copies;
+	for(uint32 w = image.width, h = image.height, src = 0; copies.size() < image.levels;)
+	{
+		VkBufferImageCopy copy = {};
+		copy.bufferOffset = src * sizeof(uint32);
+		copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, static_cast<uint32>(copies.size()), 0, 1};
+		copy.imageExtent = {w, h, 1};
+		copies.push_back(copy);
+		uint32 nw = std::max<uint32>(w / 2, 1), nh = std::max<uint32>(h / 2, 1);
+		uint32 dst = src + w * h;
+		if(levels == 1)
+		{
+			//Each level a box average of the one above (glGenerateMipmap's filter).
+			texels.resize(dst + nw * nh);
+			for(uint32 y = 0; y < nh; y++)
+			{
+				for(uint32 x = 0; x < nw; x++)
+				{
+					uint32 x0 = std::min(2 * x, w - 1), x1 = std::min(2 * x + 1, w - 1);
+					uint32 y0 = std::min(2 * y, h - 1), y1 = std::min(2 * y + 1, h - 1);
+					uint32 c[4] = {texels[src + y0 * w + x0], texels[src + y0 * w + x1], texels[src + y1 * w + x0], texels[src + y1 * w + x1]};
+					uint32 out = 0;
+					for(uint32 shift = 0; shift < 32; shift += 8)
+					{
+						uint32 sum = 2;
+						for(uint32 i = 0; i < 4; i++) sum += (c[i] >> shift) & 0xFF;
+						out |= (sum / 4) << shift;
+					}
+					texels[dst + y * nw + x] = out;
+				}
+			}
+		}
+		src = dst;
+		w = nw;
+		h = nh;
+	}
+
+	auto& device = m_context->device;
 	auto staging = Framework::Vulkan::CBuffer(device, m_context->physicalDeviceMemoryProperties, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
 	                                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, texels.size() * sizeof(uint32));
 	{
 		void* stagingPtr = nullptr;
-		result = device.vkMapMemory(device, staging.GetMemory(), 0, VK_WHOLE_SIZE, 0, &stagingPtr);
+		auto result = device.vkMapMemory(device, staging.GetMemory(), 0, VK_WHOLE_SIZE, 0, &stagingPtr);
 		CHECKVULKANERROR(result);
 		memcpy(stagingPtr, texels.data(), texels.size() * sizeof(uint32));
 		device.vkUnmapMemory(device, staging.GetMemory());
@@ -2051,7 +2184,7 @@ uint32 CGSH_Vulkan::CreateTextureImage(uint32 width, uint32 height, const uint32
 	auto commandBuffer = m_context->commandBufferPool.AllocateBuffer();
 	auto beginInfo = Framework::Vulkan::CommandBufferBeginInfo();
 	beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-	result = device.vkBeginCommandBuffer(commandBuffer, &beginInfo);
+	auto result = device.vkBeginCommandBuffer(commandBuffer, &beginInfo);
 	CHECKVULKANERROR(result);
 	auto barrier = Framework::Vulkan::ImageMemoryBarrier();
 	barrier.image = image.image;
@@ -2071,6 +2204,7 @@ uint32 CGSH_Vulkan::CreateTextureImage(uint32 width, uint32 height, const uint32
 	result = device.vkEndCommandBuffer(commandBuffer);
 	CHECKVULKANERROR(result);
 	//Submitted ahead of the frame being recorded, so the image is filled before any draw samples it.
+	//ponytail: waits for the GPU; record into the frame's command buffer if uploads ever show in frame times.
 	auto submitInfo = Framework::Vulkan::SubmitInfo();
 	submitInfo.commandBufferCount = 1;
 	submitInfo.pCommandBuffers = &commandBuffer;
@@ -2079,39 +2213,29 @@ uint32 CGSH_Vulkan::CreateTextureImage(uint32 width, uint32 height, const uint32
 	result = device.vkQueueWaitIdle(m_context->queue);
 	CHECKVULKANERROR(result);
 	m_context->commandBufferPool.FreeBuffer(commandBuffer);
-
-	auto viewCreateInfo = Framework::Vulkan::ImageViewCreateInfo();
-	viewCreateInfo.image = image.image;
-	viewCreateInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-	viewCreateInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
-	viewCreateInfo.components = {VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A};
-	viewCreateInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, image.levels, 0, 1};
-	result = device.vkCreateImageView(device, &viewCreateInfo, nullptr, &image.view);
-	CHECKVULKANERROR(result);
-
-	m_textureImages.push_back(image);
-	return static_cast<uint32>(m_textureImages.size() - 1);
+	m_textureImageUploads++;
 }
 
-VkDescriptorSet CGSH_Vulkan::GetTextureImageSet(uint32 image, bool linear, uint32 maxLevel, const CLAMP& clamp, bool anisotropic)
+VkDescriptorSet CGSH_Vulkan::GetTextureImageSet(uint32 image, const SAMPLING& sampling, const CLAMP& clamp)
 {
-	anisotropic &= (m_maxAnisotropy > 1);
-	uint32 samplerKey = (linear ? 1 : 0) | ((clamp.nWMS == CLAMP_MODE_CLAMP) ? 2 : 0) | ((clamp.nWMT == CLAMP_MODE_CLAMP) ? 4 : 0) |
-	                    (anisotropic ? 8 : 0) | (maxLevel << 4);
+	bool anisotropic = sampling.anisotropic && (m_maxAnisotropy > 1);
+	uint32 samplerKey = (sampling.magLinear ? 1 : 0) | (sampling.minLinear ? 2 : 0) | (sampling.mipLinear ? 4 : 0) |
+	                    ((clamp.nWMS == CLAMP_MODE_CLAMP) ? 8 : 0) | ((clamp.nWMT == CLAMP_MODE_CLAMP) ? 16 : 0) |
+	                    (anisotropic ? 32 : 0) | (sampling.maxLevel << 6);
 	auto& sampler = m_textureImageSamplers[samplerKey];
 	if(sampler == VK_NULL_HANDLE)
 	{
 		auto samplerCreateInfo = Framework::Vulkan::SamplerCreateInfo();
-		samplerCreateInfo.magFilter = linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
-		samplerCreateInfo.minFilter = samplerCreateInfo.magFilter;
-		samplerCreateInfo.mipmapMode = linear ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
+		samplerCreateInfo.magFilter = sampling.magLinear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+		samplerCreateInfo.minFilter = sampling.minLinear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+		samplerCreateInfo.mipmapMode = sampling.mipLinear ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
 		samplerCreateInfo.addressModeU = (clamp.nWMS == CLAMP_MODE_CLAMP) ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_REPEAT;
 		samplerCreateInfo.addressModeV = (clamp.nWMT == CLAMP_MODE_CLAMP) ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_REPEAT;
 		samplerCreateInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 		samplerCreateInfo.anisotropyEnable = anisotropic;
 		samplerCreateInfo.maxAnisotropy = anisotropic ? m_maxAnisotropy : 1;
 		samplerCreateInfo.minLod = 0;
-		samplerCreateInfo.maxLod = static_cast<float>(maxLevel);
+		samplerCreateInfo.maxLod = static_cast<float>(sampling.maxLevel);
 		auto result = m_context->device.vkCreateSampler(m_context->device, &samplerCreateInfo, nullptr, &sampler);
 		CHECKVULKANERROR(result);
 	}
@@ -2142,16 +2266,40 @@ VkDescriptorSet CGSH_Vulkan::GetTextureImageSet(uint32 image, bool linear, uint3
 	return set;
 }
 
+void CGSH_Vulkan::DestroyTextureImage(uint32 id)
+{
+	auto& image = m_textureImages[id];
+	m_context->device.vkDestroyImageView(m_context->device, image.view, nullptr);
+	m_context->device.vkDestroyImage(m_context->device, image.image, nullptr);
+	m_context->device.vkFreeMemory(m_context->device, image.memory, nullptr);
+	image = TEXTURE_IMAGE();
+	m_freeTextureImages.push_back(id);
+}
+
+void CGSH_Vulkan::ReleaseMipImages()
+{
+	//Nothing recorded or in flight may still use them; the HD images stay, their sets are made again.
+	m_frameCommandBuffer->Flush();
+	m_regState.isValid = false;
+	m_context->device.vkQueueWaitIdle(m_context->queue);
+	for(const auto& mipImage : m_mipImages) DestroyTextureImage(mipImage.second.image);
+	m_mipImages.clear();
+	m_textureImageSets.clear();
+	m_context->device.vkResetDescriptorPool(m_context->device, m_textureImagePool, 0);
+	m_lastTextureImageSet = VK_NULL_HANDLE;
+	m_textureImageEpoch++;
+}
+
 void CGSH_Vulkan::ReleaseTextureImages()
 {
-	for(const auto& image : m_textureImages)
+	for(uint32 id = 0; id < m_textureImages.size(); id++)
 	{
-		m_context->device.vkDestroyImageView(m_context->device, image.view, nullptr);
-		m_context->device.vkDestroyImage(m_context->device, image.image, nullptr);
-		m_context->device.vkFreeMemory(m_context->device, image.memory, nullptr);
+		if(m_textureImages[id].image != VK_NULL_HANDLE) DestroyTextureImage(id);
 	}
 	m_textureImages.clear();
+	m_freeTextureImages.clear();
 	m_hdImages.clear();
+	m_mipImages.clear();
 	m_textureImageSets.clear();
 	if(m_textureImagePool != VK_NULL_HANDLE) m_context->device.vkResetDescriptorPool(m_context->device, m_textureImagePool, 0);
 }

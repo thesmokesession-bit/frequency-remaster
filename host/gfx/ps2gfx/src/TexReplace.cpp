@@ -275,6 +275,35 @@ uint64 TexReplace::Key(uint64 texelHash, const TEX0& tex0, const uint32* clut)
 	return XXH3_64bits_withSeed(usedClut, entries * sizeof(uint32), texelHash ^ (static_cast<uint64>(tex0.nCPSM) << 56));
 }
 
+std::vector<uint32> TexReplace::Decode(uint8* ram, const TEX0& tex0, const uint32* clut)
+{
+	auto units = ReadUnits(ram, tex0);
+	std::vector<uint32> rgba(Width(tex0) * Height(tex0));
+	bool clut16 = CGsPixelFormats::IsPsmIDTEX(tex0.nPsm) && ((tex0.nCPSM == CGSHandler::PSMCT16) || (tex0.nCPSM == CGSHandler::PSMCT16S));
+	for(size_t i = 0; i < rgba.size(); i++)
+	{
+		uint32 c;
+		switch(UnitSize(tex0.nPsm))
+		{
+		case 1:
+			c = clut[units[i]];
+			if(clut16) c |= (c >> 5) & 0x070707; // MakeLinearCLUT shifts 5 bits up; the GS reads them replicated
+			break;
+		case 2:
+		{
+			uint32 v = reinterpret_cast<const uint16*>(units.data())[i];
+			auto x5 = [](uint32 x) { return (x << 3) | (x >> 2); };
+			c = x5(v & 0x1F) | (x5((v >> 5) & 0x1F) << 8) | (x5((v >> 10) & 0x1F) << 16) | ((v & 0x8000) ? 0xFF000000 : 0);
+			break;
+		}
+		default: c = reinterpret_cast<const uint32*>(units.data())[i]; break;
+		}
+		if(tex0.nPsm == CGSHandler::PSMCT24) c &= 0xFFFFFF; // as GetTextureColor reads it (a CLUT keeps its alpha)
+		rgba[i] = c;
+	}
+	return rgba;
+}
+
 bool TexReplace::Bind(uint64 key, uint64 texelHash, uint8* ram, const TEX0& tex0, const uint32* clut, const CGSHandler::CLAMP& clamp, Image& hd)
 {
 	bool isNew;

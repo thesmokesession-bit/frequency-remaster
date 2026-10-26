@@ -39,6 +39,10 @@ namespace TexReplace
 	// The key: the texel hash, and for an indexed format the used entries of the converted CLUT and CPSM.
 	uint64 Key(uint64 texelHash, const CGSHandler::TEX0& tex0, const uint32* clut);
 
+	// The texels of tex0 as RGBA (R in the low byte), indexed ones looked up in clut (MakeLinearCLUT's), in the
+	// renderer's own form: alpha in the GS's range, 16-bit colour bit-replicated, PSMCT24 alpha 0.
+	std::vector<uint32> Decode(uint8* ram, const CGSHandler::TEX0& tex0, const uint32* clut);
+
 	// Every textured state the GS sets up, on the GS thread. True when the key has a replacement;
 	// the first time, hd holds it and the renderer makes its texture.
 	bool Bind(uint64 key, uint64 texelHash, uint8* ram, const CGSHandler::TEX0& tex0, const uint32* clut, const CGSHandler::CLAMP& clamp, Image& hd);
