@@ -22,6 +22,30 @@
 #define NUM_SAMPLES 8
 #define FRAMEBUFFER_HEIGHT 1024
 
+namespace
+{
+	bool SettingIs(const char* key, const char* value)
+	{
+		const char* setting = getenv(key);
+		return setting != nullptr && strcmp(setting, value) == 0;
+	}
+	// FREQ_TEX_FILTER=original samples level 0 of every texture, as Play! does; enhanced (default)
+	// samples mip levels (the game's own where it gives them) with anisotropic filtering.
+	bool TexFilterEnhanced()
+	{
+		static const bool enhanced = !SettingIs("FREQ_TEX_FILTER", "original");
+		return enhanced;
+	}
+	// FREQ_AA=on smooths edges with FXAA on the frame being presented; off (default) presents it as drawn.
+	// ponytail: FXAA runs per output pixel, so an upscaled frame (1080p from FREQ_SCALE 1) gets ripples on
+	// near-horizontal edges and softer HUD digits; off by default until it runs at GS size before scaling.
+	bool AntiAliasing()
+	{
+		static const bool on = SettingIs("FREQ_AA", "on");
+		return on;
+	}
+}
+
 // clang-format off
 const GLenum CGSH_OpenGL::g_nativeClampModes[CGSHandler::CLAMP_MODE_MAX] =
 {
@@ -220,6 +244,11 @@ void CGSH_OpenGL::FlipImpl(const DISPLAY_INFO& dispInfo)
 
 		assert(m_presentTexCoordScaleUniform != -1);
 		glUniform2f(m_presentTexCoordScaleUniform, u1, v1);
+		if(m_presentTexelSizeUniform != -1)
+		{
+			glUniform2f(m_presentTexelSizeUniform, 1.0f / static_cast<float>(framebuffer->m_width * m_fbScale),
+			            1.0f / static_cast<float>(framebuffer->m_height * m_fbScale));
+		}
 
 		glBindBuffer(GL_ARRAY_BUFFER, m_presentVertexBuffer);
 		glBindVertexArray(m_presentVertexArray);
@@ -294,11 +323,12 @@ void CGSH_OpenGL::InitializeRC()
 	CheckExtensions();
 	SetupTextureUpdaters();
 
-	m_presentProgram = GeneratePresentProgram();
+	m_presentProgram = GeneratePresentProgram(AntiAliasing());
 	m_presentVertexBuffer = GeneratePresentVertexBuffer();
 	m_presentVertexArray = GeneratePresentVertexArray();
 	m_presentTextureUniform = glGetUniformLocation(*m_presentProgram, "g_texture");
 	m_presentTexCoordScaleUniform = glGetUniformLocation(*m_presentProgram, "g_texCoordScale");
+	m_presentTexelSizeUniform = glGetUniformLocation(*m_presentProgram, "g_texelSize");
 
 	m_copyToFbProgram = GenerateCopyToFbProgram();
 	m_copyToFbTexture = Framework::OpenGl::CTexture::Create();
@@ -625,7 +655,8 @@ void CGSH_OpenGL::SetRenderingContext(uint64 primReg)
 	bool textureEnableChanged = !m_renderState.isValid || (prevPrim.nTexture != prim.nTexture);
 	bool textureChanged = !m_renderState.isValid || !m_renderState.isTextureStateValid ||
 	                      (m_renderState.tex0Reg != tex0Reg) || (m_renderState.tex1Reg != tex1Reg) || (m_renderState.texAReg != texAReg) ||
-	                      (m_renderState.clampReg != clampReg) || textureEnableChanged;
+	                      (m_renderState.clampReg != clampReg) || textureEnableChanged ||
+	                      (TexFilterEnhanced() && testChanged); // FREQ_TEX_FILTER: generated levels follow the depth test
 	bool fogColorChanged = !m_renderState.isValid || (m_renderState.fogColReg != fogColReg);
 
 	bool needFlush = shaderChanged || primChanged || alphaChanged || testChanged || zbufChanged || framebufferRelatedChanged || textureChanged || fogColorChanged;
@@ -1264,6 +1295,8 @@ void CGSH_OpenGL::SetupTexture(uint64 primReg, uint64 tex0Reg, uint64 tex1Reg, u
 	auto tex1 = make_convertible<TEX1>(tex1Reg);
 	auto texA = make_convertible<TEXA>(texAReg);
 	auto clamp = make_convertible<CLAMP>(clampReg);
+	auto test = make_convertible<TEST>(m_nReg[GS_REG_TEST_1 + prim.nContext]);
+	bool depthTested = test.nDepthEnabled && test.nDepthMethod != DEPTH_TEST_ALWAYS;
 
 	m_nTexWidth = tex0.GetWidth();
 	m_nTexHeight = tex0.GetHeight();
@@ -1389,11 +1422,16 @@ void CGSH_OpenGL::SetupTexture(uint64 primReg, uint64 tex0Reg, uint64 tex1Reg, u
 				// so minified HD texels look as the original's do, not blurrier.
 				GLsizei levels = 1;
 				while((hd.width >> levels) >= tex0.GetWidth() && (hd.height >> levels) >= tex0.GetHeight()) levels++;
+				// FREQ_TEX_FILTER=enhanced: on down to 1 texel as the native texture's levels go (depth-tested
+				// draws only, as below), filtered anisotropically.
+				if(TexFilterEnhanced() && tex1.nMinFilter != MIN_FILTER_NEAREST && depthTested)
+					levels = 32 - __builtin_clz(std::max(hd.width, hd.height));
 				glGenTextures(1, &handle);
 				glBindTexture(GL_TEXTURE_2D, handle);
 				glTexStorage2D(GL_TEXTURE_2D, levels, GL_RGBA8, hd.width, hd.height);
 				glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, hd.width, hd.height, GL_RGBA, GL_UNSIGNED_BYTE, hd.rgba.data());
 				glGenerateMipmap(GL_TEXTURE_2D);
+				if(TexFilterEnhanced()) glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, 16.0f);
 				CHECKGLERROR();
 			}
 			// Same UVs, clamp and texture size uniforms: only the texels are finer.
@@ -1401,6 +1439,30 @@ void CGSH_OpenGL::SetupTexture(uint64 primReg, uint64 tex0Reg, uint64 tex1Reg, u
 			m_renderState.texture0AlphaAsIndex = false;
 			m_renderState.texture1Handle = 0;
 			m_renderState.texture0MinFilter = replacementMinFilter;
+			m_renderState.texture0MagFilter = replacementMagFilter;
+			m_renderState.texture0Replaced = true;
+		}
+	}
+
+	// FREQ_TEX_FILTER=enhanced: a filtered texture is drawn from an RGBA copy with mip levels (the game's
+	// own where it gives them), read as an HD replacement is (direct colour; an indexed texture's filter
+	// position kept), the level picked from the pixel's texel footprint with 16x anisotropic filtering.
+	// Between levels: TEX1's mip filter for the game's levels, linear between generated ones. Only
+	// depth-tested draws (the 3D world) get generated levels: overlays drawn with ZTST ALWAYS (HUD, text,
+	// portraits) stay as sharp as the PS2 draws them.
+	if(TexFilterEnhanced() && !m_renderState.texture0Replaced && texInfo.version != 0 &&
+	   tex1.nMinFilter != MIN_FILTER_NEAREST && tex1.nMinFilter <= MIN_FILTER_LINEAR_MIP_LINEAR)
+	{
+		uint32 context = prim.nContext;
+		if(GLuint handle = PrepareMipTexture(tex0, tex1, m_nReg[GS_REG_MIPTBP1_1 + context], m_nReg[GS_REG_MIPTBP2_1 + context], depthTested))
+		{
+			bool mipLinear = tex1.nMinFilter == MIN_FILTER_NEAREST_MIP_LINEAR || tex1.nMinFilter == MIN_FILTER_LINEAR_MIP_LINEAR ||
+			                 tex1.nMinFilter < MIN_FILTER_NEAREST_MIP_NEAREST;
+			static const GLint mipFilters[2][2] = {{GL_NEAREST_MIPMAP_NEAREST, GL_NEAREST_MIPMAP_LINEAR}, {GL_LINEAR_MIPMAP_NEAREST, GL_LINEAR_MIPMAP_LINEAR}};
+			m_renderState.texture0Handle = handle;
+			m_renderState.texture0AlphaAsIndex = false;
+			m_renderState.texture1Handle = 0;
+			m_renderState.texture0MinFilter = mipFilters[replacementLinear[0]][mipLinear];
 			m_renderState.texture0MagFilter = replacementMagFilter;
 			m_renderState.texture0Replaced = true;
 		}
