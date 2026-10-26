@@ -493,6 +493,7 @@ void PsTex::RebuildClut() {
 
 #ifdef RESONANCE_HOST
 } // namespace Rnd
+#include <map>
 void HostTexGenerated(const char *, int, int, int, const void *, int); // host/gfx/gfx.cpp
 namespace Rnd {
 // HD textures name each file texture's level 0 by its file: "file:<path>" (TexReplace.h).
@@ -500,6 +501,18 @@ static void HostTexLoaded(const FilePath &path, int nPsm, int nWidth, int nHeigh
     char szName[300];
     snprintf(szName, sizeof(szName), "file:%s", path.mStr != nullptr ? path.mStr : "");
     HostTexGenerated(szName, nPsm, nWidth, nHeight, pPixels, nStride);
+}
+// A level's texels when the game locked it. UnlockMipBitmap() reports the level as drawn by the game
+// only when they changed, came back from the GS or never came from a file: the FreQ maker palette
+// and font pages are file textures locked and read on the CPU.
+static std::map<const PsTex *, unsigned long long> s_lockedTexels;
+static unsigned long long HostTexelHash(const ABitmap *pBitmap) {
+    const unsigned char *pByte = static_cast<const unsigned char *>(static_cast<const void *>(pBitmap->mPixels));
+    unsigned long long nHash = 14695981039346656037ull; // FNV-1a
+    for (int i = 0; i < pBitmap->mHeight * pBitmap->mBytesPerRow; ++i) {
+        nHash = (nHash ^ pByte[i]) * 1099511628211ull;
+    }
+    return nHash;
 }
 #endif
 #ifndef RESONANCE_HOST
@@ -784,6 +797,16 @@ ACanvas *PsTex::LockMipBitmap(int nMip, [[maybe_unused]] int nReserved, int nFla
     if (static_cast<unsigned>(nMip) >= mLoadedBitmaps.size() || mLoadedBitmaps[nMip] == nullptr) {
         return nullptr;
     }
+#ifdef RESONANCE_HOST
+    if ((nFlags & kLockReadBack) == 0 && mBitmapPath.mStr != nullptr && mBitmapPath.mStr[0] != 0) {
+        s_lockedTexels[this] = HostTexelHash(mLoadedBitmaps[nMip]);
+    } else {
+        s_lockedTexels.erase(this); // read back from the GS, or made in memory: drawn by the game
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 756
+#endif
 
     if ((nFlags & kLockReadBack) != 0) {
         const int nBlockAddr = mGsMips[nMip].mPage->GetBlockAddr();
@@ -816,8 +839,15 @@ void PsTex::UnlockMipBitmap() {
 #ifdef RESONANCE_HOST
     // HD textures leave the game's own drawing alone (host/gfx/ps2gfx/src/TexReplace.h).
     const ABitmap *pDrawn = mLoadedBitmaps[mLockedMip];
-    HostTexGenerated(
-        mName.mStr, mGsPsm, pDrawn->mWidth, pDrawn->mHeight, pDrawn->mPixels, pDrawn->mBytesPerRow);
+    const auto locked = s_lockedTexels.find(this);
+    const bool bChanged = locked == s_lockedTexels.end() || locked->second != HostTexelHash(pDrawn);
+    if (locked != s_lockedTexels.end()) {
+        s_lockedTexels.erase(locked);
+    }
+    if (bChanged) {
+        HostTexGenerated(
+            mName.mStr, mGsPsm, pDrawn->mWidth, pDrawn->mHeight, pDrawn->mPixels, pDrawn->mBytesPerRow);
+    }
 #endif
 #ifndef RESONANCE_HOST
 #line 777
