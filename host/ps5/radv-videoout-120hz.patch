@@ -1,5 +1,5 @@
 --- a/src/vulkan/wsi/wsi_common_videoout.c	2026-11-24 02:00:27.359603072 +0000
-+++ b/src/vulkan/wsi/wsi_common_videoout.c	2026-11-24 02:06:01.504216295 +0000
++++ b/src/vulkan/wsi/wsi_common_videoout.c	2026-11-24 02:41:39.288178662 +0000
 @@ -334,6 +334,33 @@
     return (value & VIDEOOUT_ATTRIBUTE3_HIGH_FRAME_RATE) == VIDEOOUT_ATTRIBUTE3_HIGH_FRAME_RATE;
  }
@@ -34,12 +34,18 @@
  /* The refresh period: the median of a few intervals between vblank waits,
   * the first wait finding the phase. 0 when a wait fails. */
  static uint64_t
-@@ -384,7 +411,7 @@
+@@ -384,7 +411,13 @@
        out->high_frame_rate = configured == 0;
        if (out->high_frame_rate) {
           const uint64_t period = videoout_vblank_period_ns(out->handle);
 -         if (period > VIDEOOUT_HIGH_REFRESH_LIMIT_NS) {
-+         if (period > VIDEOOUT_HIGH_REFRESH_LIMIT_NS && !videoout_vblank_shows_high_rate(out->handle)) {
++         /* VIDEOOUT_TRUST_HIGH_FRAME_RATE=1 (a title that presents at 120 and
++          * measures its own present rate) takes the console's word: on FW 13.60
++          * the waits came back every 20.9 ms at either rate (Frequency,
++          * 2026-11-23), so no timing of them can tell 119.88 Hz from 59.94. */
++         const char *trust = getenv("VIDEOOUT_TRUST_HIGH_FRAME_RATE");
++         if ((trust == NULL || strcmp(trust, "1") != 0) && period > VIDEOOUT_HIGH_REFRESH_LIMIT_NS &&
++             !videoout_vblank_shows_high_rate(out->handle)) {
              sceVideoOutConfigureOutput(out->handle, PS5_VIDEO_OUT_MODE_RESTORE, NULL, NULL, NULL);
              out->high_frame_rate = false;
              fprintf(stderr,

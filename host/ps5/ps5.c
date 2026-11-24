@@ -460,6 +460,12 @@ __attribute__((constructor(102))) static void FindGameFiles(void) {
     InTitleFolder("FREQ_DISC", s_szIso[0] != '\0' ? s_szIso : NULL);
     InTitleFolder("FREQ_MC", "memcard");
     fprintf(stderr, "PS5: disc %s, memory card %s\n", getenv("FREQ_DISC"), getenv("FREQ_MC"));
+    // At 120 fps the display mode is taken on the console's word (radv-videoout-120hz.patch): the
+    // frame line's presents a second show the rate the TV really runs at.
+    const char *pszFps = getenv("FREQ_FPS");
+    if (pszFps != NULL && atoi(pszFps) == 120) {
+        setenv("VIDEOOUT_TRUST_HIGH_FRAME_RATE", "1", 0);
+    }
 }
 
 // ---- the network, for the updater (as Perfect Eye's ps5/ps5_platform.c and ps5-shims.c) ----
