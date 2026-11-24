@@ -22,6 +22,7 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/syscall.h>
+#include <time.h>
 #include <ucontext.h>
 #include <unistd.h>
 
@@ -389,6 +390,70 @@ __attribute__((constructor(100))) static void StartTitle(void) {
     setenv("FREQ_CONFIG", TITLE_DIR "/frequency.ini", 0);
 }
 
+// ---- auto-pause: the system UI over the game, and rest mode ----
+
+// The PS4 SDK's SceSystemServiceStatus (an event count, then a byte per flag) as the PS5's
+// libSceSystemService is taken to fill it; abRest leaves room for a longer struct. The first bytes
+// are logged at the first poll and at each change, so the console's log can confirm the layout.
+typedef struct {
+    int32_t nEventCount;
+    uint8_t bSystemUiOverlaid;
+    uint8_t bInBackground;
+    uint8_t abRest[250];
+} SystemServiceStatus;
+int sceSystemServiceGetStatus(SystemServiceStatus *pStatus);
+void HostAutoPause(int nPlayer); // src/game/inputpollerps2.cpp: FREQ_AUTOPAUSE
+
+static long long MonotonicNs(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (long long)now.tv_sec * 1000000000LL + now.tv_nsec;
+}
+
+// Ten times a second. A song pauses when the system UI comes over the game or the title goes to
+// the background (once per change, so a flag read wrongly pauses once at most), and after more
+// than two seconds between two polls: rest mode froze the title. The game's clocks take such a
+// gap as one frame (host/audio/audio.cpp RunAudio(), host/gfx-null/gfx.cpp RunVblanks()).
+static void *WatchSystem(void *pUnused) {
+    (void)pUnused;
+    unsigned char abLast[8] = {0};
+    int nLastResult = 1;
+    int bCovered = 0;
+    long long nLastNs = MonotonicNs();
+    for (;;) {
+        usleep(100000);
+        const long long nNowNs = MonotonicNs();
+        if (nNowNs - nLastNs > 2000000000LL) {
+            fprintf(stderr,
+                    "PS5: %lld s between two polls (rest mode?): the song pauses\n",
+                    (nNowNs - nLastNs) / 1000000000LL);
+            HostAutoPause(0);
+        }
+        nLastNs = nNowNs;
+        SystemServiceStatus status;
+        memset(&status, 0, sizeof(status));
+        const int nResult = sceSystemServiceGetStatus(&status);
+        if (nResult != nLastResult || memcmp(abLast, &status, sizeof(abLast)) != 0) {
+            memcpy(abLast, &status, sizeof(abLast));
+            nLastResult = nResult;
+            char szBytes[3 * sizeof(abLast) + 1];
+            for (size_t i = 0; i < sizeof(abLast); ++i) {
+                snprintf(szBytes + 3 * i, 4, " %02x", abLast[i]);
+            }
+            fprintf(stderr,
+                    "PS5: system status 0x%x, bytes%s (events 0-3, UI overlaid 4, background 5)\n",
+                    (unsigned)nResult,
+                    szBytes);
+        }
+        const int bNow = nResult == 0 && (status.bSystemUiOverlaid || status.bInBackground);
+        if (bNow && !bCovered) {
+            HostAutoPause(0);
+        }
+        bCovered = bNow;
+    }
+    return NULL;
+}
+
 // The rest waits for main (host/core/main.cpp), as Perfect Eye's ps5PlatformInit does: a thread
 // or a signal handler set up from a constructor ended the title before main (2026-11-23).
 static void StartUpdater(void);
@@ -425,6 +490,10 @@ void HostStartTitle(void) {
     }
 
     fprintf(stderr, "PS5: logging and crash report set up\n");
+    pthread_t watcher;
+    if (pthread_create(&watcher, NULL, WatchSystem, NULL) == 0) {
+        pthread_detach(watcher);
+    }
     StartUpdater();
 }
 
