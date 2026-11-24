@@ -615,12 +615,25 @@ void HostMovieStarted(void) {
 // renamed to these). The sample keeps the low 24 bits of the SPU2 read position, as IOP addresses
 // are on the console, and subtracts its buffer's address, so the buffers must sit below 16 MiB.
 // They come from a static pool here (the executable's .bss ends below 16 MiB), freed all at once.
+int HostMapGameMemory(uintptr_t nBase, size_t nSize, const void *pContents, int bAlias);
+
 void *HostMovieAllocIop(unsigned nSize) {
-    alignas(64) static unsigned char abPool[0x6000 + 0x800 + 64];
+    constexpr unsigned kPoolSize = 0x6000 + 0x800 + 64;
+#ifdef __PROSPERO__
+    // The title's .bss ends far above 16 MiB: the pool is mapped below the image instead, at 1 MiB
+    // (the memory test's "below the image" range, PPSA64009 on 13.60).
+    static unsigned char *const abPool =
+        HostMapGameMemory(0x100000, kPoolSize, nullptr, 0) == 0
+            ? reinterpret_cast<unsigned char *>(0x100000)
+            : nullptr;
+#else
+    alignas(64) static unsigned char abPool[kPoolSize];
+#endif
     static unsigned nUsed;
     unsigned char *pBlock = abPool + nUsed;
     nUsed += (nSize + 63) & ~63u;
-    if (nUsed > sizeof(abPool) || reinterpret_cast<uintptr_t>(abPool + nUsed) > 0x1000000) {
+    if (abPool == nullptr || nUsed > kPoolSize ||
+        reinterpret_cast<uintptr_t>(abPool + nUsed) > 0x1000000) {
         fprintf(stderr, "FATAL: movie IOP buffer does not fit below 16 MiB\n");
         abort();
     }

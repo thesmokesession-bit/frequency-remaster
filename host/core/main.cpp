@@ -8,6 +8,8 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
+#include <exception>
+
 #include "lowmem.h"
 
 // The game's main() in src/main.cpp, which host/CMakeLists.txt compiles under this name.
@@ -54,6 +56,7 @@ uintptr_t g_heapBreak = 0;
 
 #ifdef __PROSPERO__
 extern "C" int HostMapGameMemory(uintptr_t nBase, size_t nSize, const void *pContents, int bAlias);
+extern "C" void HostStartTitle(void); // host/ps5/ps5.c: the log's pipe and the crash report
 #endif
 
 // Maps nSize bytes of one shared memory object at nBase and again at the uncached alias above it.
@@ -196,14 +199,26 @@ extern "C" void *HostMoreCore(ptrdiff_t nIncrement) {
     return pPrevious;
 }
 
+extern "C" void PyErr_Print(); // src/script: an uncaught Py::Exception's Python error
+
 int main() {
+#ifdef __PROSPERO__
+    HostStartTitle();
+#endif
+    std::set_terminate([] {
+        fprintf(stderr, "host: uncaught exception; the Python error, if any:\n");
+        PyErr_Print();
+        abort();
+    });
     setvbuf(stdout, nullptr, _IOLBF, 0);
     MapEmotionEngineMemory();
+    fprintf(stderr, "host: game memory mapped\n");
 
     const char *pszSelfTest = getenv("FREQ_SELFTEST");
     const bool bSelfTest = pszSelfTest != nullptr && strcmp(pszSelfTest, "lowmem") == 0;
     if (!bSelfTest) {
         HostAudioStart(); // the clock the game reads from here on
+        fprintf(stderr, "host: audio started\n");
     }
 
     // The game runs on _stack, as the Emotion Engine's main thread does.

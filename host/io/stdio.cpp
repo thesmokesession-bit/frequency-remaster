@@ -3,6 +3,7 @@
 // host C library opens host files instead, so this fopen() takes its place for the whole program.
 // Host code that wants a host file uses open() and fdopen().
 
+#include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -82,7 +83,21 @@ extern "C" FILE *fopen(const char *pszPath, const char *pszMode) {
     // A stream to read is a copy of the file in a memory file, so that fileno() and fstat() work
     // on it as Python's import expects. ponytail: the open copies the whole file, which suits the
     // scripts and tables the game reads this way; a large file would want a streamed copy.
+#ifdef __PROSPERO__
+    // memfd_create is shared memory on the console (the SDK's shm_open(SHM_ANON)), which pwrite()
+    // and read() do not reach: every script came back empty (2026-11-23). An unlinked file in the
+    // title folder instead.
+    static unsigned s_nCopies;
+    char szCopy[64];
+    snprintf(szCopy, sizeof(szCopy), "/app0/.resonance-copy-%u",
+             __atomic_fetch_add(&s_nCopies, 1, __ATOMIC_RELAXED));
+    const int nCopy = open(szCopy, O_RDWR | O_CREAT | O_TRUNC, 0600);
+    if (nCopy >= 0) {
+        unlink(szCopy);
+    }
+#else
     const int nCopy = memfd_create("resonance-file", MFD_CLOEXEC);
+#endif
     char abBuffer[0x10000];
     off_t nSize = 0;
     ssize_t nRead;

@@ -306,16 +306,38 @@ static void OnCrash(int nSignal, siginfo_t *pInfo, void *pContext) {
     _Exit(128 + nSignal);
 }
 
+// On exit() the writer thread is killed with the pipe's last lines unwritten (often the reason for
+// the exit): close the pipe's write ends so it reads to the end, and wait for it.
+static pthread_t g_writer;
+static void DrainLog(void) {
+    fflush(NULL);
+    close(fileno(stdout));
+    pthread_join(g_writer, NULL);
+}
+
 __attribute__((constructor(100))) static void StartTitle(void) {
-    g_nLog = open(LOG_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    g_nLog = open(LOG_PATH, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0644);
+    Report("PS5: title started\n");
+    // The console's stdio writes to no file descriptor until reopened onto a file (as Perfect
+    // Eye's open_log does). stderr (errors and the host's few lines) stays on the file itself,
+    // unbuffered, so the last line before the system kills the title is not lost; stdout then
+    // moves onto the pipe.
+    if (freopen(LOG_PATH, "a", stderr) != NULL) {
+        setvbuf(stderr, NULL, _IONBF, 0);
+    }
+    // host/core/settings.c reads it next (priority 101).
+    setenv("FREQ_CONFIG", TITLE_DIR "/frequency.ini", 0);
+}
+
+// The rest waits for main (host/core/main.cpp), as Perfect Eye's ps5PlatformInit does: a thread
+// or a signal handler set up from a constructor ended the title before main (2026-11-23).
+void HostStartTitle(void) {
     int anPipe[2];
-    pthread_t writer;
-    if (g_nLog >= 0 && pipe(anPipe) == 0) {
+    if (freopen(LOG_PATH, "a", stdout) != NULL && pipe(anPipe) == 0) {
         g_nPipe = anPipe[0];
-        if (pthread_create(&writer, NULL, WriteLog, NULL) == 0) {
-            pthread_detach(writer);
-            dup2(anPipe[1], STDOUT_FILENO);
-            dup2(anPipe[1], STDERR_FILENO);
+        if (pthread_create(&g_writer, NULL, WriteLog, NULL) == 0) {
+            dup2(anPipe[1], fileno(stdout));
+            atexit(DrainLog);
         }
         close(anPipe[1]);
     }
@@ -333,8 +355,7 @@ __attribute__((constructor(100))) static void StartTitle(void) {
         sigaction(anSignals[i], &action, NULL);
     }
 
-    // host/core/settings.c reads it next (priority 101).
-    setenv("FREQ_CONFIG", TITLE_DIR "/frequency.ini", 0);
+    fprintf(stderr, "PS5: logging and crash report set up\n");
 }
 
 // ---- the disc image and the memory card ----

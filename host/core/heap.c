@@ -36,8 +36,24 @@ void *HostMoreCore(ptrdiff_t nIncrement);
 #define HOST_HEAP_BASE 0x08000000U
 #define HOST_DMA_LIMIT 0x10000000U
 
-static __thread int t_nSystemHeapDepth;
 static pthread_once_t s_systemHeapOnce = PTHREAD_ONCE_INIT;
+#ifdef __PROSPERO__
+// A PS5 title's thread-local variables are emulated (__emutls_get_address), and the emulation
+// allocates them with malloc, which read the depth: a stack overflow before main (2026-11-23).
+// A pthread key instead; the console's libkernel keeps its values with its own allocator.
+static pthread_key_t s_depthKey;
+static int s_bDepthKey;
+static int SystemHeapDepth(void) {
+    return s_bDepthKey ? (int)(intptr_t)pthread_getspecific(s_depthKey) : 0;
+}
+static void AddSystemHeapDepth(int nAdd) {
+    pthread_setspecific(s_depthKey, (void *)(intptr_t)(SystemHeapDepth() + nAdd));
+}
+#else
+static __thread int t_nSystemHeapDepth;
+#define SystemHeapDepth() t_nSystemHeapDepth
+#define AddSystemHeapDepth(nAdd) (t_nSystemHeapDepth += (nAdd))
+#endif
 static void *(*s_pfnSystemMalloc)(size_t);
 static void *(*s_pfnSystemCalloc)(size_t, size_t);
 static void *(*s_pfnSystemRealloc)(void *, size_t);
@@ -70,6 +86,7 @@ static void FindSystemHeap(void) {
     s_pfnSystemMemalign = ps5_title_memalign;
     s_pfnSystemFree = ps5_title_free;
     s_pfnSystemUsableSize = ps5_title_malloc_usable_size;
+    s_bDepthKey = pthread_key_create(&s_depthKey, NULL) == 0;
 }
 #else
 // The lookups allocate from the low heap, as the thread has not switched yet.
@@ -86,7 +103,7 @@ static void FindSystemHeap(void) {
 /** Switch the calling thread to the C library's heap (nonzero) or back. The calls nest. */
 void HostUseSystemHeap(int bOn) {
     pthread_once(&s_systemHeapOnce, FindSystemHeap);
-    t_nSystemHeapDepth += bOn ? 1 : -1;
+    AddSystemHeapDepth(bOn ? 1 : -1);
 }
 
 static int IsLowBlock(const void *pBlock) {
@@ -94,15 +111,15 @@ static int IsLowBlock(const void *pBlock) {
 }
 
 void *malloc(size_t nSize) {
-    return t_nSystemHeapDepth > 0 ? s_pfnSystemMalloc(nSize) : dlmalloc(nSize);
+    return SystemHeapDepth() > 0 ? s_pfnSystemMalloc(nSize) : dlmalloc(nSize);
 }
 
 void *calloc(size_t nCount, size_t nSize) {
-    return t_nSystemHeapDepth > 0 ? s_pfnSystemCalloc(nCount, nSize) : dlcalloc(nCount, nSize);
+    return SystemHeapDepth() > 0 ? s_pfnSystemCalloc(nCount, nSize) : dlcalloc(nCount, nSize);
 }
 
 void *memalign(size_t nAlignment, size_t nSize) {
-    return t_nSystemHeapDepth > 0 ? s_pfnSystemMemalign(nAlignment, nSize)
+    return SystemHeapDepth() > 0 ? s_pfnSystemMemalign(nAlignment, nSize)
                                   : dlmemalign(nAlignment, nSize);
 }
 
