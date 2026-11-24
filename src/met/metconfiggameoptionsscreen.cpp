@@ -455,6 +455,7 @@ constexpr float kGrowUp = 64.0f;
 constexpr float kGrowDown = 86.0f;
 constexpr float kLeftX = -148.0f;
 constexpr float kRightX = 312.0f;
+constexpr float kPillRightX = 296.0f; // clear of the scroll arrows and the panel's corners
 constexpr float kFirstLineZ = 106.0f;
 constexpr float kLinePitch = 26.0f;
 // A row's pill (its origin is off its centre), its arrows, and its value, at kRowScale of the
@@ -473,7 +474,6 @@ static const char *const kTitleText = "fst_title.txt";
 constexpr float kSeparatorZ = -146.0f;
 constexpr float kHelpZ = -156.0f;
 constexpr float kFooterZ = -200.0f;
-constexpr float kFooterRightX = 296.0f; // clear of the panel's rounded corner
 constexpr float kSmallScale = 0.7f;
 constexpr int kSelectedState = 1; // a Rnd::Button state, as MetButtonList sets it
 
@@ -620,7 +620,7 @@ void ShowPage() {
             Place(slot.pHeading, kAnchorLabel, kLeftX, flZ, kRowScale);
             const float flWidth =
                 slot.pHeading->GetFontWidth(pszHeading, static_cast<int>(strlen(pszHeading)));
-            PlaceRule(slot.pRule, kLeftX + flWidth * kRowScale + kHeadingGap, kRightX, flZ);
+            PlaceRule(slot.pRule, kLeftX + flWidth * kRowScale + kHeadingGap, kPillRightX, flZ);
         }
         if (!bRow) {
             continue;
@@ -739,7 +739,7 @@ void OpenPage() {
     pPosition->SetAlign(Rnd::Text::kTextAlignRight | Rnd::Text::kTextAlignMiddle);
     Place(pHelp, kAnchorLabel, kLeftX, kHelpZ, kSmallScale);
     Place(pApplies, kAnchorLabel, kLeftX, kFooterZ, kSmallScale);
-    Place(pPosition, kAnchorLabel, kFooterRightX, kFooterZ, kSmallScale);
+    Place(pPosition, kAnchorLabel, kPillRightX, kFooterZ, kSmallScale);
     PlaceRule(pSeparator, kLeftX, kRightX, kSeparatorZ);
     ScrollToSelection();
     ShowPage();
