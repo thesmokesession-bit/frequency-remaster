@@ -1,0 +1,33 @@
+concurrency:
+  cancel-in-progress: false
+  group: '${{ github.workflow }}-${{ github.ref_name }}'
+jobs:
+  publish:
+    name: 'Publish PS5 release'
+    permissions:
+      contents: 'write'
+    runs-on: 'ubuntu-latest'
+    steps:
+      - uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
+        with:
+          persist-credentials: false
+          ref: 'ps5-builds'
+      - env:
+          GH_TOKEN: '${{ github.token }}'
+          TAG: '${{ github.ref_name }}'
+        name: 'Publish the eboot from the ps5-builds branch'
+        run: |
+          # The updater matches the last nine characters of the tag to the build's version, so a
+          # stale eboot on ps5-builds must not be published under a new tag.
+          version="${TAG: -9}"
+          if ! strings eboot.bin | grep -qx "$version"; then
+            echo "eboot.bin on ps5-builds is not build ${version}." >&2
+            exit 1
+          fi
+          gh release create "$TAG" eboot.bin --notes-file notes.md --title "$(head -n 1 title.txt)" \
+            --repo "$GITHUB_REPOSITORY" --verify-tag
+name: 'PS5 release'
+'on':
+  push:
+    tags:
+      - 'ps5-*'
