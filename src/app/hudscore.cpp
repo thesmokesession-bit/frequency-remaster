@@ -12,6 +12,13 @@
 #include "rnd/mesh.h"
 #include "rnd/text.h"
 
+#ifdef RESONANCE_HOST
+extern "C" int HostGhostAt(int nScore); // host/core/progress.cpp
+#endif
+#ifndef RESONANCE_HOST
+#line 13
+#endif
+
 namespace {
 
 // Pending time that marks the readout as up to date.
@@ -52,6 +59,31 @@ HudScore::HudScore(Player *pPlayer, int nIndex) : mText(nullptr) {
 }
 
 void HudScore::Update(float flTime) {
+#ifdef RESONANCE_HOST
+    // FREQ_GHOST=1: the kept best run's score at this song tick, under the live score, which still
+    // redraws only once its change has settled. Solo games only, so one readout.
+    const int nGhost = HostGhostAt(mScore);
+    if (nGhost >= 0) {
+        static int s_nShownScore = 0;
+        static int s_nShownGhost = -1;
+        if (mChangeTime == kScoreChangeUntimed) {
+            mChangeTime = flTime;
+        }
+        if (mChangeTime != kScoreDrawn && flTime - mChangeTime > kRedrawDelay) {
+            s_nShownScore = mScore;
+            s_nShownGhost = -1;
+            mChangeTime = kScoreDrawn;
+        }
+        if (nGhost != s_nShownGhost) {
+            s_nShownGhost = nGhost;
+            mText->SetText(HxStr(Rnd::MakeString("%d\n%d", s_nShownScore, nGhost)));
+        }
+        return;
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 54
+#endif
     if (mChangeTime == kScoreDrawn) {
         return;
     }

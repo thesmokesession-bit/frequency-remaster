@@ -11,6 +11,25 @@
 #include "met/metstrings.h"
 #include "os/hxstr.h"
 
+#ifdef RESONANCE_HOST
+#include "met/metloadgamescreen.h"
+
+// host/core/progress.cpp: the kept best runs, and the achievements a won song can unlock.
+extern "C" int HostWatchBestRun(const char *pszLevel, int nDifficulty);
+extern "C" int HostReplayPending(void);
+extern "C" void HostResultsShown(void);
+
+namespace {
+
+// Square (the code MetCommandMap gives joypad button 4) watches the song's kept best run.
+constexpr int kCommandWatchBestRun = 8;
+
+} // namespace
+#endif
+#ifndef RESONANCE_HOST
+#line 12
+#endif
+
 namespace {
 
 // The screen name, from which the two animation view names are formatted.
@@ -97,6 +116,21 @@ void MetSoloWinScreen::OnExitFinished() {
         ++params.mDifficulty;
         Application::shared()->GetGameManager()->SetParams(params);
     }
+#ifdef RESONANCE_HOST
+    // The kept run plays as the attract demo does (MetLogoScreen::OnExitFinished()), and the game
+    // returns to the title screen after it.
+    if (HostReplayPending() != 0) {
+        static_cast<MetLoadGameScreen *>(FindScreenByName(HxStr(kLoadGameScreen)))->mDemoPlayback =
+            1;
+        PushNamedScreen(HxStr(kLoadGameScreen));
+        ActivateNamedPanel(HxStr(kLoadGameScreen));
+        mButtonList->SetSelected(kNoSelection);
+        return;
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 99
+#endif
     switch (mButtonList->mSelected) {
     case kContinueButtonIndex:
         PushNamedScreen(HxStr(kSoloStagesScreen));
@@ -118,6 +152,12 @@ void MetSoloWinScreen::OnExitFinished() {
 }
 
 void MetSoloWinScreen::EnterAndShow() {
+#ifdef RESONANCE_HOST
+    HostResultsShown();
+#endif
+#ifndef RESONANCE_HOST
+#line 120
+#endif
     mButtonList->Clear();
 
     HxStr continueLabel = MetConfigText(kMetStrEgswContinue, kPromptConfigCode, kContinuePrompt);
@@ -159,6 +199,18 @@ void MetSoloWinScreen::HandleCommand(const MetScreenCommand *pCommand) {
         MetHelpScreen::SetText(mHelpKeys[mButtonList->mSelected], mRenderer->mAnimationFrame);
         break;
 
+#ifdef RESONANCE_HOST
+    case kCommandWatchBestRun: {
+        const GameParams *pParams = Application::shared()->GetGameManager()->GetParams();
+        if (HostWatchBestRun(pParams->mLevelName.mStr, pParams->mDifficulty) == 0) {
+            break;
+        }
+        [[fallthrough]]; // and leaves as a selection does
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 161
+#endif
     case kMetScreenCommandSelect:
         ActivateNamedPanel(HxStr(kNoName));
         StartRepeatingSound(mRenderer->mAnimationFrame,

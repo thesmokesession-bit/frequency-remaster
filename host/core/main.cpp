@@ -18,6 +18,8 @@ int GameMain();
 extern "C" void HostAudioStart(); // host/audio/audio.cpp
 extern "C" void HostOnlineStart(); // host/net/online.cpp
 extern "C" int HostOnlineSelfTest(); // host/net/netgame.cpp
+extern "C" int HostBoardSelfTest();  // host/net/online.cpp
+extern "C" void HostProgressStart(); // host/core/progress.cpp
 
 extern "C" {
 // The start of the executable's writable data, from the C start-up file, and its end.
@@ -184,6 +186,9 @@ void *RunGame(void *pSelfTest) {
     if (pszSelfTest != nullptr && strcmp(pszSelfTest, "online") == 0) {
         return reinterpret_cast<void *>(static_cast<intptr_t>(HostOnlineSelfTest()));
     }
+    if (pszSelfTest != nullptr && strcmp(pszSelfTest, "board") == 0) {
+        return reinterpret_cast<void *>(static_cast<intptr_t>(HostBoardSelfTest()));
+    }
     fprintf(stderr, "GAME_MAIN_REACHED\n");
     return reinterpret_cast<void *>(static_cast<intptr_t>(GameMain()));
 }
@@ -227,6 +232,9 @@ int main() {
         fprintf(stderr, "host: audio started\n");
     }
     HostOnlineStart(); // FREQ_ONLINE_ROOM: its threads, from here as the PS5 needs
+    if (pszSelfTest == nullptr) {
+        HostProgressStart(); // the achievements list, and the FREQ_BOARD thread
+    }
 
     // The game runs on _stack, as the Emotion Engine's main thread does.
     pthread_attr_t attributes;

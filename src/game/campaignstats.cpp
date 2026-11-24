@@ -6,6 +6,14 @@
 #include "met/albumcache.h"
 #include "met/metsonglists.h"
 
+#ifdef RESONANCE_HOST
+// host/core/progress.cpp: a new high score keeps the run's recording.
+extern "C" void HostNewBest(const char *pszLevel, int nDifficulty, int nScore, int nOldScore);
+#endif
+#ifndef RESONANCE_HOST
+#line 7
+#endif
+
 namespace {
 
 constexpr int kRecordVersion = 2;
@@ -106,6 +114,12 @@ void CampaignStats::RecordLevelBeaten(int nDifficulty, const HxStr &name) {
 void CampaignStats::RecordHighScore(int nDifficulty, const HxStr &name, int nScore) {
     SkillStats &skill = mLevels[FindLevelIndex(name)].mSkills[nDifficulty];
     if (skill.mHighScore < nScore) {
+#ifdef RESONANCE_HOST
+        HostNewBest(name.mStr, nDifficulty, nScore, skill.mHighScore);
+#endif
+#ifndef RESONANCE_HOST
+#line 108
+#endif
         skill.mHighScore = nScore;
         RecountStageScore(nDifficulty, GetAlbumLevelStage(name));
     }

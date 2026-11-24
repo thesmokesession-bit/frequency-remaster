@@ -144,3 +144,14 @@
 # How early the beat rumble starts, in ms (default 90, tuned for the DualShock 2's motors; the
 # page offers 0 to 180 in 10 ms steps). Lower it if the pulse lands after the beat.
 #FREQ_RUMBLE_LEAD_MS=60
+
+# Best runs: every solo song is recorded, and a new high score keeps the run in replays/ in the
+# title folder (one per song and difficulty). Square on the results screen plays it back.
+# FREQ_GHOST=1 shows the kept run's score at the same point of the song, the number under yours.
+#FREQ_GHOST=1
+# Achievements (25) are listed in achievements.txt in the title folder; each pops a notification.
+# A friends board: machines with the same board code share their best score per song, through
+# ntfy.sh as online play does (FREQ_ONLINE_SIGNAL applies; the name is FREQ_ONLINE_NAME, or the
+# Freq's name). Anyone with the code can post any score, so give it to friends only. A notification
+# shows your rank after each new best; a post goes out at most every 6 minutes.
+#FREQ_BOARD=green tunnel scores

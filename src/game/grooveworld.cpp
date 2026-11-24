@@ -508,6 +508,16 @@ void GrooveWorld::PostExit(int nMode, int bContinueJukebox, int bRestart) {
 }
 
 void GrooveWorld::Exit(int nMode, int bContinueJukebox, int bRestart) {
+#ifdef RESONANCE_HOST
+    // A playback ends at the recording's ExitCmd or at the viewer's button (PostExit()), and a
+    // kept best run always holds an ExitCmd: the second of the two would end the game twice.
+    if (mExitMode != 0 && mApp->GetGameManager()->IsPlaybackActive() != 0) {
+        return;
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 455
+#endif
     mExitMode = nMode;
     mContinueJukebox = bContinueJukebox;
     mRestart = bRestart;
