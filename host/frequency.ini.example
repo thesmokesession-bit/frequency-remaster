@@ -45,6 +45,10 @@
 # Unlock all: every arena and stage open from the start, as the game's own cheat opens them; unlike
 # the cheat, progress and high scores still save (1 = on).
 #FREQ_UNLOCK_ALL=1
+# Auto-pause, on by default: a song pauses itself, as with Start, when a player's controller
+# disconnects, and on the PS5 when the PS button or a system overlay covers the game or the console
+# wakes from rest mode. Never in network play (0 = off).
+#FREQ_AUTOPAUSE=0
 
 # Practice mode: every song is a practice run, the game's own practice mode (no juice drain; no
 # score or progress saved). Select restarts the song at once. Setting a speed or a loop turns it on.

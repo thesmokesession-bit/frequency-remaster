@@ -14,6 +14,14 @@
 #include "sch/command.h"
 #include "script/scripthost.h"
 
+#ifdef RESONANCE_HOST
+#include <atomic>
+#include <stdlib.h>
+#include <string.h>
+#endif
+#ifndef RESONANCE_HOST
+#line 16
+#endif
 namespace {
 
 // The button bits of the word BreugPadRead() reports, one per control. The word has the report's
@@ -131,7 +139,31 @@ public:
     }
 };
 
+#ifdef RESONANCE_HOST
+// HostAutoPause()'s requests: bit 0 the system, bit n player n's controller.
+std::atomic<unsigned> g_dwAutoPause;
+#endif
+#ifndef RESONANCE_HOST
+#line 132
+#endif
+
 } // namespace
+
+#ifdef RESONANCE_HOST
+// FREQ_AUTOPAUSE (on unless 0): host/io/pad.cpp reports player n's controller leaving (n from 1),
+// host/ps5/ps5.c the system UI over the game or a rest-mode gap (0). The next ReadControllers()
+// pauses the song as for a pad pulled out, outside network play.
+extern "C" void HostAutoPause(int nPlayer) {
+    static const bool s_bOn =
+        getenv("FREQ_AUTOPAUSE") == nullptr || strcmp(getenv("FREQ_AUTOPAUSE"), "0") != 0;
+    if (s_bOn && nPlayer >= 0 && nPlayer < 32) {
+        g_dwAutoPause.fetch_or(1u << nPlayer);
+    }
+}
+#endif
+#ifndef RESONANCE_HOST
+#line 134
+#endif
 
 InputPoller::InputPoller()
     : mNextJoypadId(0), mBytePairs(KeyboardMgr::shared()), mUnusedWord(0), mUnusedFlag(1),
@@ -307,6 +339,23 @@ void InputPoller::ReadControllers() {
     GameManagerImpl *pGameManager = Application::shared()->GetGameManager();
     GrooveWorld *pWorld = Application::shared()->GetWorld();
     mBusyJoypadSeen = 0;
+
+#ifdef RESONANCE_HOST
+    // A request from the system, or from a controller of a player in the game.
+    const unsigned dwAutoPause = g_dwAutoPause.exchange(0);
+    if (dwAutoPause != 0 && mGameInputEnabled && pWorld != nullptr &&
+        pWorld->mState == kWorldStateAcceptingReadings && !mPaused &&
+        Application::shared()->GetGameMode() != kGameModeNet &&
+        (dwAutoPause & ((2u << pWorld->mLocalPlayers.size()) - 1)) != 0) {
+        PauseGameSystemMsg pause;
+        pGameManager->QueueMessage(&pause);
+        pWorld->mInputMap->StopAllRiffs();
+        mPaused = 1;
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 309
+#endif
 
     for (auto it = mJoypads.begin(); it != mJoypads.end(); ++it, ++nIndex) {
         unsigned int dwButtons;

@@ -99,6 +99,7 @@ pthread_once_t g_scriptOnce = PTHREAD_ONCE_INIT;
 int g_nPlayers = 1; // pads the script plays; above 2, through a multitap in port 1
 
 extern "C" void HostDumpTexRefs() __attribute__((weak));
+extern "C" void HostAutoPause(int nPlayer); // src/game/inputpollerps2.cpp: FREQ_AUTOPAUSE
 
 unsigned ParseButtons(const char *pszButtons, int nLine) {
     unsigned nButtons = 0;
@@ -292,6 +293,7 @@ void UpdateControllers() {
     for (int p = 0; p < kMaxPlayers; ++p) {
         if (g_controllers[p] != nullptr && !SDL_GameControllerGetAttached(g_controllers[p])) {
             fprintf(stderr, "host: player %d's controller left\n", p + 1);
+            HostAutoPause(p + 1);
             SDL_GameControllerClose(g_controllers[p]);
             g_controllers[p] = nullptr;
             bChanged = true;
