@@ -216,9 +216,12 @@ void DeriveKeys(const char *pszRoom, Session *pSession) {
     std::transform(room.begin(), room.end(), room.begin(), [](unsigned char c) {
         return static_cast<char>(tolower(c));
     });
-    const std::string seed = "frequency-online-1:" + room;
+    // Stretched (PBKDF2, 200000 rounds, a fixed salt every machine shares): the topic name is public,
+    // and a single hash of a short code could be guessed from it offline.
+    static const char kSalt[] = "frequency-online-1";
     unsigned char abBase[32];
-    SHA256(reinterpret_cast<const unsigned char *>(seed.data()), seed.size(), abBase);
+    PKCS5_PBKDF2_HMAC(room.data(), static_cast<int>(room.size()), reinterpret_cast<const unsigned char *>(kSalt),
+                      sizeof(kSalt) - 1, 200000, EVP_sha256(), sizeof(abBase), abBase);
     Hmac(abBase, "datagram", 8, pSession->abMacKey);
     Hmac(abBase, "signal", 6, pSession->abSignalKey);
     unsigned char abTopic[32];
