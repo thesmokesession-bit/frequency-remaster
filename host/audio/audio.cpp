@@ -451,9 +451,13 @@ void SpeakerGains(float flAzimuth, float *pGains) {
         ++i;
     }
     const float t = (flAngle - kAngles[i]) / (kAngles[i + 1] - kAngles[i]) * 1.5707963f;
+    // The SPU's level is the power of both volumes: a voice the stereo mix centres at 0.75 a side
+    // would reach 1.06 on one speaker. At 0.707 of it a speaker peaks as a stereo side did, so the
+    // already hot mix clips no more than it does in stereo.
+    constexpr float kHeadroom = 0.70710678f;
     std::fill(pGains, pGains + 6, 0.0f);
-    pGains[kSpeakers[i]] += cosf(t);
-    pGains[kSpeakers[i + 1]] += sinf(t);
+    pGains[kSpeakers[i]] += kHeadroom * cosf(t);
+    pGains[kSpeakers[i + 1]] += kHeadroom * sinf(t);
 }
 
 // Places the voice of every sounding note whose channel a track's mixer drives, for the lane now,
