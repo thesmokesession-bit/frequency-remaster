@@ -31,6 +31,7 @@ set_source_files_properties(
 add_executable(
   resonance_host
   core/cycles.cpp
+  core/extras.cpp
   core/heap.c
   core/libc.c
   core/main.cpp
@@ -54,6 +55,9 @@ add_executable(
   "${CMAKE_SOURCE_DIR}/sce/ee/src/libvifpk.c"
   "${CMAKE_SOURCE_DIR}/sce/ee/src/libvu0.c"
   "${CMAKE_SOURCE_DIR}/sce/ee/src/msin.c")
+# The EXTRAS screen adds its prompts to the script's help strings.
+target_include_directories(resonance_host PRIVATE "${CMAKE_SOURCE_DIR}/src/python/PC"
+                                                  "${CMAKE_SOURCE_DIR}/3rdparty/Python-2.0/Include")
 # dlmalloc is compiled as released.
 set_source_files_properties(core/heap.c PROPERTIES COMPILE_OPTIONS -w)
 set_source_files_properties(

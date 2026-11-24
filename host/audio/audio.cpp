@@ -1155,9 +1155,11 @@ const PracticeSettings &Practice() {
     return s_settings;
 }
 bool g_bPracticeArmed = false;
-struct {
+struct PracticeLoop {
     int nKind, nFirst, nEnd;
-} g_practiceLoop; // the armed song's loop: Practice()'s, until its phrases are bars
+};
+PracticeLoop g_practiceLoop; // the armed song's loop: Practice()'s, until its phrases are bars
+PracticeLoop g_pauseLoop;    // the pause menu's loop, used in its place until the song is quit
 } // namespace
 
 // GrooveWorld::PrepareLevel(): whether the song about to play is a practice run. The attract demo
@@ -1165,14 +1167,17 @@ struct {
 int HostPracticeArm(int bPlayback) {
     g_bPracticeArmed =
         Practice().bOn && (bPlayback == 0 || getenv("FREQ_TEST_PRACTICE_DEMO") != nullptr);
-    g_practiceLoop = {Practice().nLoopKind, Practice().nLoopFirst, Practice().nLoopEnd};
+    g_practiceLoop =
+        g_pauseLoop.nKind != 0 ?
+            g_pauseLoop :
+            PracticeLoop{Practice().nLoopKind, Practice().nLoopFirst, Practice().nLoopEnd};
     if (g_bPracticeArmed) {
         fprintf(stderr,
                 "PRACTICE_ARMED speed=%.2f loop=%d:%d-%d\n",
                 Practice().flSpeed,
-                Practice().nLoopKind,
-                Practice().nLoopFirst,
-                Practice().nLoopEnd);
+                g_practiceLoop.nKind,
+                g_practiceLoop.nFirst,
+                g_practiceLoop.nEnd);
     }
     return g_bPracticeArmed;
 }
@@ -1182,17 +1187,22 @@ void HostPracticeSpeed(int bOn) {
     g_flSpeed.store(bOn != 0 ? Practice().flSpeed : 1.0f);
 }
 
-// The song has ended: normal speed, and the next song is not practice until armed.
-void HostPracticeEnd() {
+// The song has ended, to start again when bRestart is set. The clock returns to normal speed, and
+// the next song is not practice until armed. The pause menu's loop lasts until the song is quit.
+void HostPracticeEnd(int bRestart) {
     HostPracticeSpeed(0);
     g_bPracticeArmed = false;
+    if (bRestart == 0) {
+        g_pauseLoop = {};
+    }
 }
 
 int HostPracticeArmed() {
     return g_bPracticeArmed;
 }
 
-// The practice loop of the armed song: 1 for bars, 2 for phrases, [*pFirst, *pEnd) from 0; or 0.
+// The practice loop of the armed song: 1 for bars, 2 for phrases, [*pFirst, *pEnd) from 0, 3 for
+// the phrase at bar *pFirst; or 0.
 int HostPracticeLoop(int *pFirst, int *pEnd) {
     if (!g_bPracticeArmed || g_practiceLoop.nKind == 0) {
         return 0;
@@ -1200,6 +1210,20 @@ int HostPracticeLoop(int *pFirst, int *pEnd) {
     *pFirst = g_practiceLoop.nFirst;
     *pEnd = g_practiceLoop.nEnd;
     return g_practiceLoop.nKind;
+}
+
+// Loop Section and Next Section in the pause menu (src/met/metpausesologamescreen.cpp) restart a
+// practice run with a loop. The run repeats the phrase that plays at time bar nBar, or the phrase
+// after the current loop when one is set (kind 3 until PlayMapLinear makes it bars). Returns
+// whether the practice run takes the loop.
+int HostPracticeLoopHere(int nBar) {
+    if (!g_bPracticeArmed) {
+        return 0;
+    }
+    const int nFrom = g_practiceLoop.nKind == 1 ? g_practiceLoop.nEnd : nBar;
+    fprintf(stderr, "PRACTICE_LOOP_HERE bar %d\n", nFrom + 1);
+    g_pauseLoop = {3, nFrom, nFrom + 1};
+    return 1;
 }
 
 // The first bar a practice loop repeats, whose phrases come back uncaught (PhraseMgr), or INT_MAX.

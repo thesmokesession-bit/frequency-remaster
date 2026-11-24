@@ -2,9 +2,12 @@
 // (src/game/gamerecorder.cpp); a new high score keeps it as replays/<level>-<difficulty>.rec in the
 // title folder (the folder of FREQ_CONFIG: /app0 on the PS5), with the run's score at each change
 // as replays/<level>-<difficulty>.ghost ("<song tick> <score>" lines). Square on the solo results
-// screen plays the kept run back through the attract demo's path. FREQ_GHOST=1 shows the kept run's
-// score at the same song tick under the live score. Achievements are kept in achievements.txt in
-// the title folder and pop as notifications (a log line on Linux).
+// screen, or Cross on the run in Options > EXTRAS > BEST RUNS (host/core/extras.cpp), plays the
+// saved run back through the attract demo's path. FREQ_GHOST=1 shows the kept run's score at the
+// same song tick under the live score. Achievements are kept in achievements.txt in the title
+// folder, pop as notifications (a log line on Linux), and are listed in Options > EXTRAS.
+
+#include "progress.h"
 
 #include <algorithm>
 #include <fcntl.h>
@@ -101,6 +104,13 @@ bool WriteFile(const std::string &path, const std::string &data) {
         write(nFile, data.data(), data.size()) == static_cast<ssize_t>(data.size());
     close(nFile);
     return bWritten && rename(temporary.c_str(), path.c_str()) == 0;
+}
+
+// The score a saved run ended with (the last line of its .ghost file), or -1 without a saved run.
+int KeptScore(const std::string &level, int nDifficulty) {
+    const std::string kept = ReadFile(RunPath(level, nDifficulty, ".ghost"));
+    const size_t nLast = kept.rfind(' ');
+    return nLast != std::string::npos ? atoi(kept.c_str() + nLast + 1) : -1;
 }
 
 int SongTick() {
@@ -230,6 +240,29 @@ std::string HostTitleFile(const char *pszName) {
     return Folder() + "/" + pszName;
 }
 
+std::vector<HostAchievement> HostAchievementList() {
+    const std::string text = ReadFile(AchievementsPath());
+    std::vector<HostAchievement> list;
+    for (const Achievement &achievement : kAchievements) {
+        list.push_back({achievement.pszTitle, Unlocked(text, achievement.pszId)});
+    }
+    return list;
+}
+
+std::vector<HostBestRun> HostBestRuns() {
+    std::vector<HostBestRun> runs;
+    for (const HxStr &name : GetLevelNames()) {
+        const std::string level = name.mStr != nullptr ? name.mStr : "";
+        for (int nDifficulty = 0; nDifficulty < 3; ++nDifficulty) {
+            const int nScore = KeptScore(level, nDifficulty);
+            if (nScore >= 0 && access(RunPath(level, nDifficulty, ".rec").c_str(), R_OK) == 0) {
+                runs.push_back({level, nDifficulty, nScore});
+            }
+        }
+    }
+    return runs;
+}
+
 extern "C" {
 
 // From main(): the achievements list in the log, and the friends board.
@@ -350,9 +383,7 @@ void HostNewBest(const char *pszLevel, int nDifficulty, int nScore, int nOldScor
         g_run.nDifficulty != nDifficulty) {
         return;
     }
-    const std::string kept = ReadFile(RunPath(pszLevel, nDifficulty, ".ghost"));
-    const size_t nLast = kept.rfind(' ');
-    const int nKeptScore = nLast != std::string::npos ? atoi(kept.c_str() + nLast + 1) : -1;
+    const int nKeptScore = KeptScore(pszLevel, nDifficulty);
     if (nScore <= nKeptScore) {
         fprintf(stderr,
                 "replay: the kept run of %s-%d (%d) stays\n",

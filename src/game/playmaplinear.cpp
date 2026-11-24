@@ -226,10 +226,23 @@ int PlayMapLinear::GetPatternSection(int nIndex) {
 #ifdef RESONANCE_HOST
 // Practice loop: from the loop's end on, time bars play the loop's bars again, so the music, the
 // gems and the phrases (all mapped through here) repeat while the song clock runs on. A loop of
-// phrases, the entries of the song's recorded pattern, becomes the bars they span.
+// phrases, the entries of the song's recorded pattern, becomes the bars they span, and so does the
+// phrase that plays at a bar (the pause menu's Loop Section).
 int PlayMapLinear::PracticeBar(int nBar) {
     int nFirst, nEnd;
-    const int nKind = HostPracticeLoop(&nFirst, &nEnd);
+    int nKind = HostPracticeLoop(&nFirst, &nEnd);
+    if (nKind == 3) {
+        int nPhrase = 0;
+        for (int nPhraseEnd = 0; nPhrase + 1 < static_cast<int>(mPattern.size()); ++nPhrase) {
+            nPhraseEnd += mSectionLengths[mPattern[nPhrase].mSection] * mPattern[nPhrase].mRepeats;
+            if (nFirst < nPhraseEnd) {
+                break;
+            }
+        }
+        nFirst = nPhrase;
+        nEnd = nPhrase + 1;
+        nKind = 2;
+    }
     if (nKind == 2) {
         int nFirstBar = 0;
         int nEndBar = 0;

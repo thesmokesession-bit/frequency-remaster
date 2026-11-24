@@ -12,6 +12,16 @@
 #include "rnd/button.h"
 #include "rnd/manager.h"
 #include "rnd/view.h"
+#ifdef RESONANCE_HOST
+
+// The EXTRAS screen (host/core/extras.cpp) that the fifth button opens on the host, and the help
+// line of the button.
+void HostOpenExtras(MetScreen *pFrom, MetRenderer *pRenderer);
+HxStr HostExtrasPrompt();
+#endif
+#ifndef RESONANCE_HOST
+#line 14
+#endif
 
 namespace {
 
@@ -140,6 +150,21 @@ void MetConfigOptionsButtonsScreen::EnterAndShow() {
     if (bDiscButton) {
         mHelpKeys.push_back(MetText(kMetStrHNobDiskChange, kDiscPrompt));
     }
+#ifdef RESONANCE_HOST
+    // The host has no expansion disc, and the fifth button is EXTRAS.
+    dynamic_cast<Rnd::View *>(Rnd::TheManager.Find(HxStr(kFiveButtonFrame)))->SetShowing(1);
+    dynamic_cast<Rnd::View *>(Rnd::TheManager.Find(HxStr(kFourButtonFrame)))->SetShowing(0);
+    if (bDiscButton == 0) {
+        mOptionButtons->Add(HxStr(kDiscButton), HxStr(""));
+        mHelpKeys.push_back(HxStr(""));
+    }
+    mOptionButtons->GetButton(static_cast<int>(mHelpKeys.size()) - 1)
+        ->mText->SetText(HxStr("EXTRAS"));
+    mHelpKeys.back() = HostExtrasPrompt();
+#endif
+#ifndef RESONANCE_HOST
+#line 142
+#endif
 
     mOptionButtons->SetSelected(kFirstButton);
     mControllerIndex = kFirstController;
@@ -181,6 +206,15 @@ void MetConfigOptionsButtonsScreen::OnExitFinished() {
     }
 
     HxStr name(mOptionButtons->mSelectedButton->mName);
+#ifdef RESONANCE_HOST
+    if (name == kDiscButton) {
+        HostOpenExtras(this, mRenderer);
+        return;
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 183
+#endif
     if (name == kControllerButton) {
         // Yes, the binary does not test the cast for null.
         dynamic_cast<MetConfigControllerScreen *>(FindScreenByName(HxStr(kControllerScreen)))
