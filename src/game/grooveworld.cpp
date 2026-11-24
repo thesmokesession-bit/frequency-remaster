@@ -77,7 +77,7 @@
 // host/audio/audio.cpp: practice mode (FREQ_PRACTICE...).
 extern "C" int HostPracticeArmed(void);
 extern "C" void HostPracticeSpeed(int bOn);
-extern "C" void HostPracticeEnd(void);
+extern "C" void HostPracticeEnd(int bRestart);
 extern "C" int HostWatch(void); // src/game/catcher.cpp: FREQ_WATCH
 #endif
 #ifndef RESONANCE_HOST
@@ -862,7 +862,7 @@ void GrooveWorld::StartSequencers() {
 
 void GrooveWorld::FinishSong() {
 #ifdef RESONANCE_HOST
-    HostPracticeEnd();
+    HostPracticeEnd(mRestart);
 #endif
 #ifndef RESONANCE_HOST
 #line 790

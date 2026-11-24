@@ -9,6 +9,70 @@
 #include "os/hxstr.h"
 #include "rnd/manager.h"
 #include "rnd/text.h"
+#ifdef RESONANCE_HOST
+#include "game/grooveworld.h"
+#include "gfx/hostframe.h"
+#include "sch/tickclock.h"
+
+extern "C" void HostPhotoStart();                        // host/io/pad.cpp
+extern "C" int HostPracticeArmed(void);                  // host/audio/audio.cpp
+extern "C" int HostPracticeLoop(int *pFirst, int *pEnd); // host/audio/audio.cpp
+extern "C" int HostPracticeLoopHere(int nBar);           // host/audio/audio.cpp
+
+namespace {
+
+// The host adds two rows, Photo Mode on L1 and, while practising, Loop Section on R1. Loop Section
+// restarts the song with the playing phrase looped (Next Section once a loop is set, to loop the
+// phrase after it). Each row is a copy of the last row's label with its button drawn from the
+// controller font ("e" is L1 and "g" is R1 in the help strings' glyph letters). The rows are
+// spread between the first and last of the original five.
+constexpr int kCommandPhotoMode = 11;   // L1
+constexpr int kCommandLoopSection = 13; // R1
+const char *const kGlyphTexts[] = {"psgr_start.txt",
+                                   "psgr_triangle.txt",
+                                   "psgr_x.txt",
+                                   "psgr_square.txt",
+                                   "psgr_circle.txt",
+                                   "psgr_l1.txt",
+                                   "psgr_r1.txt"};
+const char *const kNewGlyphs[] = {"e", "g"};
+const char *const kNewLabels[] = {"psgr_opt6.txt", "psgr_opt7.txt"};
+constexpr int kHostRowCount = 7;
+constexpr float kTicksPerBar = 1920.0f;
+float g_flFirstRow;
+float g_flLastRow;
+
+Rnd::Text *FindText(const char *pszName) {
+    return dynamic_cast<Rnd::Text *>(Rnd::TheManager.Find(HxStr(pszName)));
+}
+
+// A copy of pSource under pszName, drawn and moved with it.
+Rnd::Text *CopyText(Rnd::Text *pSource, const char *pszName) {
+    Rnd::Text *pCopy = FindText(pszName);
+    if (pCopy != nullptr) {
+        return pCopy;
+    }
+    pCopy = Rnd::Text::sNew(HxStr(pszName));
+    pCopy->Copy(pSource, 0);
+    if (Rnd::Drawable *pDrawParent = pSource->Drawable::Parent()) {
+        pDrawParent->AddDraw(pCopy, pSource);
+    }
+    if (Rnd::Transformable *pTransParent = pSource->Transformable::Parent()) {
+        pTransParent->AddTrans(pCopy);
+    }
+    return pCopy;
+}
+
+HxStr LoopLabel() {
+    int nFirst, nEnd;
+    return HxStr(HostPracticeLoop(&nFirst, &nEnd) != 0 ? "Next Section" : "Loop Section");
+}
+
+} // namespace
+#endif
+#ifndef RESONANCE_HOST
+#line 11
+#endif
 
 namespace {
 
@@ -60,6 +124,19 @@ void MetPauseSoloGameScreen::ResolveContainerViews() {
             Rnd::TheManager.Find(HxStr(Rnd::MakeString(kOptionTextFormat, i))));
         mOptionTexts.push_back(pOption);
     }
+#ifdef RESONANCE_HOST
+    g_flFirstRow = mOptionTexts.front()->mLocalXfm[3][2];
+    g_flLastRow = mOptionTexts.back()->mLocalXfm[3][2];
+    Rnd::Text *pLabel = mOptionTexts.back();
+    Rnd::Text *pGlyph = FindText(kGlyphTexts[kOptionCount - 1]);
+    for (int i = 0; i < kHostRowCount - kOptionCount; ++i) {
+        mOptionTexts.push_back(CopyText(pLabel, kNewLabels[i]));
+        CopyText(pGlyph, kGlyphTexts[kOptionCount + i])->SetText(HxStr(kNewGlyphs[i]));
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 62
+#endif
 }
 
 void MetPauseSoloGameScreen::HandleCommand(const MetScreenCommand *pCommand) {
@@ -79,6 +156,24 @@ void MetPauseSoloGameScreen::HandleCommand(const MetScreenCommand *pCommand) {
         mExitAction = kExitGameOptions;
         mLeavingForConfig = 1;
         break;
+#ifdef RESONANCE_HOST
+    case kCommandPhotoMode:
+        PlayPauseSound(pCommand->mPadIndex);
+        HostPhotoStart();
+        return;
+    case kCommandLoopSection: {
+        Sch::TickClock *pClock = Application::shared()->GetWorld()->GetSongClock();
+        if (HostPracticeLoopHere(static_cast<int>(pClock->SongTick() / kTicksPerBar)) == 0) {
+            return;
+        }
+        PlayPauseSound(pCommand->mPadIndex);
+        mExitAction = kExitRestart; // a practice run restarts at once, now with the loop
+        break;
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 81
+#endif
     case kCommandIgnored:
     default:
         return;
@@ -110,11 +205,35 @@ void MetPauseSoloGameScreen::EnterAndShow() {
                        kLabelsConfigCode,
                        params.mPlayMode == kPlayModeGame ? kGameLabelsKey : kRemixLabelsKey);
 #endif
+#ifdef RESONANCE_HOST
+    mOptionLabels.resize(kOptionCount);
+    mOptionLabels.push_back(HxStr("Photo Mode"));
+    mOptionLabels.push_back(HostPracticeArmed() != 0 ? LoopLabel() : HxStr(""));
+#endif
+#ifndef RESONANCE_HOST
+#line 112
+#endif
     // Yes, the binary copies the labels here and again in the base slot.
     for (int i = 0; i < kOptionCount; ++i) {
         mOptionTexts[i]->SetText(mOptionLabels[i]);
     }
     MetPauseBaseScreen::EnterAndShow();
+#ifdef RESONANCE_HOST
+    const int nRows = HostPracticeArmed() != 0 ? kHostRowCount : kHostRowCount - 1;
+    for (int i = 0; i < kHostRowCount; ++i) {
+        Rnd::Text *pGlyph = FindText(kGlyphTexts[i]);
+        const float flRow = g_flFirstRow + (g_flLastRow - g_flFirstRow) * i / (nRows - 1);
+        for (Rnd::Text *pText : {mOptionTexts[i], pGlyph}) {
+            pText->mLocalXfm[3][2] = flRow;
+            pText->mDirty = 1;
+            pText->SetShowing(i < nRows);
+        }
+    }
+    HostEvent("pause rows=%d", nRows);
+#endif
+#ifndef RESONANCE_HOST
+#line 117
+#endif
     mLeavingForConfig = 0;
 }
 

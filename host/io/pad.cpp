@@ -10,17 +10,19 @@
 // "<frame> <BUTTON>[+<BUTTON>...]" holds the buttons for kHoldFrames vertical blanks from that
 // blank. A test control for local multiplayer: "<frame> P<n>:<BUTTON>..." holds them on player n's
 // pad. P2 alone connects a second pad in port 2; P3 or P4 connect a multitap in port 1 instead,
-// with players 1 to 4 in its slots A to D. Without such entries only the pad in port 1 exists. Frames count from the start, or from the blank of the last "after <BREADCRUMB>" line's
-// breadcrumb (see HostBreadcrumb()); entries under an "after" line wait for its breadcrumb.
-// Test controls: LUP, LDOWN, LLEFT, LRIGHT and RUP... RRIGHT push the left or right stick fully that
-// way; TEXREFS (player 1) prints the loaded textures' referrers once (see HostDumpTexRefs());
-// TOUCHPAD clicks the DualSense touchpad. "<frame> SET <KEY>=<VALUE>" sets a setting for the rest
-// of the run at that blank, as the settings screens do.
+// with players 1 to 4 in its slots A to D. Without such entries only the pad in port 1 exists.
+// Frames count from the start, or from the blank of the last "after <BREADCRUMB>" line's breadcrumb
+// (see HostBreadcrumb()); entries under an "after" line wait for its breadcrumb. Test controls:
+// LUP, LDOWN, LLEFT, LRIGHT and RUP... RRIGHT push the left or right stick fully that way; TEXREFS
+// (player 1) prints the loaded textures' referrers once (see HostDumpTexRefs()); TOUCHPAD clicks
+// the DualSense touchpad. "<frame> SET <KEY>=<VALUE>" sets a setting for the rest of the run at
+// that blank, as the settings screens do.
 //
-// While a song is paused, the touchpad click (or R3) starts photo mode. It hides the HUD and the
-// pause menu and gives the tunnel camera to the sticks (the left orbits, the right zooms with up
-// and down). Cross saves the presented frame as a PNG (HostGfxPhoto()), and Circle, the touchpad,
-// or R3 ends photo mode. The game reads an idle pad meanwhile and until every button is released.
+// While a song is paused, the touchpad click (or R3, or the pause menu's Photo Mode) starts photo
+// mode. It hides the HUD and the pause menu and gives the tunnel camera to the sticks (the left
+// orbits, the right zooms with up and down). Cross saves the presented frame as a PNG
+// (HostGfxPhoto()), and Circle, the touchpad, or R3 ends photo mode. The game reads an idle pad
+// meanwhile and until every button is released.
 
 #include <algorithm>
 #include <cmath>
@@ -651,6 +653,7 @@ struct Photo {
     float flZoom;
 };
 Photo g_photo = {false, false, 0, 0, 0.0f, 0.0f, 1.0f};
+bool g_bPhotoRequested = false; // the pause menu's Photo Mode (HostPhotoStart())
 
 constexpr unsigned kButtonR3 = 0x0400;
 constexpr unsigned kButtonCircle = 0x0020;
@@ -704,9 +707,10 @@ void UpdatePhoto() {
     g_photo.nAt = nNow;
     if (!g_photo.bOn) {
         g_photo.bReleasing = g_photo.bReleasing && (nButtons & 0xffff) != 0;
-        if ((nPressed & (kTouchpad | kButtonR3)) == 0) {
+        if ((nPressed & (kTouchpad | kButtonR3)) == 0 && !g_bPhotoRequested) {
             return;
         }
+        g_bPhotoRequested = false;
         if (!TunnelDrawn(nNow, true)) {
             fprintf(stderr, "host: photo mode is for a paused song\n");
             return;
@@ -949,6 +953,12 @@ void HostPadTick(int nPlayer) {
                              kCatchTickMs);
     g_feel[nPlayer].bTick = true;
     g_feel[nPlayer].nTickEnd = SDL_GetTicks() + kCatchTickMs;
+}
+
+// The pause menu's Photo Mode (src/met/metpausesologamescreen.cpp) starts photo mode at the next
+// read, as the touchpad does.
+void HostPhotoStart() {
+    g_bPhotoRequested = true;
 }
 
 // TnlCameraRig::SetFrame() queries each frame whether photo mode runs, and if so the camera's turn
