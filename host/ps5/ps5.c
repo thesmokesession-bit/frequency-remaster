@@ -713,47 +713,88 @@ static size_t ToBuffer(void *pData, size_t nSize, size_t nCount, void *pUser) {
     return nAdd;
 }
 
-// GET pszUrl from GitHub's API into a buffer (pFile NULL) or a file. A redirect to the download's
-// host goes without the token: curl keeps an Authorization header to the host it was given.
+// GET pszUrl into a buffer (pFile NULL) or a file, following redirects here. Each host is looked
+// up through the console's resolver and given to curl (CURLOPT_RESOLVE), so curl's own threaded
+// resolver never runs: it crashed in Curl_async_is_resolved (SYSTEM_XO_VIOLATION, 2026-11-23).
+// The token goes to api.github.com only, not to the download host a redirect names.
 static int Fetch(const char *pszUrl, const char *pszAccept, Buffer *pBuffer, FILE *pFile) {
-    CURL *pCurl = curl_easy_init();
-    if (pCurl == NULL) {
-        return -1;
-    }
-    struct curl_slist *pHeaders = NULL;
-    char szHeader[512];
-    snprintf(szHeader, sizeof(szHeader), "Accept: %s", pszAccept);
-    pHeaders = curl_slist_append(pHeaders, szHeader);
-    pHeaders = curl_slist_append(pHeaders, "X-GitHub-Api-Version: 2022-11-28");
-    const char *pszToken = getenv("FREQ_UPDATE_TOKEN");
-    if (pszToken != NULL && pszToken[0] != '\0') {
-        snprintf(szHeader, sizeof(szHeader), "Authorization: Bearer %s", pszToken);
+    char szUrl[2048];
+    snprintf(szUrl, sizeof(szUrl), "%s", pszUrl);
+    for (int nHop = 0; nHop < 5; ++nHop) {
+        char szHost[256] = "";
+        sscanf(szUrl, "https://%255[^/:]", szHost);
+        struct in_addr address;
+        if (szHost[0] == '\0' || ResolveName(szHost, &address) != 0) {
+            fprintf(stderr, "PS5: update: cannot look up %s\n", szHost);
+            return -1;
+        }
+        char szResolve[320], szIp[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &address, szIp, sizeof(szIp));
+        snprintf(szResolve, sizeof(szResolve), "%s:443:%s", szHost, szIp);
+        struct curl_slist *pResolve = curl_slist_append(NULL, szResolve);
+
+        struct curl_slist *pHeaders = NULL;
+        char szHeader[512];
+        snprintf(szHeader, sizeof(szHeader), "Accept: %s", pszAccept);
         pHeaders = curl_slist_append(pHeaders, szHeader);
+        pHeaders = curl_slist_append(pHeaders, "X-GitHub-Api-Version: 2022-11-28");
+        const char *pszToken = getenv("FREQ_UPDATE_TOKEN");
+        if (pszToken != NULL && pszToken[0] != '\0' && strcmp(szHost, "api.github.com") == 0) {
+            snprintf(szHeader, sizeof(szHeader), "Authorization: Bearer %s", pszToken);
+            pHeaders = curl_slist_append(pHeaders, szHeader);
+        }
+        if (pFile != NULL) { // a redirect's own body is not the file
+            fflush(pFile);
+            ftruncate(fileno(pFile), 0);
+            rewind(pFile);
+        } else if (pBuffer->pData != NULL) {
+            pBuffer->nSize = 0;
+        }
+        CURL *pCurl = curl_easy_init();
+        if (pCurl == NULL) {
+            curl_slist_free_all(pResolve);
+            curl_slist_free_all(pHeaders);
+            return -1;
+        }
+        curl_easy_setopt(pCurl, CURLOPT_URL, szUrl);
+        curl_easy_setopt(pCurl, CURLOPT_RESOLVE, pResolve);
+        curl_easy_setopt(pCurl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
+        curl_easy_setopt(pCurl, CURLOPT_NOSIGNAL, 1L);
+        curl_easy_setopt(pCurl, CURLOPT_HTTPHEADER, pHeaders);
+        curl_easy_setopt(pCurl, CURLOPT_USERAGENT, "Frequency-PS5/" FREQ_VERSION);
+        curl_easy_setopt(pCurl, CURLOPT_CAINFO, TITLE_DIR "/cacert.pem");
+        curl_easy_setopt(pCurl, CURLOPT_FAILONERROR, 1L);
+        curl_easy_setopt(pCurl, CURLOPT_CONNECTTIMEOUT, 15L);
+        curl_easy_setopt(pCurl, CURLOPT_TIMEOUT, pFile != NULL ? 600L : 30L);
+        if (pFile != NULL) {
+            curl_easy_setopt(pCurl, CURLOPT_WRITEDATA, pFile); // curl's own fwrite
+        } else {
+            curl_easy_setopt(pCurl, CURLOPT_WRITEFUNCTION, ToBuffer);
+            curl_easy_setopt(pCurl, CURLOPT_WRITEDATA, pBuffer);
+        }
+        const CURLcode result = curl_easy_perform(pCurl);
+        long nStatus = 0;
+        char *pszLocation = NULL;
+        curl_easy_getinfo(pCurl, CURLINFO_RESPONSE_CODE, &nStatus);
+        curl_easy_getinfo(pCurl, CURLINFO_REDIRECT_URL, &pszLocation);
+        const int bRedirect = result == CURLE_OK && nStatus >= 300 && nStatus < 400 && pszLocation != NULL &&
+                              strncmp(pszLocation, "https://", 8) == 0;
+        if (bRedirect) {
+            snprintf(szUrl, sizeof(szUrl), "%s", pszLocation);
+        }
+        curl_easy_cleanup(pCurl);
+        curl_slist_free_all(pResolve);
+        curl_slist_free_all(pHeaders);
+        if (bRedirect) {
+            continue;
+        }
+        if (result != CURLE_OK) {
+            fprintf(stderr, "PS5: update: %s: %s (HTTP %ld)\n", szHost, curl_easy_strerror(result), nStatus);
+            return -1;
+        }
+        return 0;
     }
-    curl_easy_setopt(pCurl, CURLOPT_URL, pszUrl);
-    curl_easy_setopt(pCurl, CURLOPT_HTTPHEADER, pHeaders);
-    curl_easy_setopt(pCurl, CURLOPT_USERAGENT, "Frequency-PS5/" FREQ_VERSION);
-    curl_easy_setopt(pCurl, CURLOPT_CAINFO, TITLE_DIR "/cacert.pem");
-    curl_easy_setopt(pCurl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(pCurl, CURLOPT_FAILONERROR, 1L);
-    curl_easy_setopt(pCurl, CURLOPT_CONNECTTIMEOUT, 15L);
-    curl_easy_setopt(pCurl, CURLOPT_TIMEOUT, pFile != NULL ? 600L : 30L);
-    if (pFile != NULL) {
-        curl_easy_setopt(pCurl, CURLOPT_WRITEDATA, pFile); // curl's own fwrite
-    } else {
-        curl_easy_setopt(pCurl, CURLOPT_WRITEFUNCTION, ToBuffer);
-        curl_easy_setopt(pCurl, CURLOPT_WRITEDATA, pBuffer);
-    }
-    const CURLcode result = curl_easy_perform(pCurl);
-    long nStatus = 0;
-    curl_easy_getinfo(pCurl, CURLINFO_RESPONSE_CODE, &nStatus);
-    curl_slist_free_all(pHeaders);
-    curl_easy_cleanup(pCurl);
-    if (result != CURLE_OK) {
-        fprintf(stderr, "PS5: update: %s: %s (HTTP %ld)\n", pszUrl, curl_easy_strerror(result), nStatus);
-        return -1;
-    }
-    return 0;
+    return -1;
 }
 
 // The string value after "pszKey": at pszFrom, into pszOut. NULL if there is none.
