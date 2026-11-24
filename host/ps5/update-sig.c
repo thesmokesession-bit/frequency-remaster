@@ -5,8 +5,11 @@
 //   openssl pkeyutl -sign -inkey frequency-update.key -rawin -in eboot.bin.sha256 -out eboot.bin.sig
 // Built with -DUPDATE_SIG_TEST it is a program: update-sig <file> <signature> prints VALID or
 // INVALID.
+#include <fcntl.h>
 #include <stdio.h>
+#include <unistd.h>
 
+#include <openssl/err.h>
 #include <openssl/evp.h>
 
 static const unsigned char kUpdateKey[32] = {
@@ -15,8 +18,10 @@ static const unsigned char kUpdateKey[32] = {
 
 // 1 when pSignature (nSignature bytes) is the release key's signature of the file at pszPath.
 int HostUpdateSignatureValid(const char *pszPath, const unsigned char *pSignature, size_t nSignature) {
-    FILE *pFile = nSignature == 64 ? fopen(pszPath, "rb") : NULL;
-    if (pFile == NULL) {
+    // open() and pread(), as host/core/logs.cpp reads a file: the game's fopen() and read() go
+    // through its own file layer (host/io/stdio.cpp, src/os/filelog.cpp).
+    const int nFile = nSignature == 64 ? open(pszPath, O_RDONLY | O_CLOEXEC) : -1;
+    if (nFile < 0) {
         return 0;
     }
     unsigned char abDigest[EVP_MAX_MD_SIZE];
@@ -24,19 +29,35 @@ int HostUpdateSignatureValid(const char *pszPath, const unsigned char *pSignatur
     static unsigned char s_abChunk[1 << 16]; // only the updater's thread checks a release
     EVP_MD_CTX *pHash = EVP_MD_CTX_new();
     int bOk = pHash != NULL && EVP_DigestInit_ex(pHash, EVP_sha256(), NULL) == 1;
-    for (size_t nRead; bOk && (nRead = fread(s_abChunk, 1, sizeof(s_abChunk), pFile)) > 0;) {
-        bOk = EVP_DigestUpdate(pHash, s_abChunk, nRead) == 1;
+    long nHashed = 0;
+    ssize_t nRead = 0;
+    while (bOk && (nRead = pread(nFile, s_abChunk, sizeof(s_abChunk), nHashed)) > 0) {
+        bOk = EVP_DigestUpdate(pHash, s_abChunk, (size_t)nRead) == 1;
+        nHashed += nRead;
     }
-    bOk = bOk && ferror(pFile) == 0 && EVP_DigestFinal_ex(pHash, abDigest, &nDigest) == 1;
+    bOk = bOk && nRead == 0 && EVP_DigestFinal_ex(pHash, abDigest, &nDigest) == 1;
     EVP_MD_CTX_free(pHash);
-    fclose(pFile);
+    close(nFile);
+    char szDigest[2 * 32 + 1] = "none";
+    for (unsigned int i = 0; bOk && i < nDigest && i < 32; ++i) {
+        snprintf(szDigest + 2 * i, 3, "%02x", abDigest[i]);
+    }
     EVP_PKEY *pKey = bOk ? EVP_PKEY_new_raw_public_key(EVP_PKEY_ED25519, NULL, kUpdateKey, 32) : NULL;
     EVP_MD_CTX *pVerify = pKey != NULL ? EVP_MD_CTX_new() : NULL;
-    bOk = pVerify != NULL && EVP_DigestVerifyInit(pVerify, NULL, NULL, NULL, pKey) == 1 &&
-          EVP_DigestVerify(pVerify, pSignature, nSignature, abDigest, nDigest) == 1;
+    const int bInit = pVerify != NULL && EVP_DigestVerifyInit(pVerify, NULL, NULL, NULL, pKey) == 1;
+    const int bValid = bInit && EVP_DigestVerify(pVerify, pSignature, nSignature, abDigest, nDigest) == 1;
+    // The digest, the bytes hashed, and the signature's ends in the log: a refused release can be
+    // compared with the published file's.
+    fprintf(stderr,
+            "PS5: update: sha256 %s of %ld bytes, signature %02x%02x...%02x%02x, key %s, check %s\n",
+            szDigest, nHashed, pSignature[0], pSignature[1], pSignature[62], pSignature[63],
+            pKey != NULL ? "loaded" : "not loaded", bInit ? (bValid ? "passed" : "failed") : "not run");
+    if (!bValid) {
+        ERR_print_errors_fp(stderr);
+    }
     EVP_MD_CTX_free(pVerify);
     EVP_PKEY_free(pKey);
-    return bOk;
+    return bValid;
 }
 
 #ifdef UPDATE_SIG_TEST
