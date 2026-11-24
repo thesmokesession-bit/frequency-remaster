@@ -10,6 +10,14 @@
 #include "msg/message.h"
 #include "os/hxstr.h"
 #include "rnd/view.h"
+#ifdef RESONANCE_HOST
+#include "gfx/hostframe.h"
+
+int HostFastBoot(); // met/metsonyscreen.cpp: FREQ_FAST_BOOT
+#endif
+#ifndef RESONANCE_HOST
+#line 12
+#endif
 
 namespace {
 
@@ -63,12 +71,32 @@ MetMemDetectStartup *MetMemDetectStartup::New(MetRenderer *pRenderer, int nPrior
 
 void MetMemDetectStartup::UpdateIdle(float flTime) {
     mFade->Update(flTime);
+#ifdef RESONANCE_HOST
+    if (mEnterTime != 0 && HostFastBoot() != 0) {
+        mEnterTime = 0;
+        mView->SetShowing(1);
+        StartDetect();
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 65
+#endif
     if (mEnterTime != 0 && mEnterTime + kFadeFrames < flTime) {
         mEnterTime = 0;
         mFade->FadeOut(kFadeFrames, flTime, this, kReleaseView);
         mView->SetShowing(1);
     }
+#ifdef RESONANCE_HOST
+    if (mNoCardTime != 0 && mNoCardTime + (HostFastBoot() != 0 ? 0.0f : kFadeFrames) < flTime) {
+#else
+#ifndef RESONANCE_HOST
+#line 70
+#endif
     if (mNoCardTime != 0 && mNoCardTime + kFadeFrames < flTime) {
+#endif
+#ifndef RESONANCE_HOST
+#line 71
+#endif
         mNoCardTime = 0;
         std::vector<HxStr> buttons;
         buttons.push_back(MetText(kMetStrMsgRETRY, kRetryButton));
@@ -108,9 +136,24 @@ void MetMemDetectStartup::BeginExit() {
 
 void MetMemDetectStartup::OnNoCard() {
     mNoCardTime = mRenderer->mAnimationFrame;
+#ifdef RESONANCE_HOST
+    HostEvent("memcard_startup no_card fast=%d", HostFastBoot());
+#endif
+#ifndef RESONANCE_HOST
+#line 110
+#endif
 }
 
 void MetMemDetectStartup::OnDetectFinished() {
+#ifdef RESONANCE_HOST
+    if (HostFastBoot() != 0) {
+        OnFadeInDone();
+        return;
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 113
+#endif
     mFade->FadeIn(kFadeFrames, mRenderer->mAnimationFrame, this, kReleaseView);
 }
 

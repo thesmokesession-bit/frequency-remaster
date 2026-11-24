@@ -176,6 +176,15 @@ int CampaignStats::IsSuperSecretUnlocked() {
 }
 
 void CampaignStats::RecountStageCompleted(int nDifficulty, int nStage) {
+#ifdef RESONANCE_HOST
+    // The binary reads past mStageLevels for a stage 6 level; nothing reads stage 6's count.
+    if (nStage > kIndexedStageCount) {
+        return;
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 178
+#endif
     std::vector<int> &levels = mStageLevels[nStage - kFirstStage];
     int nCount = levels.size();
     int nBeaten = 0;

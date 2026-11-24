@@ -17,6 +17,22 @@
 #include "os/loadfile.h"
 #include "synth/midi_main.h"
 #include "synth/ps2hardsynth.h"
+#ifdef RESONANCE_HOST
+#include <stdlib.h>
+
+extern "C" int HostSaveSetting(const char *pszKey, const char *pszValue); // host/core/settings.c
+
+// FREQ_FAST_BOOT=1 (default): from the second boot (the first one writes FREQ_BOOTED=1 to the
+// settings file) the memory card check and this screen skip their waits and fades, and the intro
+// movie. The card is still detected, and a missing card is still reported.
+int HostFastBoot() {
+    const char *pszFast = getenv("FREQ_FAST_BOOT");
+    return (pszFast == nullptr || strcmp(pszFast, "0") != 0) && getenv("FREQ_BOOTED") != nullptr;
+}
+#endif
+#ifndef RESONANCE_HOST
+#line 19
+#endif
 
 namespace {
 
@@ -144,6 +160,15 @@ void MetSonyScreen::EnterAndShow() {
 
 void MetSonyScreen::UpdateIdle(float flTime) {
     mFade->Update(flTime);
+#ifdef RESONANCE_HOST
+    if ((mEnterTime != 0.0f) && HostFastBoot() != 0) {
+        mEnterTime = 0.0f;
+        OnFadeOutDone();
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 146
+#endif
     if ((mEnterTime != 0.0f) && ((mEnterTime + kPresentationFrames) < flTime)) {
         mEnterTime = 0.0f;
         mFade->FadeOut(kFadeFrames, mRenderer->mAnimationFrame, this, kReleaseView);
@@ -152,7 +177,18 @@ void MetSonyScreen::UpdateIdle(float flTime) {
             SetShowing(1);
         }
     }
+#ifdef RESONANCE_HOST
+    const float flHold = HostFastBoot() != 0 ? 0.0f : kPresentationFrames;
+    if ((mFadeOutDoneTime == 0.0f) || !((mFadeOutDoneTime + flHold) < flTime)) {
+#else
+#ifndef RESONANCE_HOST
+#line 154
+#endif
     if ((mFadeOutDoneTime == 0.0f) || !((mFadeOutDoneTime + kPresentationFrames) < flTime)) {
+#endif
+#ifndef RESONANCE_HOST
+#line 155
+#endif
         return;
     }
     float flProgress;
@@ -170,6 +206,15 @@ void MetSonyScreen::UpdateIdle(float flTime) {
         return;
     }
     mFadeOutDoneTime = 0.0f;
+#ifdef RESONANCE_HOST
+    if (HostFastBoot() != 0) {
+        OnFadeInDone();
+        return;
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 172
+#endif
     mFade->FadeIn(kFadeFrames, mRenderer->mAnimationFrame, this, kReleaseView);
 }
 
@@ -177,7 +222,17 @@ void MetSonyScreen::OnExitFinished() {
     if (g_nSonyIntroPending == 0) {
         return;
     }
+#ifdef RESONANCE_HOST
+    if (IntroMovieEnabled() != 0 && HostFastBoot() == 0) {
+#else
+#ifndef RESONANCE_HOST
+#line 179
+#endif
     if (IntroMovieEnabled() != 0) {
+#endif
+#ifndef RESONANCE_HOST
+#line 180
+#endif
         Rnd::ThePs.ResetVramAndSavePacket();
         PlayIntroMovie();
         Rnd::ThePs.InitDisplayMode();
@@ -193,6 +248,14 @@ void MetSonyScreen::ResolveContainerViews() {
 }
 
 void MetSonyScreen::Finish() {
+#ifdef RESONANCE_HOST
+    if (getenv("FREQ_BOOTED") == nullptr) {
+        HostSaveSetting("FREQ_BOOTED", "1");
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 195
+#endif
     mRenderer->RemoveScreen(this);
     mRenderer->ClearBackgroundScene();
     SetBankLoadProgressHook(MainLoop::KeepAliveDraw);
