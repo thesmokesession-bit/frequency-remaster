@@ -1,6 +1,7 @@
-// The PS5 title's platform layer (cmake/ps5-toolchain.cmake): the log and the crash report in the
-// title folder, the settings, disc image and memory card from the title folder, the Emotion Engine
-// memory at its fixed low addresses, and the system calls the Linux host makes by number.
+// The PS5 title's platform layer (cmake/ps5-toolchain.cmake): the log in the title folder (its
+// history and the crash reports are host/core/logs.cpp's), the settings, disc image and memory
+// card from the title folder, the Emotion Engine memory at its fixed low addresses, and the system
+// calls the Linux host makes by number.
 //
 // The title folder is /app0 (/data/homebrew/PPSA64010 on the console). frequency.ini there is read
 // as on Linux; FREQ_DISC and FREQ_MC are relative to it, and default to the first .iso there and to
@@ -23,10 +24,11 @@
 #include <strings.h>
 #include <sys/syscall.h>
 #include <time.h>
-#include <ucontext.h>
 #include <unistd.h>
 
 #include <ps5platform/kernel.h>
+
+#include "hostlogs.h"
 
 #define TITLE_DIR "/app0"
 #define LOG_PATH TITLE_DIR "/frequency.log"
@@ -35,7 +37,6 @@ int sceKernelRead(int nFile, void *pBuffer, size_t nLength);
 int sceKernelWrite(int nFile, const void *pBuffer, size_t nLength);
 int sceKernelClose(int nFile);
 off_t sceKernelLseek(int nFile, off_t nOffset, int nOrigin);
-int main(void);
 
 // ---- the Emotion Engine memory ----
 
@@ -331,51 +332,6 @@ static void *WriteLog(void *pUnused) {
     }
 }
 
-// The crash report goes to the file itself: the writer thread may never get to a pipe's last lines.
-static void Report(const char *pszFormat, ...) {
-    char szLine[256];
-    va_list args;
-    va_start(args, pszFormat);
-    const int nLength = vsnprintf(szLine, sizeof(szLine), pszFormat, args);
-    va_end(args);
-    if (nLength > 0) {
-        sceKernelWrite(g_nLog, szLine, (size_t)nLength < sizeof(szLine) ? (size_t)nLength : sizeof(szLine) - 1);
-    }
-}
-
-// The faulting instruction and the code addresses on the stack, with main's address, so that they
-// match the unsigned ELF (eboot.bin.elf): address - main here + main there.
-// The console calls it the old BSD way even with SA_SIGINFO: the second argument is the fault code
-// (1), not a siginfo, and reading it as one faulted inside this handler (2026-11-24 klog: fault
-// address 9 = 1 + si_code's offset), which hid the real crash. The third is the context either way.
-static void OnCrash(int nSignal, siginfo_t *pInfo, void *pContext) {
-    if ((uintptr_t)pInfo < 0x1000) {
-        pInfo = NULL;
-    }
-    if (pContext == NULL) {
-        Report("CRASH signal %d, no context\n", nSignal);
-        _Exit(128 + nSignal);
-    }
-    const mcontext_t *pMachine = &((ucontext_t *)pContext)->uc_mcontext;
-    const uintptr_t nCodeStart = (uintptr_t)&main & ~(uintptr_t)0x3fffff;
-    const uintptr_t nCodeEnd = nCodeStart + 0x4000000;
-    Report("CRASH signal %d code %d address %p rip %p rsp %p main %p\n",
-           nSignal,
-           pInfo != NULL ? pInfo->si_code : 0,
-           pInfo != NULL ? pInfo->si_addr : NULL,
-           (void *)pMachine->mc_rip,
-           (void *)pMachine->mc_rsp,
-           (void *)&main);
-    const uintptr_t *pStack = (const uintptr_t *)pMachine->mc_rsp;
-    for (int i = 0, nFound = 0; i < 2048 && nFound < 32; ++i) {
-        if (pStack[i] >= nCodeStart && pStack[i] < nCodeEnd) {
-            Report("  stack[%d] %p\n", i, (void *)pStack[i]);
-            ++nFound;
-        }
-    }
-    _Exit(128 + nSignal);
-}
-
 // On exit() the writer thread is killed with the pipe's last lines unwritten (often the reason for
 // the exit): close the pipe's write ends so it reads to the end, and wait for it.
 static pthread_t g_writer;
@@ -387,8 +343,9 @@ static void DrainLog(void) {
 }
 
 __attribute__((constructor(100))) static void StartTitle(void) {
-    g_nLog = open(LOG_PATH, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0644);
-    Report("PS5: title started\n");
+    g_nLog = HostLogOpen(TITLE_DIR);
+    static const char kStarted[] = "PS5: title started\n";
+    sceKernelWrite(g_nLog, kStarted, sizeof(kStarted) - 1);
     // The console's stdio writes to no file descriptor until reopened onto a file (as Perfect
     // Eye's open_log does). stderr (errors and the host's few lines) stays on the file itself,
     // unbuffered, so the last line before the system kills the title is not lost; stdout then
@@ -486,20 +443,8 @@ void HostStartTitle(void) {
         close(anPipe[1]);
     }
 
-    static char s_abAltStack[64 * 1024];
-    const stack_t altStack = {.ss_sp = s_abAltStack, .ss_size = sizeof(s_abAltStack)};
-    sigaltstack(&altStack, NULL);
-    struct sigaction action;
-    memset(&action, 0, sizeof(action));
-    action.sa_sigaction = OnCrash;
-    action.sa_flags = SA_SIGINFO | SA_ONSTACK;
-    sigemptyset(&action.sa_mask);
-    const int anSignals[] = {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT, SIGTRAP, SIGSYS};
-    for (size_t i = 0; i < sizeof(anSignals) / sizeof(anSignals[0]); ++i) {
-        sigaction(anSignals[i], &action, NULL);
-    }
-
     fprintf(stderr, "PS5: logging and crash report set up\n");
+    HostReportsStart(g_nLog);
     pthread_t watcher;
     if (pthread_create(&watcher, NULL, WatchSystem, NULL) == 0) {
         pthread_detach(watcher);
