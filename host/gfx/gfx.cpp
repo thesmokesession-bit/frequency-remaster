@@ -161,6 +161,19 @@ void MakeCurrent(void *) {
     }
 }
 
+#ifdef __PROSPERO__
+struct PresentStats {
+    unsigned nSkipped;
+    uint64_t nWaitNs, nWaitMaxNs, nPresentNs, nPresentMaxNs;
+} g_presentStats;
+
+uint64_t HostNowNs() {
+    timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return static_cast<uint64_t>(now.tv_sec) * 1000000000u + static_cast<uint64_t>(now.tv_nsec);
+}
+#endif
+
 void Present(void *) {
     if (g_context != nullptr) {
         SDL_GL_SwapWindow(g_pWindow);
@@ -185,8 +198,12 @@ void Present(void *) {
         const double flFields =
             static_cast<double>(g_nPresentedTick - s_nStartTick) / HostTicksPerField();
         s_nStartTick = g_nPresentedTick;
-        fprintf(stderr, "gfx: 600 frames in %.2f s (%.2f a second), game %.1f fields (%.2f a second)\n",
-                flSeconds, 600 / flSeconds, flFields, flFields / flSeconds);
+        fprintf(stderr, "gfx: 600 frames in %.2f s (%.2f a second), game %.1f fields (%.2f a second); "
+                "%u ticks skipped, GS wait %.1f ms avg %.1f max, present %.1f avg %.1f max\n",
+                flSeconds, 600 / flSeconds, flFields, flFields / flSeconds, g_presentStats.nSkipped,
+                g_presentStats.nWaitNs / 600e6, g_presentStats.nWaitMaxNs / 1e6,
+                g_presentStats.nPresentNs / 600e6, g_presentStats.nPresentMaxNs / 1e6);
+        g_presentStats = PresentStats{};
         start = now;
     }
 #else
@@ -220,13 +237,30 @@ void *RunPresents(void *) {
 
         // The GS draws the last frame without g_lock held, so the game's transfers go on. The
         // blank presented is the latest one after that wait.
+#ifdef __PROSPERO__
+        const uint64_t nWaitStart = HostNowNs();
+#endif
         ps2gfx_wait_frames();
         pthread_mutex_lock(&g_presentLock);
+        const unsigned nPrevious = nPresented;
         nPresented = g_nPendingVblank;
         pthread_mutex_unlock(&g_presentLock);
+#ifdef __PROSPERO__
+        const uint64_t nPresentStart = HostNowNs();
+#endif
         pthread_mutex_lock(&g_lock);
         PresentLocked(nPresented);
         pthread_mutex_unlock(&g_lock);
+#ifdef __PROSPERO__
+        // Where a present's time goes, for the frame line: the GS wait, the present, and the
+        // game ticks it skipped.
+        const uint64_t nEnd = HostNowNs();
+        g_presentStats.nSkipped += nPresented - nPrevious > 1 ? nPresented - nPrevious - 1 : 0;
+        g_presentStats.nWaitMaxNs = std::max(g_presentStats.nWaitMaxNs, nPresentStart - nWaitStart);
+        g_presentStats.nPresentMaxNs = std::max(g_presentStats.nPresentMaxNs, nEnd - nPresentStart);
+        g_presentStats.nWaitNs += nPresentStart - nWaitStart;
+        g_presentStats.nPresentNs += nEnd - nPresentStart;
+#endif
     }
     return nullptr;
 }

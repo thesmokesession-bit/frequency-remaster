@@ -312,6 +312,7 @@ static pthread_t g_writer;
 static void DrainLog(void) {
     fflush(NULL);
     close(fileno(stdout));
+    close(fileno(stderr));
     pthread_join(g_writer, NULL);
 }
 
@@ -336,7 +337,14 @@ void HostStartTitle(void) {
     if (freopen(LOG_PATH, "a", stdout) != NULL && pipe(anPipe) == 0) {
         g_nPipe = anPipe[0];
         if (pthread_create(&g_writer, NULL, WriteLog, NULL) == 0) {
+            // stderr too, from here on: a line written to the title folder can take tens of ms,
+            // and RADV prints its submission line holding the submit lock, which held the GS
+            // ~95 ms every 10 s (2026-11-23; Perfect Eye's open_log, "stutters, 2026-10-18").
+            // The crash report still writes the file itself.
+            fflush(stderr);
             dup2(anPipe[1], fileno(stdout));
+            dup2(anPipe[1], fileno(stderr));
+            setvbuf(stderr, NULL, _IOLBF, 0);
             atexit(DrainLog);
         }
         close(anPipe[1]);
