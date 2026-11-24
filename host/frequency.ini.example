@@ -51,7 +51,8 @@
 #FREQ_AUTOPAUSE=0
 
 # Practice mode: every song is a practice run, the game's own practice mode (no juice drain; no
-# score or progress saved). Select restarts the song at once. Setting a speed or a loop turns it on.
+# score or progress saved). Select restarts the song at once, and so does Restart in the pause menu,
+# without its confirmation. Setting a speed or a loop turns it on.
 #FREQ_PRACTICE=1
 # Practice speed, 0.5 to 1 (or 50 to 100 percent): the song plays slower at the same pitch.
 #FREQ_PRACTICE_SPEED=0.75
@@ -110,3 +111,13 @@
 # not changed. host/io/songs.py unpacks a disc song into a song folder and lists what a new song
 # needs. The PS5 default is songs in the title folder.
 #FREQ_SONGS=songs
+
+# Bonus songs, on by default: BT's Godspeed and Kareem Caines' Scratchotronic, finished songs on the
+# disc that the game never lists, play as a sixth song of stage 4 and stage 1. They open with the
+# secret songs (Expert finished, or FREQ_UNLOCK_ALL) and save high scores like any song; progress
+# toward a stage does not count them (0 = off).
+#FREQ_BONUS_SONGS=0
+# Fast boot, on by default: from the second start the memory card check and the Sony screen go by
+# without their waits and fades, and the intro movie is skipped. A missing card is still reported.
+# The first start writes FREQ_BOOTED=1 here; remove that line to see the full boot again (0 = off).
+#FREQ_FAST_BOOT=0

@@ -502,6 +502,16 @@ void MetSoloStagesScreen::RebuildLevelLists() {
     for (unsigned i = 0; i < secretLevels.size(); ++i) {
         mStageLevels[kNumberedStageCount - 1].push_back(secretLevels[i]);
     }
+#ifdef RESONANCE_HOST
+    // A bonus level takes the row's sixth place, which IsLevelLocked() opens with the secret.
+    void HostAppendBonusLevels(int nStage, std::vector<StageListEntry> *pLevels); // metsonglists
+    for (int i = 0; i < kNumberedStageCount; ++i) {
+        HostAppendBonusLevels(i + 1, &mStageLevels[i]);
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 498
+#endif
 }
 
 void MetSoloStagesScreen::UpdateSecretLevels(int bUnlockAll) {
@@ -1249,6 +1259,17 @@ void MetSoloStagesScreen::HandleCommand(const MetScreenCommand *pCommand) {
             GameParams params(CurrentParams());
             params.mLoadingGame = 0;
             params.mLevelName = (*mCurrentLevels)[nLevel].mName;
+#ifdef RESONANCE_HOST
+            HostEvent("stage_select stage=%d level=%d name=%s difficulty=%d highscore=%d",
+                      nStage + 1,
+                      nLevel,
+                      TextOf(params.mLevelName),
+                      params.mDifficulty,
+                      FirstPersonaStats().GetLevelHighScore(params.mDifficulty, params.mLevelName));
+#endif
+#ifndef RESONANCE_HOST
+#line 1219
+#endif
             CallScriptTemplate(kSelectTemplate, kSelectTemplateArgument);
             Application::shared()->GetGameManager()->SetParams(params);
         }

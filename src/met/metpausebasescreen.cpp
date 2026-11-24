@@ -10,6 +10,13 @@
 #include "msg/unpausegamesystemmsg.h"
 #include "os/hxstr.h"
 #include "rnd/text.h"
+#ifdef RESONANCE_HOST
+
+extern "C" int HostPracticeArmed(void); // host/audio/audio.cpp
+#endif
+#ifndef RESONANCE_HOST
+#line 12
+#endif
 
 namespace {
 
@@ -113,6 +120,15 @@ void MetPauseBaseScreen::OnExitFinished() {
                          MetText(kMetStrPauseQuit, kQuitTitle),
                          MetText(kMetStrPauseConfirm, kQuitText),
                          this);
+#ifdef RESONANCE_HOST
+    } else if (mExitAction == kExitRestart && HostPracticeArmed() != 0) {
+        // A practice run restarts without the confirmation; it saves nothing to lose.
+        QueueUnpause();
+        Application::shared()->GetGameManager()->GetWorld()->PostRestart();
+#endif
+#ifndef RESONANCE_HOST
+#line 115
+#endif
     } else if (mExitAction == kExitRestart) {
         ShowConfirmation(kRestartDialogue,
                          MetText(kMetStrPauseRestart, kRestartTitle),

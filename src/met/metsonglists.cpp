@@ -9,6 +9,17 @@
 #include "met/metstrings.h"
 #include "os/hxstr.h"
 #include "script/configquery.h"
+#ifdef RESONANCE_HOST
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+
+#include "gfx/hostframe.h"
+#include "script/scripthost.h"
+#endif
+#ifndef RESONANCE_HOST
+#line 11
+#endif
 
 namespace {
 
@@ -49,8 +60,105 @@ std::vector<HxStr> &LevelNameStorage() {
     return names;
 }
 
+#ifdef RESONANCE_HOST
+// FREQ_BONUS_SONGS=1 (default): the two finished songs the disc has but the album's
+// levels_database omits join the stage screen, on the rows the TCRF patch puts them on. They join
+// the album as stage 6 levels, the secret stage no campaign count reads, so they have progress
+// records without changing any stage's completion.
+struct BonusLevel {
+    const char *pszName;
+    int nStage;
+};
+constexpr BonusLevel kBonusLevels[] = {{"scratchotronic", 1}, {"godspeed", 4}};
+constexpr int kBonusAlbumStage = 6;
+
+// Loads one level script as load_level_scripts() does. A disc without the script is skipped.
+static const char *const kAddBonusLevelScript =
+    "_name = '%s'\n"
+    "_script = full_level_path(_name)\n"
+    "if not level_list.has_key(_name):\n"
+    "    try:\n"
+    "        global_execfile(_script)\n"
+    "        _level = make_level(get_class_name(), _script)\n"
+    "        _level.stage = %d\n"
+    "        _level.order = %d\n"
+    "        level_list[_level.directory_name] = _level\n"
+    "        album_song_list[_level.directory_name] = _level.get_song_id()\n"
+    "    except IOError:\n"
+    "        pass\n";
+
+std::vector<StageListEntry> g_bonusLevels[kStageCount];
+
+bool BonusSongsEnabled() {
+    const char *pszValue = getenv("FREQ_BONUS_SONGS");
+    return pszValue == nullptr || strcmp(pszValue, "0") != 0;
+}
+
+void AddBonusLevels() {
+    if (!BonusSongsEnabled()) {
+        return;
+    }
+    for (unsigned i = 0; i < sizeof(kBonusLevels) / sizeof(kBonusLevels[0]); ++i) {
+        char szScript[512];
+        snprintf(szScript,
+                 sizeof(szScript),
+                 kAddBonusLevelScript,
+                 kBonusLevels[i].pszName,
+                 kBonusAlbumStage,
+                 kBonusAlbumStage + 2 + static_cast<int>(i));
+        RunScript(HxStr(szScript));
+    }
+}
+
+// Moves the bonus levels out of the secret stage's list, which the secret-level rules count.
+void SplitBonusLevels() {
+    for (std::vector<StageListEntry> &levels : g_bonusLevels) {
+        levels.clear();
+    }
+    std::vector<StageListEntry> &secret = g_stageLists[kBonusAlbumStage - 1];
+    for (const BonusLevel &bonus : kBonusLevels) {
+        for (std::vector<StageListEntry>::iterator it = secret.begin(); it != secret.end(); ++it) {
+            if (it->mName == bonus.pszName) {
+                g_bonusLevels[bonus.nStage - 1].push_back(*it);
+                secret.erase(it);
+                break;
+            }
+        }
+    }
+    for (const HxStr &name : GetLevelNames()) {
+        HostEvent("level %s", name.mStr != nullptr ? name.mStr : g_szEmptyString);
+    }
+    HostEvent("stage_lists levels=%d counts=%d,%d,%d,%d,%d,%d bonus=%d,%d,%d,%d,%d",
+              static_cast<int>(GetLevelNames().size()),
+              static_cast<int>(g_stageLists[0].size()),
+              static_cast<int>(g_stageLists[1].size()),
+              static_cast<int>(g_stageLists[2].size()),
+              static_cast<int>(g_stageLists[3].size()),
+              static_cast<int>(g_stageLists[4].size()),
+              static_cast<int>(g_stageLists[5].size()),
+              static_cast<int>(g_bonusLevels[0].size()),
+              static_cast<int>(g_bonusLevels[1].size()),
+              static_cast<int>(g_bonusLevels[2].size()),
+              static_cast<int>(g_bonusLevels[3].size()),
+              static_cast<int>(g_bonusLevels[4].size()));
+}
+#endif
+#ifndef RESONANCE_HOST
+#line 51
+#endif
 } // namespace
 
+#ifdef RESONANCE_HOST
+// The stage screen appends a numbered stage's bonus levels to that stage's row.
+void HostAppendBonusLevels(int nStage, std::vector<StageListEntry> *pLevels) {
+    const std::vector<StageListEntry> &bonus = g_bonusLevels[nStage - 1];
+    pLevels->insert(pLevels->end(), bonus.begin(), bonus.end());
+}
+
+#endif
+#ifndef RESONANCE_HOST
+#line 53
+#endif
 HxStr DifficultyName(int nDifficulty) {
     HxStr name("");
     switch (nDifficulty) {
@@ -77,6 +185,12 @@ HxStr DifficultyName(int nDifficulty) {
 }
 
 void RebuildStageLists() {
+#ifdef RESONANCE_HOST
+    AddBonusLevels();
+#endif
+#ifndef RESONANCE_HOST
+#line 79
+#endif
     QueryConfigStrings(&LevelNameStorage(), kLevelListConfigCode);
 
     for (std::vector<std::vector<StageListEntry>>::size_type i = 0; i < g_stageLists.size(); ++i) {
@@ -99,6 +213,12 @@ void RebuildStageLists() {
     for (std::vector<std::vector<StageListEntry>>::size_type i = 0; i < g_stageLists.size(); ++i) {
         std::sort(g_stageLists[i].begin(), g_stageLists[i].end());
     }
+#ifdef RESONANCE_HOST
+    SplitBonusLevels();
+#endif
+#ifndef RESONANCE_HOST
+#line 101
+#endif
 }
 
 void RebuildArenaLists() {
