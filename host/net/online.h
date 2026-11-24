@@ -17,6 +17,21 @@ extern "C" {
 /** Start the session the settings ask for on its own thread. From main(), before the game. */
 void HostOnlineStart(void);
 
+/**
+ * Exit any room and open the room of the code pszRoom, as its host or as a guest. Returns 0 when
+ * the UDP port cannot be opened.
+ */
+int HostOnlineOpen(const char *pszRoom, int bHost);
+
+/** Exit the room. The other machines see this machine drop at once. */
+void HostOnlineClose(void);
+
+/** Whether a room is open on this machine. */
+int HostOnlineActive(void);
+
+/** Whether the last polls of the signalling server failed (no network, or the server is down). */
+int HostOnlineSignalFailing(void);
+
 /** This machine's slot: 0 on the host, 1 to 3 on a linked guest, and -1 before that. */
 int HostOnlineSlot(void);
 

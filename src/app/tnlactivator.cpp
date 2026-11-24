@@ -77,6 +77,13 @@ TnlActivator::TnlActivator(int nIndex, HxStr colorName, TnlPlayer *pOwner)
     }
     mMesh->SetShowing(0);
     mGhostView = FindObject<Rnd::View>(Rnd::MakeString("ghost%d.view", mOwner->mPlayerNum));
+#ifdef RESONANCE_HOST
+    // A net player has no input slot, and there is no "ghost0.view" for its player number 0.
+    if (mGhostView != nullptr)
+#endif
+#ifndef RESONANCE_HOST
+#line 79
+#endif
     mGhostView->RemoveAllDraws();
     GetCachedTunnelObject()->GetSeeker(mIndex)->SetMesh(mMesh);
     mFxView->RemoveAllTranses();

@@ -9,6 +9,15 @@
 
 #include "online.cpp"
 
+// Stubs of the game's functions that the friends board calls. These checks do not start the
+// board.
+std::string HostTitleFile(const char *pszName) {
+    return pszName;
+}
+
+extern "C" void HostAchievement(const char *) {
+}
+
 namespace {
 
 // Message i from the machine in nSlot: its index, then filler of a length and content that both

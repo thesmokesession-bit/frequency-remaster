@@ -12,7 +12,10 @@
 //   ready    guest to host: the game's level is loaded
 //   go       host to all: start the song, after the delay given for each slot (ms)
 //   packet   any to all: the game's number, a packet type, and the packet's saveGuts() bytes
+//   roster   host to all: for each slot, whether it is in the room, the host's round trip to it
+//            (ms, two bytes), and its name; the online page lists it
 
+#include <algorithm>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,6 +37,7 @@
 #include "game/netplayer.h"
 #include "game/playmap.h"
 #include "game/trackselector.h"
+#include "met/metfrontendstate.h"
 #include "met/metpersonadata.h"
 #include "msg/begingamelocalmsg.h"
 #include "msg/bumppacket.h"
@@ -46,9 +50,19 @@
 #include "os/hxstr.h"
 #include "stream/iobmemstream.h"
 
+void HostOnlinePageFrame(); // lobby.cpp
+void HostOnlinePageHide();
+
 namespace {
 
-enum RoomMessage : unsigned char { kProfile = 1, kStart = 2, kReady = 3, kGo = 4, kPacket = 5 };
+enum RoomMessage : unsigned char {
+    kProfile = 1,
+    kStart = 2,
+    kReady = 3,
+    kGo = 4,
+    kPacket = 5,
+    kRoster = 6,
+};
 
 constexpr int kMaxPlayers = kIDableInitialSlots;
 constexpr int kNameLength = FreqAppearance::kRecordNameLength;
@@ -89,6 +103,8 @@ std::vector<std::string> g_early; // packet messages that came before this machi
 Bounds g_testBounds;              // FREQ_SELFTEST=online, which has no level
 int g_nAccepted = 0;
 int g_nRefused = 0;
+Seat g_roster[kMaxPlayers]; // the room's players by slot, nSlot their round trip to the host
+std::string g_lastRoster;   // the roster message the host sent last
 
 GameManagerImpl *Manager() {
     return Application::shared()->GetGameManager();
@@ -257,8 +273,18 @@ bool ValidName(const std::string &name) {
     return true;
 }
 
+// FREQ_ONLINE_NAME, else the Freq that plays (or the first on the memory card).
 std::string LocalName() {
     const char *pszName = getenv("FREQ_ONLINE_NAME");
+    // FREQ_SELFTEST=online runs with no game manager.
+    MetPersonaData *pPersona =
+        Manager() != nullptr ? MetFrontEndState::shared()->GetFirstPersona() : nullptr;
+    if (pPersona == nullptr && !MetPersonaData::loadList()->empty()) {
+        pPersona = MetPersonaData::loadList()->front();
+    }
+    if ((pszName == nullptr || pszName[0] == '\0') && pPersona != nullptr) {
+        pszName = pPersona->mAppearance.mUserName.mStr;
+    }
     std::string name = pszName != nullptr ? pszName : "";
     name = name.substr(0, kNameLength);
     return ValidName(name) ? name : "Player " + std::to_string(HostOnlineSlot() + 1);
@@ -378,6 +404,7 @@ void OnStart(const unsigned char *pData, int nSize) {
     }
     params.mNetGame = 1;
     g_early.clear();
+    HostOnlinePageHide();
     pManager->SetParams(params);
     pManager->SetGameMode(kGameModeNet);
     g_game = game;
@@ -389,6 +416,46 @@ void OnStart(const unsigned char *pData, int nSize) {
             "online: the host started %s in %s\n",
             params.mLevelName.mStr,
             params.mArenaName.mStr);
+}
+
+std::string RosterMessage() {
+    std::string message(1, static_cast<char>(kRoster));
+    const unsigned nLinked = HostOnlineLinked() | 1u;
+    for (int nSlot = 0; nSlot < kMaxPlayers; ++nSlot) {
+        const bool bIn = (nLinked & (1u << nSlot)) != 0;
+        const int nRtt = bIn ? std::min(HostOnlineRttMs(nSlot), 0xffff) : 0;
+        std::string name;
+        if (bIn) {
+            name = nSlot == 0                    ? LocalName() :
+                   !g_aGuestNames[nSlot].empty() ? g_aGuestNames[nSlot] :
+                                                   "Player " + std::to_string(nSlot + 1);
+        }
+        message += static_cast<char>(bIn);
+        message += static_cast<char>(nRtt & 0xff);
+        message += static_cast<char>(nRtt >> 8);
+        message += static_cast<char>(name.size());
+        message += name;
+    }
+    return message;
+}
+
+// The trust boundary for a roster: four well-formed entries, the host's among them.
+bool ParseRoster(const unsigned char *pData, int nSize, Seat aRoster[kMaxPlayers]) {
+    int nAt = 1;
+    for (int nSlot = 0; nSlot < kMaxPlayers; ++nSlot) {
+        if (nAt + 4 > nSize || nAt + 4 + pData[nAt + 3] > nSize || pData[nAt] > 1) {
+            return false;
+        }
+        Seat &seat = aRoster[nSlot];
+        seat.bUsed = pData[nAt] != 0;
+        seat.nSlot = pData[nAt + 1] | pData[nAt + 2] << 8;
+        seat.name.assign(reinterpret_cast<const char *>(pData) + nAt + 4, pData[nAt + 3]);
+        if (seat.bUsed ? !ValidName(seat.name) : !seat.name.empty()) {
+            return false;
+        }
+        nAt += 4 + pData[nAt + 3];
+    }
+    return nAt == nSize && aRoster[0].bUsed;
 }
 
 // One room message, outside the start barrier.
@@ -404,6 +471,11 @@ void OnMessage(const unsigned char *pData, int nSize, int nFrom) {
         g_aGuestNames[nFrom] = ValidName(name) ? name : "";
     } else if (pData[0] == kStart && !bHost && nFrom == 0) {
         OnStart(pData, nSize);
+    } else if (pData[0] == kRoster && !bHost && nFrom == 0) {
+        Seat roster[kMaxPlayers];
+        if (ParseRoster(pData, nSize, roster)) {
+            std::copy(roster, roster + kMaxPlayers, g_roster);
+        }
     }
 }
 
@@ -505,6 +577,16 @@ void HostOnlinePoll(void) {
         Send(std::string(1, static_cast<char>(kProfile)) + LocalName());
     }
     g_nLastLinked = nLinked;
+    if (HostOnlineSlot() == 0) {
+        const std::string roster = RosterMessage();
+        if (roster != g_lastRoster && nLinked != 0) {
+            Send(roster);
+        }
+        g_lastRoster = roster;
+        ParseRoster(reinterpret_cast<const unsigned char *>(roster.data()),
+                    static_cast<int>(roster.size()),
+                    g_roster);
+    }
     int nFrom = -1;
     for (int nSize; (nSize = HostOnlineReceive(g_abMessage, sizeof(g_abMessage), &nFrom)) > 0;) {
         OnMessage(g_abMessage, nSize, nFrom);
@@ -516,6 +598,7 @@ void HostOnlinePoll(void) {
         BeginGameLocalMsg begin;
         Manager()->QueueMessage(&begin);
     }
+    HostOnlinePageFrame();
 }
 
 // Before a song's world is made: the host turns a song it starts with guests in the room into a
@@ -670,6 +753,33 @@ void HostNetWaitStart(void) {
     }
     usleep(static_cast<useconds_t>(nDelayMs) * 1000);
     fprintf(stderr, "online: room song %u starts (waited %d ms)\n", g_game.nId, nDelayMs);
+}
+
+// The players for the online page, with each player's name in apszNames (valid until the next
+// poll) and the round trip in anRttMs (this machine's to the host, or the host's to a guest).
+// Returns the slots in the room, one bit each, or 0 when this machine is in no room or a guest
+// has no host.
+unsigned HostNetRoster(const char *apszNames[kMaxPlayers], int anRttMs[kMaxPlayers]) {
+    const int nMySlot = HostOnlineSlot();
+    unsigned nSlots = 0;
+    for (int nSlot = 0; nSlot < kMaxPlayers && nMySlot >= 0; ++nSlot) {
+        const Seat &seat = g_roster[nSlot];
+        nSlots |= seat.bUsed ? 1u << nSlot : 0;
+        apszNames[nSlot] = seat.name.c_str();
+        anRttMs[nSlot] = nSlot == 0 && nMySlot > 0 ? HostOnlineRttMs(0) : seat.nSlot;
+    }
+    return nSlots;
+}
+
+// The online page exited the room. The next room starts with no names.
+void HostNetLeave(void) {
+    HostOnlineClose();
+    for (int i = 0; i < kMaxPlayers; ++i) {
+        g_aGuestNames[i].clear();
+        g_roster[i] = Seat();
+    }
+    g_lastRoster.clear();
+    g_nLastLinked = 0;
 }
 
 // After a net game's world is gone: the end screens are the local multiplayer ones (the image has

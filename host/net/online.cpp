@@ -18,6 +18,7 @@
 #include "online.h"
 
 #include <algorithm>
+#include <atomic>
 #include <ctype.h>
 #include <deque>
 #include <fcntl.h>
@@ -78,6 +79,7 @@ enum Kind : unsigned char {
     kAck = 5,
     kPing = 6, // sequence number is the sender's clock in ms
     kPong = 7,
+    kBye = 8, // the sender exited the room
 };
 
 struct Datagram {
@@ -156,6 +158,13 @@ struct Session {
     std::string record;        // this machine's signed record, once its addresses are known
     std::vector<Record> found; // records the signalling thread read and the net thread takes
     bool bSignalWanted = true;
+    int nSignalFailures = 0; // polls of the signalling server in a row that failed
+
+    // HostOnlineClose() sets bStop; the net and signalling threads each have a reference, and the
+    // last to finish deletes the session.
+    std::atomic<bool> bStop{false};
+    std::atomic<int> nReferences{2};
+    pthread_t netThread;
 
     // The net thread's own.
     Link links[kMaxSlots];
@@ -218,12 +227,18 @@ void DeriveKeys(const char *pszRoom, Session *pSession) {
     std::transform(room.begin(), room.end(), room.begin(), [](unsigned char c) {
         return static_cast<char>(tolower(c));
     });
-    // Stretched (PBKDF2, 200000 rounds, a fixed salt every machine shares): the topic name is public,
-    // and a single hash of a short code could be guessed from it offline.
+    // Stretched (PBKDF2, 200000 rounds, a fixed salt every machine shares): the topic name is
+    // public, and a single hash of a short code could be guessed from it offline.
     static const char kSalt[] = "frequency-online-1";
     unsigned char abBase[32];
-    PKCS5_PBKDF2_HMAC(room.data(), static_cast<int>(room.size()), reinterpret_cast<const unsigned char *>(kSalt),
-                      sizeof(kSalt) - 1, 200000, EVP_sha256(), sizeof(abBase), abBase);
+    PKCS5_PBKDF2_HMAC(room.data(),
+                      static_cast<int>(room.size()),
+                      reinterpret_cast<const unsigned char *>(kSalt),
+                      sizeof(kSalt) - 1,
+                      200000,
+                      EVP_sha256(),
+                      sizeof(abBase),
+                      abBase);
     Hmac(abBase, "datagram", 8, pSession->abMacKey);
     Hmac(abBase, "signal", 6, pSession->abSignalKey);
     unsigned char abTopic[32];
@@ -576,6 +591,10 @@ void OnLinked(Session &session, const Datagram &datagram, const sockaddr_in &fro
         ++session.drops.nSession;
         return;
     }
+    if (datagram.nKind == kBye) {
+        DropLink(session, datagram.nFrom, "closed");
+        return;
+    }
     Link &link = session.links[datagram.nFrom];
     const double flNow = NowMs();
     link.flHeardMs = flNow;
@@ -628,7 +647,7 @@ void OnDatagram(Session &session, const unsigned char *pData, int nSize, const s
         AddTarget(session, from);
     } else if (datagram.nKind == kWelcome && !session.bHost) {
         OnWelcome(session, datagram, from);
-    } else if (datagram.nKind >= kData && datagram.nKind <= kPong) {
+    } else if (datagram.nKind >= kData && datagram.nKind <= kBye) {
         OnLinked(session, datagram, from);
     }
 }
@@ -751,7 +770,7 @@ bool StunAddress(Session &session, sockaddr_in *pOut) {
     }
     unsigned char abRequest[20] = {0x00, 0x01, 0x00, 0x00, 0x21, 0x12, 0xa4, 0x42};
     RAND_bytes(abRequest + 8, 12);
-    for (int nTry = 0; nTry < 3; ++nTry) {
+    for (int nTry = 0; nTry < 3 && !session.bStop; ++nTry) {
         sendto(session.nSocket,
                abRequest,
                sizeof(abRequest),
@@ -847,13 +866,21 @@ std::vector<std::string> Messages(const std::string &response) {
     return messages;
 }
 
+void Release(Session *pSession) {
+    if (--pSession->nReferences == 0) {
+        delete pSession;
+    }
+}
+
 void *RunSignal(void *pArgument) {
     Session &session = *static_cast<Session *>(pArgument);
     double flPublished = -kPublishEveryMs;
     double flWaitMs = kSignalEveryMs;
     std::vector<uint64_t> seen;
-    for (;;) {
-        usleep(static_cast<useconds_t>(flWaitMs * 1000));
+    while (!session.bStop) {
+        for (double flSlept = 0; flSlept < flWaitMs && !session.bStop; flSlept += 100) {
+            usleep(100 * 1000);
+        }
         pthread_mutex_lock(&session.lock);
         const std::string record = session.record;
         const bool bWanted = session.bSignalWanted;
@@ -886,8 +913,10 @@ void *RunSignal(void *pArgument) {
         }
         pthread_mutex_lock(&session.lock);
         session.found.insert(session.found.end(), found.begin(), found.end());
+        session.nSignalFailures = nStatus == 200 ? 0 : session.nSignalFailures + 1;
         pthread_mutex_unlock(&session.lock);
     }
+    Release(&session);
     return nullptr;
 }
 
@@ -913,7 +942,7 @@ void *RunNet(void *pArgument) {
     pthread_mutex_unlock(&session.lock);
 
     double flLastPunch = 0;
-    for (;;) {
+    while (!session.bStop) {
         pollfd wait = {session.nSocket, POLLIN, 0};
         poll(&wait, 1, 10);
         for (;;) {
@@ -933,19 +962,24 @@ void *RunNet(void *pArgument) {
         }
         Tick(session, flLastPunch);
     }
+    for (int nTry = 0; nTry < 3; ++nTry) { // three, as a datagram can be lost
+        for (Link &link : session.links) {
+            if (link.bUsed) {
+                SendOnLink(session, link, kBye, 0, 0, std::string());
+            }
+        }
+    }
+    close(session.nSocket);
+    Release(&session);
     return nullptr;
 }
 
-// Opens the socket and sets up the session from the settings, or returns null.
-Session *NewSession() {
-    const char *pszRoom = getenv("FREQ_ONLINE_ROOM");
-    if (pszRoom == nullptr || pszRoom[0] == '\0') {
-        return nullptr;
-    }
+// Opens the socket and sets up the session of a room from the settings, or returns null.
+Session *NewSession(const char *pszRoom, bool bHost) {
     Session *pSession = new Session;
     Session &session = *pSession;
     DeriveKeys(pszRoom, pSession);
-    session.bHost = getenv("FREQ_ONLINE_HOST") != nullptr && atoi(getenv("FREQ_ONLINE_HOST")) != 0;
+    session.bHost = bHost;
     session.nSlot = session.bHost ? 0 : -1;
     RAND_bytes(reinterpret_cast<unsigned char *>(&session.nNonce), sizeof(session.nNonce));
     if (getenv("FREQ_ONLINE_TEST_LOSS") != nullptr) {
@@ -999,23 +1033,62 @@ Session *NewSession() {
 extern "C" {
 
 void HostOnlineStart(void) {
-    Session *pSession = NewSession();
+    const char *pszRoom = getenv("FREQ_ONLINE_ROOM");
+    const char *pszHost = getenv("FREQ_ONLINE_HOST");
+    if (pszRoom != nullptr && pszRoom[0] != '\0') {
+        HostOnlineOpen(pszRoom, pszHost != nullptr && atoi(pszHost) != 0);
+    }
+}
+
+int HostOnlineOpen(const char *pszRoom, int bHost) {
+    HostOnlineClose();
+    Session *pSession = NewSession(pszRoom, bHost != 0);
     if (pSession == nullptr) {
-        return;
+        return 0;
     }
-    curl_global_init(CURL_GLOBAL_DEFAULT);
-    pthread_t thread;
-    if (pthread_create(&thread, nullptr, RunNet, pSession) != 0) {
+    static pthread_once_t s_curlOnce = PTHREAD_ONCE_INIT;
+    pthread_once(&s_curlOnce, [] { curl_global_init(CURL_GLOBAL_DEFAULT); });
+    if (pthread_create(&pSession->netThread, nullptr, RunNet, pSession) != 0) {
         fprintf(stderr, "online: cannot start the network thread\n");
-        return;
+        close(pSession->nSocket);
+        delete pSession;
+        return 0;
     }
-    pthread_detach(thread);
+    pthread_t thread;
     if (!pSession->signal.empty() && pthread_create(&thread, nullptr, RunSignal, pSession) == 0) {
         pthread_detach(thread);
+    } else {
+        --pSession->nReferences;
     }
     g_pSession = pSession;
     Notify(pSession->bHost ? "Frequency online: room open, waiting for players" :
                              "Frequency online: looking for the host");
+    return 1;
+}
+
+void HostOnlineClose(void) {
+    Session *pSession = g_pSession;
+    if (pSession == nullptr) {
+        return;
+    }
+    g_pSession = nullptr;
+    pSession->bStop = true;
+    pthread_join(pSession->netThread, nullptr); // the socket is closed, its port free again
+    Notify("Frequency online: left the room");
+}
+
+int HostOnlineActive(void) {
+    return g_pSession != nullptr;
+}
+
+int HostOnlineSignalFailing(void) {
+    if (g_pSession == nullptr) {
+        return 0;
+    }
+    pthread_mutex_lock(&g_pSession->lock);
+    const int nFailures = g_pSession->nSignalFailures;
+    pthread_mutex_unlock(&g_pSession->lock);
+    return nFailures >= 2;
 }
 
 int HostOnlineSlot(void) {
@@ -1127,6 +1200,9 @@ pthread_cond_t g_boardWake = PTHREAD_COND_INITIALIZER;
 std::string g_boardName;
 std::map<std::string, int> g_boardBests;
 std::vector<std::string> g_boardRankKeys;
+// Under g_boardLock, for the online page: the last rank notified, and the players on the board.
+std::string g_boardLastRank;
+size_t g_nBoardPlayers = 0;
 
 std::string BoardName(const char *pszName) {
     std::string name;
@@ -1303,6 +1379,9 @@ void *RunBoard(void *) {
     BoardFetch(board);
     SaveBoard(board);
     fprintf(stderr, "board: %zu players on the board\n", board.records.size());
+    pthread_mutex_lock(&g_boardLock);
+    g_nBoardPlayers = board.records.size();
+    pthread_mutex_unlock(&g_boardLock);
     bool bRepost = !board.mine.empty() && time(nullptr) - board.nPostedAt > kBoardRepostSeconds;
     pthread_mutex_lock(&g_boardLock);
     for (;;) {
@@ -1332,12 +1411,16 @@ void *RunBoard(void *) {
         }
         BoardFetch(board);
         SaveBoard(board);
+        std::string rank;
         for (const std::string &key : keys) {
             if (bPosted) {
-                Notify(BoardRank(board, key).c_str());
+                rank = BoardRank(board, key);
+                Notify(rank.c_str());
             }
         }
         pthread_mutex_lock(&g_boardLock);
+        g_nBoardPlayers = board.records.size();
+        g_boardLastRank = rank.empty() ? g_boardLastRank : rank;
         if (!bPosted) { // refused (ntfy.sh's daily limit): again after the gap, ranks after that
             g_boardRankKeys.insert(g_boardRankKeys.end(), keys.begin(), keys.end());
             bRepost = true;
@@ -1371,6 +1454,26 @@ void HostBoardStart(void) {
     }
     pthread_detach(thread);
     fprintf(stderr, "board: topic %s\n", g_pBoard->keys.topic.c_str());
+}
+
+// For the online page, after HostSaveSetting() changed FREQ_BOARD. A first code starts the board
+// now, and a changed or cleared one applies from the next start. Returns whether it applies now.
+int HostBoardCodeChanged(void) {
+    if (g_pBoard != nullptr) {
+        return 0;
+    }
+    HostBoardStart();
+    return g_pBoard != nullptr;
+}
+
+// For the online page, the number of players on the board and the last rank notified ("" before
+// one).
+int HostBoardStatus(char *pszRank, int nCapacity) {
+    pthread_mutex_lock(&g_boardLock);
+    snprintf(pszRank, nCapacity, "%s", g_boardLastRank.c_str());
+    const int nPlayers = static_cast<int>(g_nBoardPlayers);
+    pthread_mutex_unlock(&g_boardLock);
+    return nPlayers;
 }
 
 // A new best (host/core/progress.cpp): posted with the rest, as soon as the rate allows, and its

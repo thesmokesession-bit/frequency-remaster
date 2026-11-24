@@ -63,6 +63,13 @@ void HudFreq::SetPulsing(int nPulsing) {
 
 void HudFreq::SetFrame(float flFrame) {
     if (flFrame < kIconAnimLength) {
+#ifdef RESONANCE_HOST
+        // The layout is chosen by local players, and HUD1 has no "freq<n>.tnm" for a net player.
+        if (mAnim != nullptr)
+#endif
+#ifndef RESONANCE_HOST
+#line 65
+#endif
         mAnim->SetFrame(flFrame);
     }
 
