@@ -143,6 +143,72 @@ void UpdateBlockStatus() {
 }
 
 SDL_AudioDeviceID g_nDevice = 0;
+
+// The PS5 in 5.1: SDL's PS5 audio is stereo only, so the 5.1 frames go to the console's own audio
+// port in its 8-channel format through a ring and a thread of their own (the two extra channels
+// silent). Everything else queues on the SDL device as before.
+bool g_bDirect = false;
+std::mutex g_ringLock;
+std::deque<int16_t> g_ring; // 6 samples a frame
+#ifdef __PROSPERO__
+extern "C" {
+int sceAudioOutInit(void);
+int sceAudioOutOpen(int nUser, int nType, int nIndex, unsigned nLength, unsigned nRate, unsigned nFormat);
+int sceAudioOutOutput(int nHandle, const void *pSamples);
+}
+constexpr unsigned kGrain = 256; // frames a call
+
+void *RunSurroundOut(void *pHandle) {
+    const int nHandle = static_cast<int>(reinterpret_cast<intptr_t>(pHandle));
+    static int16_t s_aEight[8 * kGrain];
+    for (;;) {
+        memset(s_aEight, 0, sizeof(s_aEight));
+        {
+            std::lock_guard<std::mutex> lock(g_ringLock);
+            const size_t nFrames = std::min<size_t>(kGrain, g_ring.size() / 6);
+            for (size_t i = 0; i < nFrames; ++i) {
+                for (int c = 0; c < 6; ++c) {
+                    s_aEight[8 * i + c] = g_ring.front();
+                    g_ring.pop_front();
+                }
+            }
+        }
+        sceAudioOutOutput(nHandle, s_aEight); // waits for the port's previous grain
+    }
+    return nullptr;
+}
+
+bool OpenSurroundPort() {
+    sceAudioOutInit();
+    // The system user, the main port, 256-frame grains at 48 kHz, S16 8 channels (format 2).
+    const int nHandle = sceAudioOutOpen(0xff, 0, 0, kGrain, kRate, 2);
+    pthread_t thread;
+    if (nHandle < 0 ||
+        pthread_create(&thread, nullptr, RunSurroundOut, reinterpret_cast<void *>(static_cast<intptr_t>(nHandle))) != 0) {
+        fprintf(stderr, "AUDIO_SURROUND_FAILED 0x%08x\n", static_cast<unsigned>(nHandle));
+        return false;
+    }
+    pthread_detach(thread);
+    return true;
+}
+#endif
+
+Uint32 QueuedBytes() {
+    if (g_bDirect) {
+        std::lock_guard<std::mutex> lock(g_ringLock);
+        return static_cast<Uint32>(g_ring.size() * sizeof(int16_t));
+    }
+    return SDL_GetQueuedAudioSize(g_nDevice);
+}
+
+void QueueOut(const int16_t *pSamples, Uint32 nBytes) {
+    if (g_bDirect) {
+        std::lock_guard<std::mutex> lock(g_ringLock);
+        g_ring.insert(g_ring.end(), pSamples, pSamples + nBytes / sizeof(int16_t));
+        return;
+    }
+    SDL_QueueAudio(g_nDevice, pSamples, nBytes);
+}
 FILE *g_pWav = nullptr;
 uint64_t g_nWavFrames = 0;
 
@@ -787,7 +853,7 @@ void RenderBlock(int nFrames) {
     const size_t nBytes = sizeof(int16_t) * 2 * nFrames;
     if (g_nDevice != 0 && nFrames > 0) {
         // A device slower than the wall clock loses a block now and then, rather than lagging.
-        if (SDL_GetQueuedAudioSize(g_nDevice) < kMaxQueuedBytes * g_nChannels / 2) {
+        if (QueuedBytes() < kMaxQueuedBytes * g_nChannels / 2) {
             if (g_nChannels == 6) {
                 // FREQ_SURROUND=1: a matrix upmix of the game's stereo, SDL's 5.1 order (front
                 // left, right, centre, LFE, surround left, right). The centre carries what both
@@ -804,9 +870,9 @@ void RenderBlock(int nFrames) {
                     pSix[4] = static_cast<int16_t>(std::clamp((nLeft - nRight) / 2, -32768, 32767));
                     pSix[5] = static_cast<int16_t>(std::clamp((nRight - nLeft) / 2, -32768, 32767));
                 }
-                SDL_QueueAudio(g_nDevice, s_six.data(), static_cast<Uint32>(nBytes * 3));
+                QueueOut(s_six.data(), static_cast<Uint32>(nBytes * 3));
             } else {
-                SDL_QueueAudio(g_nDevice, pOut, nBytes);
+                QueueOut(pOut, static_cast<Uint32>(nBytes));
             }
         }
     }
@@ -825,7 +891,7 @@ void RenderBlock(int nFrames) {
                              static_cast<int64_t>(g_nRendered) - 1) -
             llround(g_nLateCycles * static_cast<double>(g_flSpeed.load())) /
                 static_cast<int64_t>(kEeCyclesPerSample);
-        const double flQueued = SDL_GetQueuedAudioSize(g_nDevice) / (2.0 * g_nChannels);
+        const double flQueued = QueuedBytes() / (2.0 * g_nChannels);
         // A stretch frame outputs kHop samples at once, each later against the clock than the
         // next: the frame's average sample is (1 - speed) kHop / 2 later than its newest.
         const double flShown = static_cast<double>(EeClock()) / kEeCyclesPerSample +
@@ -884,6 +950,17 @@ void OpenDevice() {
     want.format = AUDIO_S16SYS;
     const char *pszSurround = getenv("FREQ_SURROUND");
     want.channels = pszSurround != nullptr && strcmp(pszSurround, "1") == 0 ? 6 : 2;
+#ifdef __PROSPERO__
+    if (want.channels == 6 && OpenSurroundPort()) {
+        g_bDirect = true;
+        g_nChannels = 6;
+        g_nDevice = 1; // open: the queue goes to the ring
+        const std::vector<int16_t> silence(2 * 6 * kBlock);
+        QueueOut(silence.data(), static_cast<Uint32>(silence.size() * sizeof(int16_t)));
+        fprintf(stderr, "AUDIO_OPEN ps5 audio port %d Hz 6 channels\n", kRate);
+        return;
+    }
+#endif
     want.samples = kBlock;
     SDL_AudioSpec have;
     // Only the channel count may differ: a device without 5.1 opens in stereo, as before.
