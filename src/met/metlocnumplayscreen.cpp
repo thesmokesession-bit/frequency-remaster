@@ -8,6 +8,18 @@
 #include "met/metstrings.h"
 #include "os/hxstr.h"
 #include "script/configquery.h"
+#ifdef RESONANCE_HOST
+
+// host/net/lobby.cpp: LOCAL, ONLINE, and SCOREBOARD on this screen's buttons, before the counts.
+void HostOnlinePageEnter(MetRenderer *pRenderer,
+                         MetButtonList *pButtons,
+                         const std::vector<HxStr> *pHelpKeys,
+                         const HxStr &title);
+int HostOnlinePageCommand(int nCommand);
+#endif
+#ifndef RESONANCE_HOST
+#line 10
+#endif
 
 namespace {
 
@@ -90,6 +102,14 @@ void MetLocNumPlayScreen::ResolveContainerViews() {
 }
 
 void MetLocNumPlayScreen::HandleCommand(const MetScreenCommand *pCommand) {
+#ifdef RESONANCE_HOST
+    MetScreenCommand command = *pCommand;
+    command.mCommand = HostOnlinePageCommand(pCommand->mCommand);
+    pCommand = &command;
+#endif
+#ifndef RESONANCE_HOST
+#line 92
+#endif
     switch (pCommand->mCommand) {
     case kMetScreenCommandPrevious:
         mButtonList->SelectPrevious();
@@ -136,6 +156,12 @@ void MetLocNumPlayScreen::EnterAndShow() {
 
     MetHelpScreen::SelectPreset(MetText(kMetStrHStandardTitle, kStandardTitlePreset));
     MetHelpScreen::SetText(mHelpKeys[mButtonList->mSelected], mRenderer->mAnimationFrame);
+#ifdef RESONANCE_HOST
+    HostOnlinePageEnter(mRenderer, mButtonList, &mHelpKeys, title);
+#endif
+#ifndef RESONANCE_HOST
+#line 138
+#endif
     MetScreen::EnterAndShow();
 }
 

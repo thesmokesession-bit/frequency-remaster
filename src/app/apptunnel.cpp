@@ -1512,6 +1512,14 @@ int AppTunnel::IsTrackBarLocked(int nTrack, int nBar) {
 }
 
 void AppTunnel::ShowTrackGhost(int nTrack, Rnd::Drawable *pGhost) {
+#ifdef RESONANCE_HOST
+    if (pGhost == nullptr) {
+        return; // a net player's activator, which has no ghost view (TnlActivator)
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 1213
+#endif
     pGhost->RemoveAllDraws();
     mGemManager->AddKindDraws(mGhostGemKinds[nTrack], pGhost);
     mGemManager->SetKindShowing(mGhostGemKinds[nTrack], 1);

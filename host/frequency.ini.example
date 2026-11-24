@@ -77,14 +77,19 @@
 # On the PS5, L2 or R2 clicks at its press point when it plays a lane, through the adaptive
 # triggers (1 = on, default).
 #FREQ_TRIGGERS=0
-# Online play, up to 4 players on up to 4 machines, free: no account and no paid server. Every
-# machine sets the same room code; pick a few words nobody would guess, since anyone with the code
-# can join. One machine is the host (FREQ_ONLINE_HOST=1): the songs it starts in Solo or
-# Multiplayer (not remixes or the tutorial) start on every machine in the room, and each guest
-# plays one player with its first controller. Guests wait in the menus; the console shows a
-# notification when a machine joins or leaves.
+# Online play, up to 4 players on up to 4 machines, free: no account and no paid server. In the
+# game, Multiplayer > ONLINE picks HOST or JOIN and a code of three words, and shows the room's
+# players; the settings below open a room at start instead. Every machine sets the same room code;
+# pick a few words nobody would guess, since anyone with the code can join. One machine is the host
+# (FREQ_ONLINE_HOST=1): the songs it starts in Solo or Multiplayer (not remixes or the tutorial)
+# start on every machine in the room, and each guest plays one player with its first controller.
+# Guests wait in the menus; the console shows a notification when a machine joins or leaves.
 #FREQ_ONLINE_ROOM=purple tunnel friday
 #FREQ_ONLINE_HOST=1
+# The last room Multiplayer > ONLINE opened, for one press there to open it again (these do not open
+# a room at start).
+#FREQ_ONLINE_LAST_ROOM=ace bird cat
+#FREQ_ONLINE_LAST_HOST=1
 # The name the others see for this machine's player (up to 12 characters).
 #FREQ_ONLINE_NAME=Lefty
 # The UDP port (host default 47125, guest any free port). Most home routers let the machines reach
@@ -160,8 +165,9 @@
 # Achievements (25) are listed in achievements.txt in the title folder; each pops a notification.
 # A friends board: machines with the same board code share their best score per song, through
 # ntfy.sh as online play does (FREQ_ONLINE_SIGNAL applies; the name is FREQ_ONLINE_NAME, or the
-# Freq's name). Anyone with the code can post any score, so give it to friends only. A notification
-# shows your rank after each new best; a post goes out at most every 6 minutes.
+# Freq's name); Multiplayer > SCOREBOARD sets the code. Anyone with the code can post any score,
+# so give it to friends only. A notification shows your rank after each new best; a post goes out at
+# most every 6 minutes.
 #FREQ_BOARD=green tunnel scores
 
 # Logs and crash reports have no setting. frequency.log in the title folder (beside this file on
