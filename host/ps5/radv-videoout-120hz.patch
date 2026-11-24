@@ -1,18 +1,45 @@
 --- a/src/vulkan/wsi/wsi_common_videoout.c	2026-11-24 02:00:27.359603072 +0000
-+++ b/src/vulkan/wsi/wsi_common_videoout.c	2026-11-24 02:00:27.374276810 +0000
-@@ -383,7 +383,14 @@
-             : supported;
++++ b/src/vulkan/wsi/wsi_common_videoout.c	2026-11-24 02:06:01.504216295 +0000
+@@ -334,6 +334,33 @@
+    return (value & VIDEOOUT_ATTRIBUTE3_HIGH_FRAME_RATE) == VIDEOOUT_ATTRIBUTE3_HIGH_FRAME_RATE;
+ }
+ 
++/* Whether the display refreshes at 119.88 Hz: a thread woken late (the title's
++ * other threads busy at start-up) misses vblanks, so the intervals between
++ * waits are whole numbers of vblanks, and at 59.94 Hz every one is a multiple
++ * of 16.68 ms. One interval an odd number of 8.34 ms periods long shows the
++ * high rate (Frequency, 2026-11-23: waits every 2 and 3 vblanks, a 20.9 ms
++ * median, and 59.94 Hz restored on a display at 119.88 Hz). */
++static bool
++videoout_vblank_shows_high_rate(int handle)
++{
++   const uint64_t half = UINT64_C(8341675), slack = UINT64_C(2000000);
++   if (sceVideoOutWaitVblank(handle) != 0)
++      return false;
++   uint64_t previous = os_time_get_nano();
++   for (unsigned at = 0; at < 4 * VIDEOOUT_PERIOD_INTERVALS; at++) {
++      if (sceVideoOutWaitVblank(handle) != 0)
++         return false;
++      const uint64_t now = os_time_get_nano();
++      const uint64_t interval = now - previous;
++      previous = now;
++      const uint64_t halves = (interval + half / 2) / half;
++      const uint64_t off = interval > halves * half ? interval - halves * half : halves * half - interval;
++      if ((halves & 1) != 0 && off < slack)
++         return true;
++   }
++   return false;
++}
++
+ /* The refresh period: the median of a few intervals between vblank waits,
+  * the first wait finding the phase. 0 when a wait fails. */
+ static uint64_t
+@@ -384,7 +411,7 @@
        out->high_frame_rate = configured == 0;
        if (out->high_frame_rate) {
--         const uint64_t period = videoout_vblank_period_ns(out->handle);
-+         /* The display can take a moment to settle into the new mode (the TV
-+          * re-syncs): measure again for up to about two seconds before giving
-+          * up on it (Frequency, 2026-11-23: 20.9 ms once, 8.3 ms the next run). */
-+         uint64_t period = videoout_vblank_period_ns(out->handle);
-+         for (unsigned attempt = 0; attempt < 10 && period > VIDEOOUT_HIGH_REFRESH_LIMIT_NS; attempt++) {
-+            os_time_sleep(200000);
-+            period = videoout_vblank_period_ns(out->handle);
-+         }
-          if (period > VIDEOOUT_HIGH_REFRESH_LIMIT_NS) {
+          const uint64_t period = videoout_vblank_period_ns(out->handle);
+-         if (period > VIDEOOUT_HIGH_REFRESH_LIMIT_NS) {
++         if (period > VIDEOOUT_HIGH_REFRESH_LIMIT_NS && !videoout_vblank_shows_high_rate(out->handle)) {
              sceVideoOutConfigureOutput(out->handle, PS5_VIDEO_OUT_MODE_RESTORE, NULL, NULL, NULL);
              out->high_frame_rate = false;
+             fprintf(stderr,

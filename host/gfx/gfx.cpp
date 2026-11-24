@@ -179,7 +179,14 @@ void Present(void *) {
         clock_gettime(CLOCK_MONOTONIC, &now);
         const double flSeconds = static_cast<double>(now.tv_sec - start.tv_sec) +
                                  static_cast<double>(now.tv_nsec - start.tv_nsec) / 1e9;
-        fprintf(stderr, "gfx: 600 frames in %.2f s (%.2f a second)\n", flSeconds, 600 / flSeconds);
+        // With the game's own fields over the same time: fewer frames than fields is frames the
+        // presents dropped, fewer fields than the TV's 59.94 is the game's clock running slow.
+        static unsigned s_nStartTick;
+        const double flFields =
+            static_cast<double>(g_nPresentedTick - s_nStartTick) / HostTicksPerField();
+        s_nStartTick = g_nPresentedTick;
+        fprintf(stderr, "gfx: 600 frames in %.2f s (%.2f a second), game %.1f fields (%.2f a second)\n",
+                flSeconds, 600 / flSeconds, flFields, flFields / flSeconds);
         start = now;
     }
 #else
