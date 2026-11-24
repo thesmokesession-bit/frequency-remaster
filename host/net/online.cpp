@@ -1196,11 +1196,17 @@ bool ParseBoard(const Board &board,
     return true;
 }
 
+// This machine's own record is the one it last posted: a poll can still return an older one. A
+// machine with no bests of its own (a new title folder) takes them from the board.
 void BoardTake(Board &board, const std::string &text) {
     std::string name;
     std::map<std::string, int> scores;
-    if (ParseBoard(board, text, &name, &scores)) {
-        board.records[name] = text;
+    if (!ParseBoard(board, text, &name, &scores) || (name == board.me && !board.mine.empty())) {
+        return;
+    }
+    board.records[name] = text;
+    if (name == board.me) {
+        board.mine = scores;
     }
 }
 
@@ -1287,10 +1293,6 @@ void LoadBoard(Board &board) {
     }
     if (pFile != nullptr) {
         fclose(pFile);
-    }
-    std::string name;
-    if (board.records.count(board.me) != 0) {
-        ParseBoard(board, board.records[board.me], &name, &board.mine);
     }
 }
 

@@ -342,16 +342,28 @@ void HostRecordingDone(const char *pData, int nSize) {
     }
 }
 
-// CampaignStats::RecordHighScore() took a new high score. The recording may still be finishing; the
-// later of the two writes the files.
+// CampaignStats::RecordHighScore() took a new high score. It also has to beat the kept run, which
+// outlives a lost memory card. The recording may still be finishing; the later of the two writes
+// the files.
 void HostNewBest(const char *pszLevel, int nDifficulty, int nScore, int nOldScore) {
     if (g_run.level.empty() || g_run.bPlayback || pszLevel == nullptr || g_run.level != pszLevel ||
         g_run.nDifficulty != nDifficulty) {
         return;
     }
-    g_run.bBestPending = true;
-    if (g_run.bRecorded) {
-        SaveBest();
+    const std::string kept = ReadFile(RunPath(pszLevel, nDifficulty, ".ghost"));
+    const size_t nLast = kept.rfind(' ');
+    const int nKeptScore = nLast != std::string::npos ? atoi(kept.c_str() + nLast + 1) : -1;
+    if (nScore <= nKeptScore) {
+        fprintf(stderr,
+                "replay: the kept run of %s-%d (%d) stays\n",
+                pszLevel,
+                nDifficulty,
+                nKeptScore);
+    } else {
+        g_run.bBestPending = true;
+        if (g_run.bRecorded) {
+            SaveBest();
+        }
     }
     if (nOldScore > 0) {
         Unlock("personalbest");
