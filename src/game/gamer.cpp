@@ -443,7 +443,12 @@ void Gamer::DeclareWinners() {
 
 void Gamer::RecordSoloStats(int bCompleted, int nBar) {
 #ifdef RESONANCE_HOST
-    HostEvent("solo_end won=%d bar=%d end=%d", bCompleted, nBar, mEndBar);
+    HostEvent("solo_end won=%d bar=%d end=%d ratio=%.3f streak=%d",
+              bCompleted,
+              nBar,
+              mEndBar,
+              mPlayers[0]->GetCaptureRatio(),
+              mPlayers[0]->GetBestStreak());
     void HostBreadcrumb(const char *pszName); // host/io/pad.cpp
     HostBreadcrumb(bCompleted != 0 ? "SOLO_WON" : "SOLO_LOST");
 #endif

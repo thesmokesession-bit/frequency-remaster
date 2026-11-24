@@ -78,6 +78,7 @@
 extern "C" int HostPracticeArmed(void);
 extern "C" void HostPracticeSpeed(int bOn);
 extern "C" void HostPracticeEnd(void);
+extern "C" int HostWatch(void); // src/game/catcher.cpp: FREQ_WATCH
 #endif
 #ifndef RESONANCE_HOST
 #line 74
@@ -380,6 +381,9 @@ void GrooveWorld::StartPlay() {
         mGamer->mJuiceFrozen = 1;
         mGamer->mCheated = 1;
         HostPracticeSpeed(1);
+    }
+    if (HostWatch() != 0) {
+        mGamer->mCheated = 1; // watch mode: the autoplay's run saves no score or progress
     }
 #endif
 #ifndef RESONANCE_HOST

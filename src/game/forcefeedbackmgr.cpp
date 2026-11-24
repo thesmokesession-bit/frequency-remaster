@@ -25,6 +25,8 @@ constexpr unsigned char kFlagDisabled = 0x20;
 
 // SetPlayerCount() suspends vibration above this many players.
 #ifdef RESONANCE_HOST
+#include <cstdlib>
+
 constexpr int kMaxVibratingPlayers = 4; // The multitap's budget was two; each pad has its own.
 #else
 #ifndef RESONANCE_HOST
@@ -395,7 +397,20 @@ void ForceFeedbackMgr::SyncMetronome() {
 
     const int nPulseMs =
         static_cast<int>((mPulseLength.mValue + kHalfMillisecondNs) / kNanosecondsPerMillisecond);
+#ifdef RESONANCE_HOST
+    // FREQ_RUMBLE_LEAD_MS replaces the 90 ms the DualShock 2's motors take to spin up.
+    const char *pszLead = getenv("FREQ_RUMBLE_LEAD_MS");
+    const int nLeadNs =
+        (nPulseMs / 2) + (pszLead != nullptr ? atoi(pszLead) * 1000000 : kMotorLeadNs);
+#else
+#ifndef RESONANCE_HOST
+#line 387
+#endif
     const int nLeadNs = (nPulseMs / 2) + kMotorLeadNs;
+#endif
+#ifndef RESONANCE_HOST
+#line 388
+#endif
     const Sch::Tick lead(
         static_cast<int>((nLeadNs + pTempo->mCeilingBias) / pTempo->mNanosecondsPerTick));
     if (toBeat.mTick < lead.mTick) {
