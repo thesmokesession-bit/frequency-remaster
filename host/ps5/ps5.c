@@ -724,13 +724,20 @@ static size_t ToBuffer(void *pData, size_t nSize, size_t nCount, void *pUser) {
 // resolver never runs: it crashed in Curl_async_is_resolved (SYSTEM_XO_VIOLATION, 2026-11-23).
 // The token goes to api.github.com only, not to the download host a redirect names.
 static int Fetch(const char *pszUrl, const char *pszAccept, Buffer *pBuffer, FILE *pFile) {
-    char szUrl[2048];
+    char szUrl[4096];
     snprintf(szUrl, sizeof(szUrl), "%s", pszUrl);
     for (int nHop = 0; nHop < 5; ++nHop) {
+        // The host is everything up to the path's '/', letters, digits, dots and dashes only: no
+        // port (CURLOPT_RESOLVE below covers 443 only) and no user part, which would make
+        // "https://api.github.com:x@elsewhere/" read as api.github.com and get the token.
         char szHost[256] = "";
-        sscanf(szUrl, "https://%255[^/:]", szHost);
+        int nHostEnd = 0;
+        if (sscanf(szUrl, "https://%255[A-Za-z0-9.-]%n", szHost, &nHostEnd) != 1 || szUrl[nHostEnd] != '/') {
+            fprintf(stderr, "PS5: update: refused address %.80s\n", szUrl);
+            return -1;
+        }
         struct in_addr address;
-        if (szHost[0] == '\0' || ResolveName(szHost, &address) != 0) {
+        if (ResolveName(szHost, &address) != 0) {
             fprintf(stderr, "PS5: update: cannot look up %s\n", szHost);
             return -1;
         }
@@ -772,6 +779,8 @@ static int Fetch(const char *pszUrl, const char *pszAccept, Buffer *pBuffer, FIL
         curl_easy_setopt(pCurl, CURLOPT_FAILONERROR, 1L);
         curl_easy_setopt(pCurl, CURLOPT_CONNECTTIMEOUT, 15L);
         curl_easy_setopt(pCurl, CURLOPT_TIMEOUT, pFile != NULL ? 600L : 30L);
+        // An eboot is about 60 MB and a release's JSON a few KB: anything far past is not ours.
+        curl_easy_setopt(pCurl, CURLOPT_MAXFILESIZE_LARGE, (curl_off_t)(pFile != NULL ? 256 << 20 : 1 << 20));
         if (pFile != NULL) {
             curl_easy_setopt(pCurl, CURLOPT_WRITEDATA, pFile); // curl's own fwrite
         } else {
@@ -784,7 +793,7 @@ static int Fetch(const char *pszUrl, const char *pszAccept, Buffer *pBuffer, FIL
         curl_easy_getinfo(pCurl, CURLINFO_RESPONSE_CODE, &nStatus);
         curl_easy_getinfo(pCurl, CURLINFO_REDIRECT_URL, &pszLocation);
         const int bRedirect = result == CURLE_OK && nStatus >= 300 && nStatus < 400 && pszLocation != NULL &&
-                              strncmp(pszLocation, "https://", 8) == 0;
+                              strncmp(pszLocation, "https://", 8) == 0 && strlen(pszLocation) < sizeof(szUrl);
         if (bRedirect) {
             snprintf(szUrl, sizeof(szUrl), "%s", pszLocation);
         }
@@ -794,7 +803,7 @@ static int Fetch(const char *pszUrl, const char *pszAccept, Buffer *pBuffer, FIL
         if (bRedirect) {
             continue;
         }
-        if (result != CURLE_OK) {
+        if (result != CURLE_OK || nStatus >= 300) { // a redirect that could not be followed too
             fprintf(stderr, "PS5: update: %s: %s (HTTP %ld)\n", szHost, curl_easy_strerror(result), nStatus);
             return -1;
         }
@@ -823,6 +832,11 @@ static const char *JsonString(const char *pszFrom, const char *pszKey, char *psz
 
 static void *RunUpdater(void *pUnused) {
     (void)pUnused;
+    // A build that does not know its commit would take every release for an update, every start.
+    if (strcmp(FREQ_VERSION, "unknown") == 0) {
+        fprintf(stderr, "PS5: update: this build has no version, not checking\n");
+        return NULL;
+    }
     const char *pszRepo = getenv("FREQ_UPDATE_REPO");
     if (pszRepo == NULL) {
         pszRepo = "thesmokesession-bit/frequency-remaster";
@@ -865,6 +879,8 @@ static void *RunUpdater(void *pUnused) {
     const int nFetched = pFile != NULL ? Fetch(szAsset, "application/octet-stream", NULL, pFile) : -1;
     const long nSize = pFile != NULL ? ftell(pFile) : 0;
     if (pFile != NULL) {
+        fflush(pFile); // on the disk before it replaces the eboot: a power cut must not leave half
+        fsync(fileno(pFile));
         fclose(pFile);
     }
     // A signed title starts with the SELF magic; anything else (an error page) is not installed.

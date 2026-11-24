@@ -264,7 +264,10 @@ struct LivePad {
 };
 
 constexpr int kMaxPlayers = 4;
-std::vector<SDL_GameController *> g_controllers; // one per player, in order
+// One slot per player. A controller keeps its slot while connected; an unplugged one leaves its
+// slot empty (that player reads as idle) for the next controller, so nobody changes player and the
+// multitap does not change under a running song.
+SDL_GameController *g_controllers[kMaxPlayers];
 
 bool LiveInputOn() {
     static const bool s_bOn = getenv("FREQ_INPUT") == nullptr &&
@@ -283,29 +286,54 @@ void UpdateControllers() {
     }
     static int s_nJoysticks = -1;
     SDL_GameControllerUpdate();
-    if (SDL_NumJoysticks() == s_nJoysticks) {
+    // A controller gone since (even one swapped for another between frames, which leaves the count
+    // as it was) frees its slot.
+    bool bChanged = SDL_NumJoysticks() != s_nJoysticks;
+    for (int p = 0; p < kMaxPlayers; ++p) {
+        if (g_controllers[p] != nullptr && !SDL_GameControllerGetAttached(g_controllers[p])) {
+            fprintf(stderr, "host: player %d's controller left\n", p + 1);
+            SDL_GameControllerClose(g_controllers[p]);
+            g_controllers[p] = nullptr;
+            bChanged = true;
+        }
+    }
+    if (!bChanged) {
         return;
     }
     s_nJoysticks = SDL_NumJoysticks();
-    for (SDL_GameController *pController : g_controllers) {
-        SDL_GameControllerClose(pController);
-    }
-    g_controllers.clear();
-    for (int i = 0; i < s_nJoysticks && static_cast<int>(g_controllers.size()) < kMaxPlayers; ++i) {
+    for (int i = 0; i < s_nJoysticks; ++i) {
         const char *pszName = SDL_GameControllerNameForIndex(i);
         if (!SDL_IsGameController(i) || (pszName != nullptr && strstr(pszName, "Remote") != nullptr)) {
             continue;
         }
-        if (SDL_GameController *pController = SDL_GameControllerOpen(i)) {
-            fprintf(stderr, "host: controller %s plays player %zu\n", SDL_GameControllerName(pController),
-                    g_controllers.size() + 1);
-            g_controllers.push_back(pController);
+        const SDL_JoystickID id = SDL_JoystickGetDeviceInstanceID(i);
+        int nFree = -1;
+        bool bOpen = false;
+        for (int p = kMaxPlayers - 1; p >= 0; --p) {
+            if (g_controllers[p] == nullptr) {
+                nFree = p;
+            } else if (SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(g_controllers[p])) == id) {
+                bOpen = true;
+            }
+        }
+        if (bOpen || nFree < 0) {
+            continue;
+        }
+        if ((g_controllers[nFree] = SDL_GameControllerOpen(i)) != nullptr) {
+            fprintf(stderr, "host: controller %s plays player %d\n", SDL_GameControllerName(g_controllers[nFree]),
+                    nFree + 1);
         }
     }
 }
 
+// The highest player with a controller, so a player who unplugs keeps the others' numbers.
 int LivePlayers() {
-    return static_cast<int>(g_controllers.size());
+    for (int p = kMaxPlayers; p > 0; --p) {
+        if (g_controllers[p - 1] != nullptr) {
+            return p;
+        }
+    }
+    return 0;
 }
 
 LivePad ReadLivePad(int nPlayer) {
@@ -314,6 +342,9 @@ LivePad ReadLivePad(int nPlayer) {
         return pad;
     }
     SDL_GameController *pController = g_controllers[nPlayer];
+    if (pController == nullptr) {
+        return pad;
+    }
     static const struct {
         SDL_GameControllerButton button;
         unsigned nBit;
@@ -432,13 +463,18 @@ int scePadSetActAlign(int, int, const unsigned char *) {
 // actuator n); a game that aligns them otherwise would want scePadSetActAlign's table kept.
 int scePadSetActDirect(int nPort, int nSlot, const unsigned char *pData) {
     const int nPlayer = PlayerAt(nPort, nSlot);
-    if (pData != nullptr && nPlayer >= 0 && nPlayer < LivePlayers()) {
+    if (pData != nullptr && nPlayer >= 0 && nPlayer < LivePlayers() && g_controllers[nPlayer] != nullptr) {
         static unsigned char s_abLast[kMaxPlayers][2];
-        if (s_abLast[nPlayer][0] != pData[0] || s_abLast[nPlayer][1] != pData[1]) {
+        static Uint32 s_anSent[kMaxPlayers];
+        const Uint32 nNow = SDL_GetTicks();
+        // Sent on a change, and again every half second while a motor stays on, since each send
+        // lasts one second (a still pad stops within it if the game stops calling).
+        if (s_abLast[nPlayer][0] != pData[0] || s_abLast[nPlayer][1] != pData[1] ||
+            ((pData[0] != 0 || pData[1] != 0) && nNow - s_anSent[nPlayer] >= 500)) {
             s_abLast[nPlayer][0] = pData[0];
             s_abLast[nPlayer][1] = pData[1];
-            // Low frequency (the big motor) from byte 1, high from byte 0; held until the next
-            // change, which a still pad makes within the second.
+            s_anSent[nPlayer] = nNow;
+            // Low frequency (the big motor) from byte 1, high from byte 0.
             SDL_GameControllerRumble(g_controllers[nPlayer], static_cast<Uint16>(pData[1] * 257),
                                      pData[0] != 0 ? 0xc000 : 0, 1000);
         }

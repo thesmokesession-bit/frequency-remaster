@@ -173,7 +173,11 @@ void *RunSurroundOut(void *pHandle) {
                 }
             }
         }
-        sceAudioOutOutput(nHandle, s_aEight); // waits for the port's previous grain
+        // Waits for the port's previous grain; a port that fails returns at once, so the thread
+        // sleeps a grain instead of spinning (and keeps draining the ring the game paces on).
+        if (sceAudioOutOutput(nHandle, s_aEight) < 0) {
+            usleep(kGrain * 1000000 / kRate);
+        }
     }
     return nullptr;
 }
