@@ -1,5 +1,7 @@
 #include "GSH_VulkanPresent.h"
 #include <algorithm>
+#include <cmath>
+#include "PresentFilter.h"
 #include "GSH_VulkanMemoryUtils.h"
 #include "MemStream.h"
 #include "vulkan/StructDefs.h"
@@ -178,6 +180,7 @@ void CPresent::UpdateBackbuffer(uint32 imageIndex, const SWAPCHAIN_SEMAPHORES& s
 
 		auto caps = make_convertible<PIPELINE_CAPS>(0);
 		caps.bufPsm = dispLayer.psm;
+		caps.filter = PresentFilter::Setting();
 		if(dispLayer.useConstantAlpha)
 		{
 			caps.blendMode = (blendAlpha != 1.0f) ? BLEND_MODE_CST_ALPHA : BLEND_MODE_NONE;
@@ -873,7 +876,45 @@ Framework::Vulkan::CShaderModule CPresent::CreateFragmentShader(const PIPELINE_C
 		auto c11 = readPixel(x1, y1);
 		auto top = c00 + (c10 - c00) * weightX;
 		auto bottom = c01 + (c11 - c01) * weightX;
-		outputColor = top + (bottom - top) * weightY;
+		auto color = CFloat4Lvalue(b.CreateTemporary());
+		color = top + (bottom - top) * weightY;
+
+		//resonance: FREQ_FILTER (PresentFilter.h), in this pass. A bloom tap reads the frame pixel its
+		//offset in GS pixels lands on, and the crt line is the GS line the sample falls in.
+		auto zero = NewFloat4(b, 0, 0, 0, 0);
+		auto one = NewFloat4(b, 1, 1, 1, 1);
+		switch(caps.filter)
+		{
+		case PresentFilter::BLOOM:
+		{
+			auto glow = CFloat4Lvalue(b.CreateTemporary());
+			glow = zero;
+			for(const auto& tap : PresentFilter::bloomTaps)
+			{
+				auto tapX = Clamp(cellX + NewInt(b, static_cast<int32>(std::lround(tap.x * m_context->resFactor))), NewInt(b, 0), lastX);
+				auto tapY = Clamp(cellY + NewInt(b, static_cast<int32>(std::lround(tap.y * m_context->resFactor))), NewInt(b, 0), lastY);
+				auto c = readPixel(tapX, tapY);
+				//The SPIR-V generator has no Saturate(), so the weight is clamped as a vector.
+				auto luma = c->x() * NewFloat(b, 0.299f) + c->y() * NewFloat(b, 0.587f) + c->z() * NewFloat(b, 0.114f);
+				auto over = (luma - NewFloat(b, PresentFilter::bloomThreshold)) * NewFloat(b, PresentFilter::bloomKnee);
+				auto weight = Clamp(NewFloat4(over, over, over, over), zero, one) * NewFloat4(b, tap.weight, tap.weight, tap.weight, 0);
+				glow = glow + c * weight;
+			}
+			color = Clamp(color + glow, zero, one);
+			break;
+		}
+		case PresentFilter::CRT:
+		{
+			auto line = inputTexCoord->y() * ToFloat(layerSize->y());
+			auto d = Abs(Fract(NewFloat2(line, line))->x() - NewFloat(b, 0.5f)) * NewFloat(b, 2.0f);
+			auto scan = (NewFloat(b, 1.0f) - NewFloat(b, PresentFilter::scanlineDepth) * d * d) * NewFloat(b, PresentFilter::scanlineGain);
+			color = Clamp(color * NewFloat4(scan, scan, scan, NewFloat(b, 1.0f)), zero, one);
+			break;
+		}
+		default:
+			break;
+		}
+		outputColor = color->xyzw();
 	}
 
 	Framework::CMemStream shaderStream;

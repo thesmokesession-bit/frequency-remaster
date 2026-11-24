@@ -7,6 +7,7 @@
 #include "../GsPixelFormats.h"
 #include "../GsTransferRange.h"
 #include "GSH_OpenGL.h"
+#include "PresentFilter.h"
 #include "TexReplace.h"
 
 #ifdef USE_DUALSOURCE_BLENDING
@@ -249,6 +250,15 @@ void CGSH_OpenGL::FlipImpl(const DISPLAY_INFO& dispInfo)
 			glUniform2f(m_presentTexelSizeUniform, 1.0f / static_cast<float>(framebuffer->m_width * m_fbScale),
 			            1.0f / static_cast<float>(framebuffer->m_height * m_fbScale));
 		}
+		if(m_presentGsTexelUniform != -1)
+		{
+			glUniform2f(m_presentGsTexelUniform, 1.0f / static_cast<float>(framebuffer->m_width),
+			            1.0f / static_cast<float>(framebuffer->m_height));
+		}
+		if(m_presentFilterUniform != -1)
+		{
+			glUniform1i(m_presentFilterUniform, PresentFilter::Setting());
+		}
 
 		glBindBuffer(GL_ARRAY_BUFFER, m_presentVertexBuffer);
 		glBindVertexArray(m_presentVertexArray);
@@ -329,6 +339,8 @@ void CGSH_OpenGL::InitializeRC()
 	m_presentTextureUniform = glGetUniformLocation(*m_presentProgram, "g_texture");
 	m_presentTexCoordScaleUniform = glGetUniformLocation(*m_presentProgram, "g_texCoordScale");
 	m_presentTexelSizeUniform = glGetUniformLocation(*m_presentProgram, "g_texelSize");
+	m_presentGsTexelUniform = glGetUniformLocation(*m_presentProgram, "g_gsTexel");
+	m_presentFilterUniform = glGetUniformLocation(*m_presentProgram, "g_filter");
 
 	m_copyToFbProgram = GenerateCopyToFbProgram();
 	m_copyToFbTexture = Framework::OpenGl::CTexture::Create();

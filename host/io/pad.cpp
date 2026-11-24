@@ -13,9 +13,17 @@
 // with players 1 to 4 in its slots A to D. Without such entries only the pad in port 1 exists. Frames count from the start, or from the blank of the last "after <BREADCRUMB>" line's
 // breadcrumb (see HostBreadcrumb()); entries under an "after" line wait for its breadcrumb.
 // Test controls: LUP, LDOWN, LLEFT, LRIGHT and RUP... RRIGHT push the left or right stick fully that
-// way; TEXREFS (player 1) prints the loaded textures' referrers once (see HostDumpTexRefs()).
+// way; TEXREFS (player 1) prints the loaded textures' referrers once (see HostDumpTexRefs());
+// TOUCHPAD clicks the DualSense touchpad. "<frame> SET <KEY>=<VALUE>" sets a setting for the rest
+// of the run at that blank, as the settings screens do.
+//
+// While a song is paused, the touchpad click (or R3) starts photo mode. It hides the HUD and the
+// pause menu and gives the tunnel camera to the sticks (the left orbits, the right zooms with up
+// and down). Cross saves the presented frame as a PNG (HostGfxPhoto()), and Circle, the touchpad,
+// or R3 ends photo mode. The game reads an idle pad meanwhile and until every button is released.
 
 #include <algorithm>
+#include <cmath>
 #include <fcntl.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -79,6 +87,7 @@ constexpr ButtonName kSticks[] = {{"RLEFT", 1u << 16, -1}, {"RRIGHT", 1u << 17, 
                                   {"LLEFT", 1u << 20, -1}, {"LRIGHT", 1u << 21, -1},
                                   {"LUP", 1u << 22, -1},   {"LDOWN", 1u << 23, -1}};
 constexpr unsigned kTexRefs = 1u << 24;
+constexpr unsigned kTouchpad = 1u << 25;
 
 struct InputEvent {
     std::string anchor;
@@ -86,6 +95,7 @@ struct InputEvent {
     unsigned nButtons;
     int nPort;
     bool bFired;
+    std::string setting; // SET's KEY=VALUE
 };
 
 struct Anchor {
@@ -100,6 +110,7 @@ pthread_once_t g_scriptOnce = PTHREAD_ONCE_INIT;
 int g_nPlayers = 1; // pads the script plays; above 2, through a multitap in port 1
 
 extern "C" void HostDumpTexRefs() __attribute__((weak));
+extern "C" void HostGfxPhoto() __attribute__((weak)); // host/gfx/gfx.cpp
 extern "C" void HostAutoPause(int nPlayer); // src/game/inputpollerps2.cpp: FREQ_AUTOPAUSE
 
 unsigned ParseButtons(const char *pszButtons, int nLine) {
@@ -129,6 +140,10 @@ unsigned ParseButtons(const char *pszButtons, int nLine) {
             nButtons |= kTexRefs;
             bKnown = true;
         }
+        if (name == "TOUCHPAD") {
+            nButtons |= kTouchpad;
+            bKnown = true;
+        }
         if (!bKnown) {
             fprintf(stderr, "host: FREQ_INPUT line %d: unknown button %s\n", nLine, name.c_str());
         }
@@ -153,17 +168,22 @@ void LoadScript() {
     char szLine[256];
     for (int nLine = 1; fgets(szLine, sizeof(szLine), pFile) != nullptr; ++nLine) {
         char szWord[128];
+        char szValue[128];
         unsigned nFrame;
         if (szLine[0] == '#' || sscanf(szLine, "%127s", szWord) != 1) {
             continue;
         }
         if (strcmp(szWord, "after") == 0 && sscanf(szLine, "after %127s", szWord) == 1) {
             anchor = szWord;
+        } else if (sscanf(szLine, "%u SET %127[^=]=%127s", &nFrame, szWord, szValue) == 3) {
+            const std::string setting = std::string(szWord) + '=' + szValue;
+            g_events.push_back(InputEvent{anchor, nFrame, 0, 0, false, setting});
         } else if (sscanf(szLine, "%u %127s", &nFrame, szWord) == 2) {
             const bool bPlayer = szWord[0] == 'P' && szWord[1] >= '2' && szWord[1] <= '4' && szWord[2] == ':';
             const int nPlayer = bPlayer ? szWord[1] - '1' : 0;
             g_nPlayers = std::max(g_nPlayers, nPlayer + 1);
-            g_events.push_back(InputEvent{anchor, nFrame, ParseButtons(szWord + (bPlayer ? 3 : 0), nLine), nPlayer, false});
+            const unsigned nButtons = ParseButtons(szWord + (bPlayer ? 3 : 0), nLine);
+            g_events.push_back(InputEvent{anchor, nFrame, nButtons, nPlayer, false, {}});
         } else {
             fprintf(stderr, "host: FREQ_INPUT line %d is not understood\n", nLine);
         }
@@ -194,6 +214,13 @@ unsigned HeldButtons(int nPlayer) {
         if (bArmed && nNow >= nStart && nNow < nStart + kHoldFrames) {
             nButtons |= event.nButtons;
             bDump |= (event.nButtons & kTexRefs) != 0 && !event.bFired;
+            if (!event.bFired && !event.setting.empty()) {
+                const std::string::size_type nEquals = event.setting.find('=');
+                setenv(event.setting.substr(0, nEquals).c_str(),
+                       event.setting.substr(nEquals + 1).c_str(),
+                       1);
+                fprintf(stderr, "host: FREQ_INPUT set %s\n", event.setting.c_str());
+            }
             event.bFired = true;
         }
     }
@@ -282,6 +309,7 @@ struct PadFeel {
     int nTriggers; // Bit 0 is set when L2 plays a lane, bit 1 when R2 does.
     bool bReported;
     Uint32 nReportedAt;
+    Uint32 nDrawnAt; // the last report, moving or not
     float afFlash[3];
     bool bFlash;
     Uint32 nFlashAt;
@@ -394,7 +422,9 @@ LivePad ReadLivePad(int nPlayer) {
                 {SDL_CONTROLLER_BUTTON_BACK, 0x0100},       {SDL_CONTROLLER_BUTTON_START, 0x0800},
                 {SDL_CONTROLLER_BUTTON_LEFTSTICK, 0x0200},  {SDL_CONTROLLER_BUTTON_RIGHTSTICK, 0x0400},
                 {SDL_CONTROLLER_BUTTON_DPAD_UP, 0x1000},    {SDL_CONTROLLER_BUTTON_DPAD_RIGHT, 0x2000},
-                {SDL_CONTROLLER_BUTTON_DPAD_DOWN, 0x4000},  {SDL_CONTROLLER_BUTTON_DPAD_LEFT, 0x8000}};
+                {SDL_CONTROLLER_BUTTON_DPAD_DOWN, 0x4000},
+                {SDL_CONTROLLER_BUTTON_DPAD_LEFT, 0x8000},
+                {SDL_CONTROLLER_BUTTON_TOUCHPAD, kTouchpad}};
     constexpr Sint16 kTriggerPressed = 8000;
     for (const auto &entry : kMap) {
         if (SDL_GameControllerGetButton(pController, entry.button) != 0) {
@@ -423,6 +453,13 @@ void RumbleMotors(int nPlayer) {
                              1000);
 }
 
+// The weapon effect resists from zone 2 to zone 3 of the trigger's ten and breaks at its end.
+// ReadLivePad()'s kTriggerPressed (a quarter of the travel) lies inside it, so the press counts as
+// the click is felt. Strength runs from 0 to 8.
+constexpr unsigned char kTriggerStart = 2;
+constexpr unsigned char kTriggerEnd = 3;
+constexpr unsigned char kTriggerStrength = 5;
+
 #ifdef __PROSPERO__
 // The adaptive triggers go through the console's own pad calls, as in Perfect Eye, since SDL's PS5
 // driver has none. The layout is ScePadTriggerEffectParam, with command[0] for L2 and command[1]
@@ -443,13 +480,7 @@ extern "C" int scePadSetTriggerEffect(int nHandle, const TriggerEffect *pEffect)
 extern "C" int sceUserServiceGetLoginUserIdList(int anUsers[4]);
 extern "C" int sceUserServiceGetUserName(int nUser, char *pszName, size_t nSize);
 
-// The weapon effect (mode 2) resists from zone 2 to zone 3 of the trigger's ten and breaks at its
-// end. ReadLivePad()'s kTriggerPressed (a quarter of the travel) lies inside it, so the press
-// counts as the click is felt. Strength runs from 0 to 8.
 constexpr unsigned kTriggerWeapon = 2;
-constexpr unsigned char kTriggerStart = 2;
-constexpr unsigned char kTriggerEnd = 3;
-constexpr unsigned char kTriggerStrength = 5;
 
 // Finds the pad's system handle. SDL names each pad after its user and opens it as (user, standard
 // port, 0), which scePadGetHandle() hands back. The result is -1 when no logged-in user has the
@@ -522,6 +553,52 @@ void SetTriggers(int nPlayer, SDL_GameController *pController, int nTriggers, Ui
         s_anHandle[nPlayer] = -1;
     }
 }
+#else
+// Elsewhere the same effect goes to a PS5 controller through SDL's raw effect call, in the
+// DualSense output report's effect block (DS5EffectsState_t in SDL's test/testgamecontroller.c):
+// byte 0 selects what the report changes, and the right and left trigger effects take 11 bytes
+// each from bytes 10 and 21. The weapon effect there is mode 0x25, a 16-bit mask of the start
+// and end zones, and the strength less one; mode 0x05 turns a trigger's effect off.
+constexpr int kEffectSize = 47;
+constexpr unsigned char kEffectTriggers = 0x04 | 0x08;
+constexpr int kEffectTrigger[2] = {21, 10}; // L2, R2
+constexpr unsigned char kTriggerWeapon = 0x25;
+constexpr unsigned char kTriggerOff = 0x05;
+
+// Puts the weapon effect on the triggers in nTriggers (bit 0 L2, bit 1 R2) and turns the others
+// off, sent only on a change. A controller SDL cannot send the effect to is reported once and not
+// tried again.
+void SetTriggers(int nPlayer, SDL_GameController *pController, int nTriggers, Uint32) {
+    static SDL_GameController *s_apFor[kMaxPlayers];
+    static int s_anSent[kMaxPlayers];
+    static bool s_abRefused[kMaxPlayers];
+    if (s_apFor[nPlayer] != pController) {
+        s_apFor[nPlayer] = pController;
+        s_anSent[nPlayer] = -1;
+        s_abRefused[nPlayer] = SDL_GameControllerGetType(pController) != SDL_CONTROLLER_TYPE_PS5;
+    }
+    if (nTriggers == s_anSent[nPlayer] || s_abRefused[nPlayer]) {
+        return;
+    }
+    unsigned char abEffect[kEffectSize] = {kEffectTriggers};
+    constexpr unsigned kZones = (1u << kTriggerStart) | (1u << kTriggerEnd);
+    for (int t = 0; t < 2; ++t) {
+        const int nAt = kEffectTrigger[t];
+        if ((nTriggers & (1 << t)) == 0) {
+            abEffect[nAt] = kTriggerOff;
+            continue;
+        }
+        abEffect[nAt] = kTriggerWeapon;
+        abEffect[nAt + 1] = static_cast<unsigned char>(kZones & 0xff);
+        abEffect[nAt + 2] = static_cast<unsigned char>(kZones >> 8);
+        abEffect[nAt + 3] = kTriggerStrength - 1;
+    }
+    s_anSent[nPlayer] = nTriggers;
+    if (SDL_GameControllerSendEffect(pController, abEffect, sizeof(abEffect)) != 0) {
+        fprintf(stderr, "host: player %d's triggers refused (%s)\n", nPlayer + 1, SDL_GetError());
+        s_abRefused[nPlayer] = true;
+    }
+}
 #endif
 
 // Runs once a frame after UpdateControllers(). It sets each player's light bar and triggers from
@@ -555,11 +632,105 @@ void UpdateFeel() {
                 feel.nLitAt = nNow;
             }
         }
-#ifdef __PROSPERO__
         SetTriggers(
             p, pController, bPlaying && SettingOn("FREQ_TRIGGERS") ? feel.nTriggers : 0, nNow);
-#endif
     }
+}
+
+// Photo mode's state. At full stick the camera turns kPhotoOrbitRate radians a second and the field
+// of view's scale changes by kPhotoZoomRate a second. The limits restrict the camera to the tunnel
+// (1 radian of yaw and 0.6 of pitch each way) and the lens to between a 0.3 zoom and a little wider
+// than the game's.
+struct Photo {
+    bool bOn;
+    bool bReleasing; // the game reads an idle pad until every button is up after photo mode
+    unsigned nButtons;
+    Uint32 nAt;
+    float flYaw;
+    float flPitch;
+    float flZoom;
+};
+Photo g_photo = {false, false, 0, 0, 0.0f, 0.0f, 1.0f};
+
+constexpr unsigned kButtonR3 = 0x0400;
+constexpr unsigned kButtonCircle = 0x0020;
+constexpr unsigned kButtonCross = 0x0040;
+constexpr float kPhotoOrbitRate = 1.2f;
+constexpr float kPhotoMaxYaw = 1.0f;
+constexpr float kPhotoMaxPitch = 0.6f;
+constexpr float kPhotoZoomRate = 0.8f;
+constexpr float kPhotoMinZoom = 0.3f;
+constexpr float kPhotoMaxZoom = 1.3f;
+constexpr float kStickDeadZone = 0.15f;
+
+// Whether the tunnel reported a frame lately, and with bStopped, whether its song tick has stopped
+// meanwhile (a paused song).
+bool TunnelDrawn(Uint32 nNow, bool bStopped) {
+    for (const PadFeel &feel : g_feel) {
+        if (feel.bReported && nNow - feel.nDrawnAt < kFeelStaleMs &&
+            (!bStopped || nNow - feel.nReportedAt >= kFeelStaleMs)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// One stick axis from -1 to 1 (axes in report order), the script's push over the live stick.
+float StickAxis(const LivePad &live, unsigned nHeld, int nAxis) {
+    const unsigned nPush = (nHeld >> (kStickShift + 2 * nAxis)) & 3;
+    const int nByte = nPush == 1 ? 0x00 : (nPush == 2 ? 0xff : live.abSticks[nAxis]);
+    const float flAxis = std::clamp((nByte - kAnalogCentre) / 127.0f, -1.0f, 1.0f);
+    return std::fabs(flAxis) < kStickDeadZone ? 0.0f : flAxis;
+}
+
+// Once a frame (port 1's read), from every player's pad: starts, steers and ends photo mode.
+void UpdatePhoto() {
+    const Uint32 nNow = SDL_GetTicks();
+    unsigned nButtons = 0;
+    float flOrbitX = 0.0f;
+    float flOrbitY = 0.0f;
+    float flZoom = 0.0f;
+    for (int p = 0; p < Players(); ++p) {
+        const LivePad live = ReadLivePad(p);
+        const unsigned nHeld = HeldButtons(p) | live.nButtons;
+        nButtons |= nHeld;
+        flOrbitX += StickAxis(live, nHeld, 2);
+        flOrbitY += StickAxis(live, nHeld, 3);
+        flZoom += StickAxis(live, nHeld, 1);
+    }
+    const unsigned nPressed = nButtons & ~g_photo.nButtons;
+    const float flSeconds = static_cast<float>(std::min<Uint32>(nNow - g_photo.nAt, 50)) / 1000.0f;
+    g_photo.nButtons = nButtons;
+    g_photo.nAt = nNow;
+    if (!g_photo.bOn) {
+        g_photo.bReleasing = g_photo.bReleasing && (nButtons & 0xffff) != 0;
+        if ((nPressed & (kTouchpad | kButtonR3)) == 0) {
+            return;
+        }
+        if (!TunnelDrawn(nNow, true)) {
+            fprintf(stderr, "host: photo mode is for a paused song\n");
+            return;
+        }
+        g_photo = Photo{true, false, nButtons, nNow, 0.0f, 0.0f, 1.0f};
+        fprintf(stderr, "PHOTO_MODE_ON\n");
+        return;
+    }
+    // A song that stops drawing (it ended or was left) ends photo mode too.
+    if ((nPressed & (kTouchpad | kButtonR3 | kButtonCircle)) != 0 || !TunnelDrawn(nNow, false)) {
+        g_photo.bOn = false;
+        g_photo.bReleasing = true;
+        fprintf(stderr, "PHOTO_MODE_OFF\n");
+        return;
+    }
+    if ((nPressed & kButtonCross) != 0 && HostGfxPhoto != nullptr) {
+        HostGfxPhoto();
+    }
+    g_photo.flYaw = std::clamp(
+        g_photo.flYaw - flOrbitX * kPhotoOrbitRate * flSeconds, -kPhotoMaxYaw, kPhotoMaxYaw);
+    g_photo.flPitch = std::clamp(
+        g_photo.flPitch - flOrbitY * kPhotoOrbitRate * flSeconds, -kPhotoMaxPitch, kPhotoMaxPitch);
+    g_photo.flZoom = std::clamp(
+        g_photo.flZoom + flZoom * kPhotoZoomRate * flSeconds, kPhotoMinZoom, kPhotoMaxZoom);
 }
 
 } // namespace
@@ -686,10 +857,12 @@ int scePadRead(int nPort, int nSlot, unsigned char *pData) {
     if (nPort == 0 && nSlot == 0) {
         UpdateControllers();
         UpdateFeel();
+        UpdatePhoto();
     }
     const int nPlayer = PlayerAt(nPort, nSlot);
-    const LivePad live = ReadLivePad(nPlayer);
-    const unsigned nHeld = HeldButtons(nPlayer) | live.nButtons;
+    const bool bIdle = g_photo.bOn || g_photo.bReleasing;
+    const LivePad live = ReadLivePad(bIdle ? -1 : nPlayer);
+    const unsigned nHeld = bIdle ? 0 : HeldButtons(nPlayer) | live.nButtons;
     const unsigned short nWire = static_cast<unsigned short>(~nHeld);
     pData[1] = kDualShockPressureMode;
     pData[2] = static_cast<unsigned char>(nWire >> 8);
@@ -740,8 +913,9 @@ void HostPadFrame(
     feel.afColor[2] = flBlue;
     feel.nTriggers = nTriggers;
     // A song tick that stops moving (the pause screen) lets the report go stale.
+    feel.nDrawnAt = SDL_GetTicks();
     if (!feel.bReported || flTick != feel.flTick) {
-        feel.nReportedAt = SDL_GetTicks();
+        feel.nReportedAt = feel.nDrawnAt;
     }
     feel.flTick = flTick;
     feel.bReported = true;
@@ -775,6 +949,18 @@ void HostPadTick(int nPlayer) {
                              kCatchTickMs);
     g_feel[nPlayer].bTick = true;
     g_feel[nPlayer].nTickEnd = SDL_GetTicks() + kCatchTickMs;
+}
+
+// TnlCameraRig::SetFrame() queries each frame whether photo mode runs, and if so the camera's turn
+// from where photo mode found it (yaw and pitch in radians) and the field of view's scale.
+int HostPhotoCamera(float *pflYaw, float *pflPitch, float *pflZoom) {
+    if (!g_photo.bOn) {
+        return 0;
+    }
+    *pflYaw = g_photo.flYaw;
+    *pflPitch = g_photo.flPitch;
+    *pflZoom = g_photo.flZoom;
+    return 1;
 }
 
 } // extern "C"

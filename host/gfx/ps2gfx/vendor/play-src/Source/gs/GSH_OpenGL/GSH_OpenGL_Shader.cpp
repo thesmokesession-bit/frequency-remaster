@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <cmath>
 #include <sstream>
+#include "PresentFilter.h"
 
 #ifdef GLES_COMPATIBILITY
 #define GLSL_VERSION "#version 300 es"
@@ -678,7 +679,7 @@ std::string CGSH_OpenGL::GenerateAlphaBlendSection(ALPHABLEND_ABD factorA, ALPHA
 static const char* g_fxaaSource = R"(
 uniform vec2 g_texelSize;
 float lumaAt(vec2 p) { return dot(texture(g_texture, p).rgb, vec3(0.299, 0.587, 0.114)); }
-void main()
+vec4 presentColor()
 {
 	vec2 p = v_texCoord;
 	vec2 t = g_texelSize;
@@ -689,7 +690,7 @@ void main()
 	float lMin = min(lM, min(min(lN, lS), min(lW, lE)));
 	float lMax = max(lM, max(max(lN, lS), max(lW, lE)));
 	float range = lMax - lMin;
-	if(range < max(0.0625, lMax * 0.125)) { fragColor = color; return; }
+	if(range < max(0.0625, lMax * 0.125)) return color;
 	float lNW = lumaAt(p - t), lSE = lumaAt(p + t);
 	float lNE = lumaAt(p + vec2(t.x, -t.y)), lSW = lumaAt(p + vec2(-t.x, t.y));
 	float edgeH = abs(lNW + lSW - 2.0 * lW) + 2.0 * abs(lN + lS - 2.0 * lM) + abs(lNE + lSE - 2.0 * lE);
@@ -721,9 +722,49 @@ void main()
 	float sub = clamp(abs(lAverage - lM) / range, 0.0, 1.0);
 	sub = (-2.0 * sub + 3.0) * sub * sub;
 	offset = max(offset, sub * sub * 0.25);
-	fragColor = texture(g_texture, p + (horizontal ? vec2(0.0, offset * stepAcross) : vec2(offset * stepAcross, 0.0)));
+	return texture(g_texture, p + (horizontal ? vec2(0.0, offset * stepAcross) : vec2(offset * stepAcross, 0.0)));
 }
 )";
+
+// FREQ_FILTER (PresentFilter.h) applied to presentColor(), g_filter being PresentFilter::Mode (a
+// uniform branch). g_gsTexel is one GS pixel in texture coordinates, and the bloom's taps stay
+// inside the displayed layer (g_texCoordScale).
+static std::string PresentFilterSource()
+{
+	std::stringstream source;
+	source << std::fixed;
+	source << "uniform int g_filter;" << std::endl;
+	source << "uniform vec2 g_gsTexel;" << std::endl;
+	source << "uniform vec2 g_texCoordScale;" << std::endl;
+	source << "vec3 glowAt(vec2 offset)" << std::endl;
+	source << "{" << std::endl;
+	source << "	vec2 p = clamp(v_texCoord + offset * g_gsTexel, 0.5 * g_gsTexel, g_texCoordScale - 0.5 * g_gsTexel);" << std::endl;
+	source << "	vec3 c = texture(g_texture, p).rgb;" << std::endl;
+	source << "	return c * clamp((dot(c, vec3(0.299, 0.587, 0.114)) - " << PresentFilter::bloomThreshold << ") * "
+	       << PresentFilter::bloomKnee << ", 0.0, 1.0);" << std::endl;
+	source << "}" << std::endl;
+	source << "void main()" << std::endl;
+	source << "{" << std::endl;
+	source << "	vec4 color = presentColor();" << std::endl;
+	source << "	if(g_filter == " << PresentFilter::BLOOM << ")" << std::endl;
+	source << "	{" << std::endl;
+	source << "		vec3 glow = vec3(0.0);" << std::endl;
+	for(const auto& tap : PresentFilter::bloomTaps)
+	{
+		source << "		glow += " << tap.weight << " * glowAt(vec2(" << tap.x << ", " << tap.y << "));" << std::endl;
+	}
+	source << "		color.rgb = min(color.rgb + glow, 1.0);" << std::endl;
+	source << "	}" << std::endl;
+	source << "	else if(g_filter == " << PresentFilter::CRT << ")" << std::endl;
+	source << "	{" << std::endl;
+	source << "		float d = abs(fract(v_texCoord.y / g_gsTexel.y) - 0.5) * 2.0;" << std::endl;
+	source << "		color.rgb = min(color.rgb * ((1.0 - " << PresentFilter::scanlineDepth << " * d * d) * "
+	       << PresentFilter::scanlineGain << "), 1.0);" << std::endl;
+	source << "	}" << std::endl;
+	source << "	fragColor = color;" << std::endl;
+	source << "}" << std::endl;
+	return source.str();
+}
 
 Framework::OpenGl::ProgramPtr CGSH_OpenGL::GeneratePresentProgram(bool antiAliasing)
 {
@@ -761,11 +802,12 @@ Framework::OpenGl::ProgramPtr CGSH_OpenGL::GeneratePresentProgram(bool antiAlias
 		}
 		else
 		{
-			shaderBuilder << "void main()" << std::endl;
+			shaderBuilder << "vec4 presentColor()" << std::endl;
 			shaderBuilder << "{" << std::endl;
-			shaderBuilder << "	fragColor = texture(g_texture, v_texCoord);" << std::endl;
+			shaderBuilder << "	return texture(g_texture, v_texCoord);" << std::endl;
 			shaderBuilder << "}" << std::endl;
 		}
+		shaderBuilder << PresentFilterSource();
 
 		pixelShader.SetSource(shaderBuilder.str().c_str());
 		FRAMEWORK_MAYBE_UNUSED bool result = pixelShader.Compile();
