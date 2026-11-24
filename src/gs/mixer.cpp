@@ -12,6 +12,14 @@
 #include "msg/tracksonmsg.h"
 #include "script/configquery.h"
 
+#ifdef RESONANCE_HOST
+// host/audio/audio.cpp: the spatial mix (FREQ_SPATIAL) places each channel's voices by its track.
+extern "C" void HostSpatialTrack(int nChannel, int nTrack);
+#endif
+#ifndef RESONANCE_HOST
+#line 13
+#endif
+
 namespace {
 
 constexpr unsigned char kStatusControlChange = 0xb0;
@@ -54,9 +62,21 @@ Mixer::Mixer(int nTrack, unsigned char nChannel)
     mLevel = kMaxLevel;
     std::fill(mGainFactors, mGainFactors + sizeof(mGainFactors), kMaxLevel);
     QueryConfigVector(&mTrackLevels, kTrackLevelsConfigCode);
+#ifdef RESONANCE_HOST
+    HostSpatialTrack(nChannel, nTrack);
+#endif
+#ifndef RESONANCE_HOST
+#line 56
+#endif
 }
 
 Mixer::~Mixer() {
+#ifdef RESONANCE_HOST
+    HostSpatialTrack(mChannel, -1);
+#endif
+#ifndef RESONANCE_HOST
+#line 59
+#endif
 }
 
 void Mixer::SendPan() {
