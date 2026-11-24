@@ -1326,15 +1326,22 @@ void *RunBoard(void *) {
         }
         g_boardBests.clear();
         pthread_mutex_unlock(&g_boardLock);
-        if (BoardPost(board)) {
+        const bool bPosted = BoardPost(board);
+        if (bPosted) {
             HostAchievement("board");
         }
         BoardFetch(board);
         SaveBoard(board);
         for (const std::string &key : keys) {
-            Notify(BoardRank(board, key).c_str());
+            if (bPosted) {
+                Notify(BoardRank(board, key).c_str());
+            }
         }
         pthread_mutex_lock(&g_boardLock);
+        if (!bPosted) { // refused (ntfy.sh's daily limit): again after the gap, ranks after that
+            g_boardRankKeys.insert(g_boardRankKeys.end(), keys.begin(), keys.end());
+            bRepost = true;
+        }
     }
     return nullptr;
 }
