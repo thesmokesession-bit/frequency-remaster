@@ -97,3 +97,8 @@
 # FREQ_ONLINE_PEER. The STUN server tells each machine its public address (off to skip).
 #FREQ_ONLINE_SIGNAL=https://ntfy.sh
 #FREQ_ONLINE_STUN=stun.l.google.com:19302
+# Custom songs. FREQ_SONGS is a folder of song folders with files at their game paths (for example
+# mysong/levels/mysong/mysongf1_c.mid), and they replace or add to the disc's files; the image is
+# not changed. host/io/songs.py unpacks a disc song into a song folder and lists what a new song
+# needs. The PS5 default is songs in the title folder.
+#FREQ_SONGS=songs

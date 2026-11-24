@@ -538,6 +538,7 @@ __attribute__((constructor(102))) static void FindGameFiles(void) {
     }
     InTitleFolder("FREQ_DISC", s_szIso[0] != '\0' ? s_szIso : NULL);
     InTitleFolder("FREQ_MC", "memcard");
+    InTitleFolder("FREQ_SONGS", "songs");
     fprintf(stderr, "PS5: disc %s, memory card %s\n", getenv("FREQ_DISC"), getenv("FREQ_MC"));
     // At 120 fps the display mode is taken on the console's word (radv-videoout-120hz.patch): the
     // frame line's presents a second show the rate the TV really runs at.
