@@ -430,6 +430,8 @@ private:
 	GLint m_presentTextureUniform = -1;
 	GLint m_presentTexCoordScaleUniform = -1;
 	GLint m_presentTexelSizeUniform = -1; // FREQ_AA: the present shader's FXAA pass
+	GLint m_presentGsTexelUniform = -1;   // FREQ_FILTER: one GS pixel, for bloom and crt
+	GLint m_presentFilterUniform = -1;    // FREQ_FILTER: PresentFilter::Mode
 
 	Framework::OpenGl::ProgramPtr m_copyToFbProgram;
 	Framework::OpenGl::CTexture m_copyToFbTexture;

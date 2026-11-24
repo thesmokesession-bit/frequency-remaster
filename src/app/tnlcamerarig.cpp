@@ -49,6 +49,97 @@ inline void ShowOtherPlayers(const std::vector<Rnd::Cam *> &outerCams,
 
 } // namespace
 
+#ifdef RESONANCE_HOST
+extern "C" int HostPhotoCamera(float *pflYaw, float *pflPitch, float *pflZoom); // host/io/pad.cpp
+
+namespace {
+
+// Photo mode turns "tnl cam1" about a point this far ahead of it.
+constexpr float kPhotoPivot = 1.0f;
+
+// Photo mode hides the head-up display and the menus over it.
+const char *const kPhotoHidden[] = {"hud.view", "met top view"};
+constexpr int kPhotoHiddenCount = sizeof(kPhotoHidden) / sizeof(kPhotoHidden[0]);
+
+// What photo mode changes, as it found it. ponytail: one record, as one rig draws at a time.
+struct PhotoSaved {
+    bool bOn;
+    Transform xfm;
+    float afFov[3];
+    Rnd::Cam::Rect aRect[3];
+    Rnd::Drawable *apHidden[kPhotoHiddenCount];
+    int anShowing[kPhotoHiddenCount];
+} g_photo;
+
+static_assert(sizeof(Transform) == sizeof(Rnd::Cam::mLocalXfm), "a local transform is 4 rows");
+
+// Drives the cameras while the host's photo mode runs (HostPhotoCamera()). pCam ("tnl cam1") turns
+// about a point ahead of it and the three cameras' field of view scales, with the head-up display
+// and the menus hidden. When photo mode ends, all of it is put back as it was. Returns whether
+// photo mode drives the cameras this frame.
+bool PhotoFrame(Rnd::Cam *pCam, Rnd::Cam *pZoomCam, Rnd::Cam *pOuterCam) {
+    Rnd::Cam *const apCams[3] = {pCam, pZoomCam, pOuterCam};
+    float flYaw;
+    float flPitch;
+    float flZoom;
+    const bool bOn = HostPhotoCamera(&flYaw, &flPitch, &flZoom) != 0;
+    if (bOn && !g_photo.bOn) {
+        std::memcpy(&g_photo.xfm, apCams[0]->mLocalXfm, sizeof(g_photo.xfm));
+        for (int i = 0; i < 3; ++i) {
+            g_photo.afFov[i] = apCams[i]->GetFov();
+            g_photo.aRect[i] = apCams[i]->mScreenRect;
+        }
+        for (int i = 0; i < kPhotoHiddenCount; ++i) {
+            g_photo.apHidden[i] =
+                dynamic_cast<Rnd::Drawable *>(Rnd::TheManager.Find(HxStr(kPhotoHidden[i])));
+            if (g_photo.apHidden[i] != nullptr) {
+                g_photo.anShowing[i] = g_photo.apHidden[i]->GetShowing();
+                g_photo.apHidden[i]->SetShowing(0);
+            }
+        }
+    } else if (!bOn && g_photo.bOn) {
+        std::memcpy(apCams[0]->mLocalXfm, &g_photo.xfm, sizeof(g_photo.xfm));
+        apCams[0]->mDirty = 1;
+        for (int i = 0; i < 3; ++i) {
+            ApplyLens(apCams[i], g_photo.afFov[i], g_photo.aRect[i]);
+        }
+        for (int i = 0; i < kPhotoHiddenCount; ++i) {
+            if (g_photo.apHidden[i] != nullptr) {
+                g_photo.apHidden[i]->SetShowing(g_photo.anShowing[i]);
+            }
+        }
+    }
+    g_photo.bOn = bOn;
+    if (!bOn) {
+        return false;
+    }
+
+    // The basis SetFrame() writes from Rnd::MakeRotMatrix() has no scale. The camera looks along
+    // its Y row.
+    Vector3 angles;
+    Vector3 scale;
+    Mat34DecomposeEulerScale(&g_photo.xfm.mBasisX.x, &angles.x, &scale.x);
+    angles.x += flPitch;
+    angles.z += flYaw;
+    Transform xfm = g_photo.xfm;
+    Rnd::MakeRotMatrix(&angles.x, &xfm.mBasisX.x);
+    xfm.mTranslation.x += (g_photo.xfm.mBasisY.x - xfm.mBasisY.x) * kPhotoPivot;
+    xfm.mTranslation.y += (g_photo.xfm.mBasisY.y - xfm.mBasisY.y) * kPhotoPivot;
+    xfm.mTranslation.z += (g_photo.xfm.mBasisY.z - xfm.mBasisY.z) * kPhotoPivot;
+    std::memcpy(apCams[0]->mLocalXfm, &xfm, sizeof(xfm));
+    apCams[0]->mDirty = 1;
+    for (int i = 0; i < 3; ++i) {
+        ApplyLens(apCams[i], g_photo.afFov[i] * flZoom, g_photo.aRect[i]);
+    }
+    return true;
+}
+
+} // namespace
+#endif
+#ifndef RESONANCE_HOST
+#line 50
+#endif
+
 TnlCameraRig::TnlCameraRig(int nPlayerCount, int nSkipIntro)
     : mPlayerCount(nPlayerCount), mState(kStateSettled) {
     mIntroPos.w = 1.0f;
@@ -108,6 +199,14 @@ void TnlCameraRig::ZoomOut() {
 }
 
 void TnlCameraRig::SetFrame(float flTime) {
+#ifdef RESONANCE_HOST
+    if (PhotoFrame(mMainCams[kMainCamNormal], mMainCams[kMainCamZoom], mOuterCams[0])) {
+        return;
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 110
+#endif
     if (mRamp.Execute(flTime) == 0) {
         if (mState == kStateSettled) {
             return;

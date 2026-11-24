@@ -32,6 +32,7 @@ namespace GSH_Vulkan
 		{
 			uint32 bufPsm : 6;
 			uint32 blendMode : 2;
+			uint32 filter : 2; //resonance: PresentFilter::Mode
 		};
 
 		typedef CPipelineCache<PipelineCapsInt> PipelineCache;

@@ -121,3 +121,11 @@
 # without their waits and fades, and the intro movie is skipped. A missing card is still reported.
 # The first start writes FREQ_BOOTED=1 here; remove that line to see the full boot again (0 = off).
 #FREQ_FAST_BOOT=0
+
+# A look over the finished frame: off (default), bloom (a light glow around the neon), or crt
+# (scanlines on each of the PS2's lines). A change applies at once.
+#FREQ_FILTER=bloom
+# Photo mode has no setting. Pause a song and click the touchpad (or R3). The left stick orbits the
+# camera, the right stick zooms, Cross saves a PNG of the screen to photos/ (on the PS5
+# /app0/photos, with a notification of the file), and Circle or the touchpad goes back to the pause
+# menu.

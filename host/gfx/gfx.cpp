@@ -21,6 +21,10 @@
 //
 // FREQ_TEX_DUMP=<directory> and FREQ_TEX_REPLACE=<directory> dump the textures the GS draws and draw
 // HD replacements in their place (host/gfx/ps2gfx/src/TexReplace.h).
+//
+// Photo mode's photos (HostGfxPhoto()) are shots of the next frame presented, saved in photos/
+// (/app0/photos on the PS5) as frequency-<date>-<time>.png, and logged as "PHOTO <path>". The PS5
+// also shows a notification of the path.
 
 #include <algorithm>
 #include <atomic>
@@ -30,6 +34,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <string>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 #include <vector>
@@ -44,6 +49,7 @@
 #include "ps2gfx.h"
 
 extern "C" void HostUseSystemHeap(int bOn); // host/core/heap.c
+extern "C" void HostNotify(const char *pszMessage) __attribute__((weak)); // host/ps5/ps5.c
 #ifdef __PROSPERO__
 extern "C" int sceSystemServiceHideSplashScreen(void);
 #endif
@@ -129,6 +135,46 @@ void HashFrame(unsigned nTick) {
 
 void TakeShots(unsigned nVblank);
 
+std::atomic<bool> g_bPhotoWanted{false};
+
+// Called with g_lock held, as a shot is.
+void SavePhoto() {
+#ifdef __PROSPERO__
+    const char *pszDirectory = "/app0/photos";
+#else
+    const char *pszDirectory = "photos";
+#endif
+    mkdir(pszDirectory, 0755);
+    const time_t now = time(nullptr);
+    tm local;
+    localtime_r(&now, &local);
+    char szName[64];
+    strftime(szName, sizeof(szName), "frequency-%Y%m%d-%H%M%S", &local);
+    char szPath[256];
+    for (int n = 1;; ++n) {
+        snprintf(szPath,
+                 sizeof(szPath),
+                 n == 1 ? "%s/%s.png" : "%s/%s-%d.png",
+                 pszDirectory,
+                 szName,
+                 n);
+        if (access(szPath, F_OK) != 0) {
+            break;
+        }
+    }
+    const bool bSaved =
+        (g_bOutputShots ? ps2gfx_screenshot_output(szPath) : ps2gfx_screenshot(szPath)) == 0;
+    fprintf(stderr, "PHOTO %s%s\n", szPath, bSaved ? "" : " FAILED");
+    if (HostNotify != nullptr) {
+        char szMessage[320];
+        snprintf(szMessage,
+                 sizeof(szMessage),
+                 bSaved ? "Photo saved: %s" : "Photo not saved: %s",
+                 szPath);
+        HostNotify(szMessage);
+    }
+}
+
 // Called with g_lock held, for the frame loop's tick nTick (see HostFrameTick()).
 void PresentLocked(unsigned nTick) {
     for (uint32_t nRegister : kDisplayRegisters) {
@@ -145,6 +191,9 @@ void PresentLocked(unsigned nTick) {
         HashFrame(nTick);
     }
     TakeShots(nVblank);
+    if (g_bPhotoWanted.exchange(false)) {
+        SavePhoto();
+    }
 }
 
 [[noreturn]] void Fail(const char *pszWhat) {
@@ -553,6 +602,11 @@ void HostGfxWaitPresented(unsigned nTick) {
         pthread_cond_timedwait(&g_presentedSignal, &g_presentLock, &until);
     }
     pthread_mutex_unlock(&g_presentLock);
+}
+
+// Photo mode (host/io/pad.cpp) saves the next frame presented.
+void HostGfxPhoto() {
+    g_bPhotoWanted = true;
 }
 
 void HostGfxVsync() {
