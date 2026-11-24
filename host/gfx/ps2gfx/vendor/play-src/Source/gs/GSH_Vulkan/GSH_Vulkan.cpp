@@ -588,42 +588,45 @@ void CGSH_Vulkan::CreateDescriptorPool()
 	{
 		VkDescriptorPoolSize poolSize = {};
 		poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-		poolSize.descriptorCount = 0x800;
+		poolSize.descriptorCount = 0x8000;
 		poolSizes.push_back(poolSize);
 	}
 
 	{
 		VkDescriptorPoolSize poolSize = {};
 		poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-		poolSize.descriptorCount = 0x800;
+		poolSize.descriptorCount = 0x8000;
 		poolSizes.push_back(poolSize);
 	}
 
 	{
 		VkDescriptorPoolSize poolSize = {};
 		poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
-		poolSize.descriptorCount = 0x800;
+		poolSize.descriptorCount = 0x8000;
 		poolSizes.push_back(poolSize);
 	}
 
 	{
 		VkDescriptorPoolSize poolSize = {};
 		poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-		poolSize.descriptorCount = 0x800;
+		poolSize.descriptorCount = 0x8000;
 		poolSizes.push_back(poolSize);
 	}
 
 	{
 		VkDescriptorPoolSize poolSize = {};
 		poolSize.type = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
-		poolSize.descriptorCount = 0x800;
+		poolSize.descriptorCount = 0x8000;
 		poolSizes.push_back(poolSize);
 	}
 
 	auto descriptorPoolCreateInfo = Framework::Vulkan::DescriptorPoolCreateInfo();
 	descriptorPoolCreateInfo.poolSizeCount = static_cast<uint32>(poolSizes.size());
 	descriptorPoolCreateInfo.pPoolSizes = poolSizes.data();
-	descriptorPoolCreateInfo.maxSets = 0x1000;
+	//16 times Play!'s sizes: every draw set now holds two more storage buffers (FREQ_COLOR_DEPTH's
+	//shadow), and the draws' cached sets (one per format combination and frame) ran the storage buffers
+	//out in the attract demo's song; the null set then crashed in vkUpdateDescriptorSets (PS5, 2026-11-24).
+	descriptorPoolCreateInfo.maxSets = 0x10000;
 
 	auto result = m_context->device.vkCreateDescriptorPool(m_context->device, &descriptorPoolCreateInfo, nullptr, &m_context->descriptorPool);
 	CHECKVULKANERROR(result);

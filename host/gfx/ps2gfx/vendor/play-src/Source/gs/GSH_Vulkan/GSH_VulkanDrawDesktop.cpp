@@ -1,3 +1,4 @@
+#include <cstdio>
 #include "GSH_VulkanDrawDesktop.h"
 #include "string_format.h"
 #include "MemStream.h"
@@ -352,6 +353,12 @@ VkDescriptorSet CDrawDesktop::PrepareDescriptorSet(VkDescriptorSetLayout descrip
 
 		result = m_context->device.vkAllocateDescriptorSets(m_context->device, &setAllocateInfo, &descriptorSet);
 		CHECKVULKANERROR(result);
+		if(result != VK_SUCCESS)
+		{
+			//CHECKVULKANERROR is nothing in a release build: say why, rather than crash in the driver.
+			fprintf(stderr, "ps2gfx: Vulkan draw descriptor set not allocated (%d, %zu cached)\n", result, m_descriptorSetCache.size());
+			abort();
+		}
 	}
 
 	auto& frame = m_frames[caps.frameNumber];
