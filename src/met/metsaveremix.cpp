@@ -12,6 +12,13 @@
 #include "os/hxstr.h"
 #include "script/configquery.h"
 
+#ifdef RESONANCE_HOST
+extern "C" void HostAchievement(const char *pszId); // host/core/progress.cpp
+#endif
+#ifndef RESONANCE_HOST
+#line 13
+#endif
+
 namespace {
 
 // Configuration code the dialogue texts are read under.
@@ -263,6 +270,12 @@ void MetSaveRemix::OnRemixSaved([[maybe_unused]] int nPortSlot, int nStatus) {
 #endif
     switch (nStatus) {
     case kMemcardStatusOk:
+#ifdef RESONANCE_HOST
+        HostAchievement("remix");
+#endif
+#ifndef RESONANCE_HOST
+#line 265
+#endif
 #ifdef VIDEO_STANDARD_PAL
         if (mTargetSlot.mPortSlot == kFirstCardPortSlot &&
             GlobalSettings::shared()->mCardSlots.size() != 0) {

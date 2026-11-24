@@ -42,6 +42,10 @@ extern "C" void HostNetBeginGame(void);
 extern "C" int HostNetAddPlayers(void);
 extern "C" void HostNetWaitStart(void);
 extern "C" void HostNetEndGame(void);
+// host/core/progress.cpp: best runs and the score ghost.
+extern "C" void HostRunBegin(const char *pszLevel, int nDifficulty, int bPlayback);
+extern "C" void HostRunEnd(int nScore, int nStreak, float flRatio, int bCompleted);
+extern "C" const char *HostTakeReplay(void);
 #endif
 #ifndef RESONANCE_HOST
 #line 35
@@ -334,6 +338,7 @@ void GameManagerImpl::EndGame(int bRestart) {
     mpWorld = nullptr;
 #ifdef RESONANCE_HOST
     HostNetEndGame(); // after the world, whose catchers withdraw by the net mode
+    HostRunEnd(mStats.GetScore(0), mStats.GetTally(0), mStats.GetRatio(0), mStats.mCompleted);
 #endif
 #ifndef RESONANCE_HOST
 #line 321
@@ -478,6 +483,18 @@ void GameManagerImpl::OnBeginGameLocal(Message *) {
     FinishWorldLoad();
     mpWorld->mIsPlayback = 0;
     mpPoller->SetGameInputEnabled(!Application::shared()->IsJukeboxMode());
+#ifdef RESONANCE_HOST
+    // Every solo game is recorded, so that a new best can be kept (host/core/progress.cpp).
+    const bool bKeepable = mGameMode == kGameModeSolo && mParams.mPlayMode == kPlayModeGame &&
+                           !Application::shared()->IsJukeboxMode();
+    if (bKeepable && mpRecorder == nullptr) {
+        mpRecorder = new GameRecorder(this);
+    }
+    HostRunBegin(bKeepable ? mParams.mLevelName.mStr : nullptr, mParams.mDifficulty, 0);
+#endif
+#ifndef RESONANCE_HOST
+#line 448
+#endif
     if (mpRecorder != nullptr) {
         mpRecorder->BeginRecording(mGameMode, mParams);
     }
@@ -528,6 +545,7 @@ void GameManagerImpl::Load(IBStream *pStream) {
     Renderer::LoadLevel(mParams);
 #ifdef RESONANCE_HOST
     HostPracticeArm(1); // a recorded game (the attract demo)
+    HostRunBegin(mParams.mLevelName.mStr, mParams.mDifficulty, 1);
 #endif
 #ifndef RESONANCE_HOST
 #line 490
@@ -601,6 +619,15 @@ void GameManagerImpl::QueueMessage(Message *pMsg) {
 }
 
 void GameManagerImpl::OnDoPlayback(Message *) {
+#ifdef RESONANCE_HOST
+    if (const char *pszReplay = HostTakeReplay()) {
+        Recreate(HxStr(pszReplay), 0); // a kept best run, from the results screen
+        return;
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 551
+#endif
     HxStr file = QueryConfigString(kPlaybackFileConfigCode);
     Recreate(file, 0);
 }

@@ -18,7 +18,9 @@
 #include "online.h"
 
 #include <algorithm>
+#include <ctype.h>
 #include <deque>
+#include <fcntl.h>
 #include <map>
 #include <pthread.h>
 #include <stdint.h>
@@ -1083,6 +1085,355 @@ int HostOnlineReceive(void *pBuffer, int nCapacity, int *pnFrom) {
             return static_cast<int>(inbound.data.size());
         }
     }
+}
+
+} // extern "C"
+
+// ---- the friends board (FREQ_BOARD) ----
+//
+// Each machine keeps one record of its player's best scores on the ntfy topic of the board code:
+// "FB1 <name> <level>:<difficulty>:<score>... <tag>", signed as a room's records are, so only a
+// machine given the code can post. Anyone with the code can post any name and any score: it is a
+// board among friends, not a proof. ntfy.sh keeps a message for 12 hours, so each record seen is
+// kept in board.txt in the title folder too, and a machine posts its record again after 6 hours.
+
+std::string HostTitleFile(const char *pszName); // host/core/progress.cpp
+extern "C" void HostAchievement(const char *pszId);
+
+namespace {
+
+// ntfy.sh takes about 250 messages a day from one address: at most one post every 6 minutes.
+constexpr double kBoardPostGapMs = 6 * 60 * 1000.0;
+constexpr long long kBoardRepostSeconds = 6 * 3600;
+constexpr size_t kBoardMaxEntries = 120;
+constexpr size_t kBoardMaxName = 16;
+
+struct Board {
+    Session keys; // the code's signing key and topic
+    std::string signal;
+    std::string cachePath;
+    std::map<std::string, std::string> records; // a verified record per name
+    std::string me;
+    std::map<std::string, int> mine; // "<level>:<difficulty>" to score
+    long long nPostedAt = 0;         // this machine's last post, in seconds since 1970
+    double flLastPostMs = -1e300;
+};
+
+Board *g_pBoard = nullptr;
+pthread_mutex_t g_boardLock = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t g_boardWake = PTHREAD_COND_INITIALIZER;
+// Under g_boardLock, from the game thread: new bests, and the bests to report a rank for after the
+// next post.
+std::string g_boardName;
+std::map<std::string, int> g_boardBests;
+std::vector<std::string> g_boardRankKeys;
+
+std::string BoardName(const char *pszName) {
+    std::string name;
+    for (const char *p = pszName != nullptr ? pszName : "";
+         *p != '\0' && name.size() < kBoardMaxName;
+         ++p) {
+        name += isalnum(static_cast<unsigned char>(*p)) || *p == '-' ? *p : '_';
+    }
+    return name.empty() ? "player" : name;
+}
+
+bool BoardKey(const std::string &key) {
+    const size_t nColon = key.find(':');
+    return nColon > 0 && nColon < 32 && nColon + 2 == key.size() && key[nColon + 1] >= '0' &&
+           key[nColon + 1] <= '2' &&
+           key.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_") == nColon;
+}
+
+void InitBoard(Board &board, const char *pszCode) {
+    DeriveKeys((std::string("board ") + pszCode).c_str(), &board.keys);
+    const char *pszSignal = getenv("FREQ_ONLINE_SIGNAL");
+    board.signal = pszSignal != nullptr ? pszSignal : kDefaultSignal;
+    if (board.signal == "off" || board.signal.compare(0, 8, "https://") != 0) {
+        board.signal.clear();
+    }
+    while (!board.signal.empty() && board.signal.back() == '/') {
+        board.signal.pop_back();
+    }
+}
+
+std::string BoardRecord(const Board &board) {
+    std::string text = "FB1 " + board.me;
+    for (const auto &entry : board.mine) {
+        text += " " + entry.first + ":" + std::to_string(entry.second);
+    }
+    return SignRecord(board.keys, text);
+}
+
+// The trust boundary for the board's topic: a record of this code, signed, well formed.
+bool ParseBoard(const Board &board,
+                const std::string &text,
+                std::string *pName,
+                std::map<std::string, int> *pScores) {
+    std::vector<std::string> words;
+    for (size_t nAt = 0; nAt < text.size();) {
+        const size_t nEnd = std::min(text.find(' ', nAt), text.size());
+        words.push_back(text.substr(nAt, nEnd - nAt));
+        nAt = nEnd + 1;
+    }
+    if (words.size() < 3 || words.size() > 3 + kBoardMaxEntries || words[0] != "FB1" ||
+        words[1] != BoardName(words[1].c_str()) || words.back().size() != 32 ||
+        SignRecord(board.keys, text.substr(0, text.size() - 33)) != text) {
+        return false;
+    }
+    pScores->clear();
+    for (size_t i = 2; i + 1 < words.size(); ++i) {
+        const size_t nColon = words[i].rfind(':');
+        char *pszEnd = nullptr;
+        const long nScore = strtol(words[i].c_str() + nColon + 1, &pszEnd, 10);
+        if (nColon == std::string::npos || !BoardKey(words[i].substr(0, nColon)) ||
+            *pszEnd != '\0' || nScore < 0 || nScore > 99999999) {
+            return false;
+        }
+        (*pScores)[words[i].substr(0, nColon)] = static_cast<int>(nScore);
+    }
+    *pName = words[1];
+    return true;
+}
+
+void BoardTake(Board &board, const std::string &text) {
+    std::string name;
+    std::map<std::string, int> scores;
+    if (ParseBoard(board, text, &name, &scores)) {
+        board.records[name] = text;
+    }
+}
+
+void BoardFetch(Board &board) {
+    std::string response;
+    if (Http(board.signal + "/" + board.keys.topic + "/json?poll=1&since=12h",
+             nullptr,
+             &response) == 200) {
+        for (const std::string &message : Messages(response)) {
+            BoardTake(board, message);
+        }
+    }
+}
+
+bool BoardCanPost(const Board &board, double flNowMs) {
+    return flNowMs - board.flLastPostMs >= kBoardPostGapMs;
+}
+
+bool BoardPost(Board &board) {
+    const std::string record = BoardRecord(board);
+    std::string response;
+    board.flLastPostMs = NowMs();
+    const long nStatus = Http(board.signal + "/" + board.keys.topic, &record, &response);
+    if (nStatus != 200) {
+        fprintf(stderr, "board: the server would not take the record (%ld)\n", nStatus);
+        return false;
+    }
+    board.nPostedAt = time(nullptr);
+    board.records[board.me] = record;
+    return true;
+}
+
+// This machine's rank for one best, and the board's top three.
+std::string BoardRank(const Board &board, const std::string &key) {
+    std::vector<std::pair<int, std::string>> scores;
+    for (const auto &record : board.records) {
+        std::string name;
+        std::map<std::string, int> entries;
+        if (ParseBoard(board, record.second, &name, &entries) && entries.count(key) != 0) {
+            scores.emplace_back(-entries[key], name);
+        }
+    }
+    std::sort(scores.begin(), scores.end());
+    std::string top;
+    size_t nRank = 0;
+    for (size_t i = 0; i < scores.size(); ++i) {
+        nRank = scores[i].second == board.me ? i + 1 : nRank;
+        if (i < 3) {
+            top += (i == 0 ? "" : ", ") + std::to_string(i + 1) + " " + scores[i].second + " " +
+                   std::to_string(-scores[i].first);
+        }
+    }
+    static const char *const kDifficulties[] = {"Easy", "Normal", "Expert"};
+    return "Board, " + key.substr(0, key.find(':')) + " " + kDifficulties[key.back() - '0'] +
+           ": #" + std::to_string(nRank) + " of " + std::to_string(scores.size()) + " (" + top +
+           ")";
+}
+
+void SaveBoard(const Board &board) {
+    std::string text = "me " + board.me + "\nposted " + std::to_string(board.nPostedAt) + "\n";
+    for (const auto &record : board.records) {
+        text += record.second + "\n";
+    }
+    const std::string temporary = board.cachePath + ".new";
+    FILE *pFile =
+        fdopen(open(temporary.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644), "w");
+    if (pFile != nullptr && fputs(text.c_str(), pFile) >= 0 && fclose(pFile) == 0) {
+        rename(temporary.c_str(), board.cachePath.c_str());
+    }
+}
+
+void LoadBoard(Board &board) {
+    FILE *pFile = fdopen(open(board.cachePath.c_str(), O_RDONLY | O_CLOEXEC), "r");
+    char szLine[4096];
+    while (pFile != nullptr && fgets(szLine, sizeof(szLine), pFile) != nullptr) {
+        std::string line(szLine, strcspn(szLine, "\r\n"));
+        if (line.compare(0, 3, "me ") == 0 && board.me.empty()) {
+            board.me = BoardName(line.c_str() + 3);
+        } else if (line.compare(0, 7, "posted ") == 0) {
+            board.nPostedAt = atoll(line.c_str() + 7);
+        } else {
+            BoardTake(board, line);
+        }
+    }
+    if (pFile != nullptr) {
+        fclose(pFile);
+    }
+    std::string name;
+    if (board.records.count(board.me) != 0) {
+        ParseBoard(board, board.records[board.me], &name, &board.mine);
+    }
+}
+
+// The board is this thread's own; the game thread leaves its bests in g_boardBests.
+void *RunBoard(void *) {
+    Board &board = *g_pBoard;
+    LoadBoard(board);
+    BoardFetch(board);
+    SaveBoard(board);
+    fprintf(stderr, "board: %zu players on the board\n", board.records.size());
+    bool bRepost = !board.mine.empty() && time(nullptr) - board.nPostedAt > kBoardRepostSeconds;
+    pthread_mutex_lock(&g_boardLock);
+    for (;;) {
+        while (!bRepost && g_boardRankKeys.empty()) {
+            pthread_cond_wait(&g_boardWake, &g_boardLock);
+        }
+        if (!BoardCanPost(board, NowMs())) {
+            pthread_mutex_unlock(&g_boardLock);
+            usleep(10 * 1000 * 1000);
+            pthread_mutex_lock(&g_boardLock);
+            continue;
+        }
+        bRepost = false;
+        std::vector<std::string> keys;
+        keys.swap(g_boardRankKeys);
+        if (board.me.empty()) {
+            board.me = g_boardName;
+        }
+        for (const auto &best : g_boardBests) {
+            board.mine[best.first] = std::max(board.mine[best.first], best.second);
+        }
+        g_boardBests.clear();
+        pthread_mutex_unlock(&g_boardLock);
+        if (BoardPost(board)) {
+            HostAchievement("board");
+        }
+        BoardFetch(board);
+        SaveBoard(board);
+        for (const std::string &key : keys) {
+            Notify(BoardRank(board, key).c_str());
+        }
+        pthread_mutex_lock(&g_boardLock);
+    }
+    return nullptr;
+}
+
+} // namespace
+
+extern "C" {
+
+// From main(), through host/core/progress.cpp: the board thread when FREQ_BOARD names a code.
+void HostBoardStart(void) {
+    const char *pszCode = getenv("FREQ_BOARD");
+    if (pszCode == nullptr || pszCode[0] == '\0') {
+        return;
+    }
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+    g_pBoard = new Board;
+    InitBoard(*g_pBoard, pszCode);
+    g_pBoard->cachePath = HostTitleFile("board.txt");
+    const char *pszName = getenv("FREQ_ONLINE_NAME");
+    if (pszName != nullptr && pszName[0] != '\0') {
+        g_pBoard->me = BoardName(pszName);
+    }
+    pthread_t thread;
+    if (g_pBoard->signal.empty() || pthread_create(&thread, nullptr, RunBoard, nullptr) != 0) {
+        fprintf(stderr, "board: off (no signal server, or no thread)\n");
+        return;
+    }
+    pthread_detach(thread);
+    fprintf(stderr, "board: topic %s\n", g_pBoard->keys.topic.c_str());
+}
+
+// A new best (host/core/progress.cpp): posted with the rest, as soon as the rate allows, and its
+// rank notified after.
+void HostBoardBest(const char *pszLevel, int nDifficulty, int nScore, const char *pszName) {
+    const std::string key =
+        std::string(pszLevel != nullptr ? pszLevel : "") + ":" + std::to_string(nDifficulty);
+    if (g_pBoard == nullptr || !BoardKey(key)) {
+        return;
+    }
+    pthread_mutex_lock(&g_boardLock);
+    g_boardName = BoardName(pszName);
+    g_boardBests[key] = std::max(g_boardBests[key], nScore);
+    g_boardRankKeys.push_back(key);
+    pthread_cond_signal(&g_boardWake);
+    pthread_mutex_unlock(&g_boardLock);
+}
+
+// FREQ_SELFTEST=board: two players on a fresh code through the real server, a forged record, and
+// the rate limit. Prints BOARD_SELFTEST_OK when every check holds.
+int HostBoardSelfTest(void) {
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+    unsigned char abCode[8];
+    RAND_bytes(abCode, sizeof(abCode));
+    const std::string code = "selftest " + Hex(abCode, sizeof(abCode));
+    Board alice;
+    Board bob;
+    Board mallory;
+    InitBoard(alice, code.c_str());
+    InitBoard(bob, code.c_str());
+    InitBoard(mallory, "a code nobody gave mallory");
+    mallory.keys.topic = alice.keys.topic;
+    alice.me = "alice";
+    bob.me = "bob";
+    mallory.me = "mallory";
+    alice.mine["dubpistols:2"] = 1000;
+    bob.mine["dubpistols:2"] = 1500;
+    bob.mine["funk:1"] = 700;
+    mallory.mine["dubpistols:2"] = 99999;
+    int nFailed = 0;
+    const auto check = [&nFailed](bool bOk, const char *pszWhat) {
+        fprintf(stderr, "board self-test: %s %s\n", bOk ? "ok" : "FAILED", pszWhat);
+        nFailed += !bOk;
+    };
+    check(alice.signal == kDefaultSignal, "the default server is ntfy.sh");
+    check(BoardPost(alice), "alice posts");
+    check(BoardPost(bob), "bob posts");
+    check(BoardPost(mallory), "mallory posts to the topic with the wrong key");
+    sleep(2);
+    BoardFetch(alice);
+    BoardFetch(bob);
+    check(alice.records.size() == 2 && bob.records.size() == 2, "each sees two players");
+    check(alice.records.count("mallory") == 0, "the forged record is refused");
+    const std::string aliceRank = BoardRank(alice, "dubpistols:2");
+    const std::string bobRank = BoardRank(bob, "dubpistols:2");
+    fprintf(stderr, "board self-test: %s | %s\n", aliceRank.c_str(), bobRank.c_str());
+    check(aliceRank.find("#2 of 2 (1 bob 1500, 2 alice 1000)") != std::string::npos,
+          "alice is 2nd");
+    check(bobRank.find("#1 of 2") != std::string::npos, "bob is 1st");
+    check(BoardRank(alice, "funk:1").find("#0 of 1") != std::string::npos,
+          "alice has no funk score");
+    check(!BoardCanPost(alice, NowMs()), "a second post right after is held back");
+    check(BoardCanPost(alice, NowMs() + kBoardPostGapMs), "and allowed after 6 minutes");
+    std::string tampered = alice.records["bob"];
+    tampered.replace(tampered.find("1500"), 4, "9500");
+    std::string name;
+    std::map<std::string, int> scores;
+    check(!ParseBoard(alice, tampered, &name, &scores), "a changed score breaks the signature");
+    if (nFailed == 0) {
+        printf("BOARD_SELFTEST_OK\n");
+    }
+    return nFailed == 0 ? 0 : 1;
 }
 
 } // extern "C"

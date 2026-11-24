@@ -34,6 +34,7 @@ add_executable(
   core/heap.c
   core/libc.c
   core/main.cpp
+  core/progress.cpp
   core/settings.c
   core/vumicrocode.S
   gfx-null/gfx.cpp
