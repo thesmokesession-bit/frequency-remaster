@@ -24,7 +24,17 @@ constexpr unsigned char kFlagStopped = 0x10;
 constexpr unsigned char kFlagDisabled = 0x20;
 
 // SetPlayerCount() suspends vibration above this many players.
+#ifdef RESONANCE_HOST
+constexpr int kMaxVibratingPlayers = 4; // The multitap's budget was two; each pad has its own.
+#else
+#ifndef RESONANCE_HOST
+#line 26
+#endif
 constexpr int kMaxVibratingPlayers = 2;
+#endif
+#ifndef RESONANCE_HOST
+#line 27
+#endif
 
 // PlayEffect() ignores a player without a slot.
 constexpr int kNoPlayerSlot = -1;
