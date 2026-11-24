@@ -62,3 +62,25 @@
 # Player colours (gems, catcher, pointer, lane, HUD): original, or cb for colours that stay
 # distinct with red-green colour blindness.
 #FREQ_GEM_PALETTE=cb
+
+# Online play, up to 4 players on up to 4 machines, free: no account and no paid server. Every
+# machine sets the same room code; pick a few words nobody would guess, since anyone with the code
+# can join. One machine is the host (FREQ_ONLINE_HOST=1): the songs it starts in Solo or
+# Multiplayer (not remixes or the tutorial) start on every machine in the room, and each guest
+# plays one player with its first controller. Guests wait in the menus; the console shows a
+# notification when a machine joins or leaves.
+#FREQ_ONLINE_ROOM=purple tunnel friday
+#FREQ_ONLINE_HOST=1
+# The name the others see for this machine's player (up to 12 characters).
+#FREQ_ONLINE_NAME=Lefty
+# The UDP port (host default 47125, guest any free port). Most home routers let the machines reach
+# each other without help; if they cannot, forward this port on the host's router to the host.
+#FREQ_ONLINE_PORT=47125
+# A guest can skip the meeting and name the host's address (its public IP and port, or its LAN
+# address at home).
+#FREQ_ONLINE_PEER=203.0.113.7:47125
+# Where the machines meet: an ntfy server (default https://ntfy.sh, free, no account; the topic is
+# made from the room code, and what is posted there is signed with it), or off with
+# FREQ_ONLINE_PEER. The STUN server tells each machine its public address (off to skip).
+#FREQ_ONLINE_SIGNAL=https://ntfy.sh
+#FREQ_ONLINE_STUN=stun.l.google.com:19302

@@ -700,6 +700,11 @@ static void Notify(const char *pszMessage) {
     sceKernelSendNotificationRequest(0, &s_request, sizeof(s_request), 0);
 }
 
+// host/net/online.cpp: the room's news (joined, left) on the console's screen.
+void HostNotify(const char *pszMessage) {
+    Notify(pszMessage);
+}
+
 typedef struct {
     char *pData;
     size_t nSize;
