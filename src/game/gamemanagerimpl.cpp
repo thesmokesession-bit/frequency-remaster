@@ -36,6 +36,12 @@
 
 #ifdef RESONANCE_HOST
 extern "C" int HostPracticeArm(int bPlayback); // host/audio/audio.cpp: FREQ_PRACTICE...
+// host/net/netgame.cpp: online play (FREQ_ONLINE_ROOM) in the game's own net mode.
+extern "C" void HostOnlinePoll(void);
+extern "C" void HostNetBeginGame(void);
+extern "C" int HostNetAddPlayers(void);
+extern "C" void HostNetWaitStart(void);
+extern "C" void HostNetEndGame(void);
 #endif
 #ifndef RESONANCE_HOST
 #line 35
@@ -326,6 +332,12 @@ void GameManagerImpl::EndGame(int bRestart) {
     mpPoller->DetachController(mpWorld);
     delete mpWorld;
     mpWorld = nullptr;
+#ifdef RESONANCE_HOST
+    HostNetEndGame(); // after the world, whose catchers withdraw by the net mode
+#endif
+#ifndef RESONANCE_HOST
+#line 321
+#endif
     if (mpRecorder != nullptr) {
         mpRecorder->ScheduleEnd();
     }
@@ -383,6 +395,12 @@ void GameManagerImpl::FinishWorldLoad() {
 }
 
 void GameManagerImpl::DrawFrame() {
+#ifdef RESONANCE_HOST
+    HostOnlinePoll();
+#endif
+#ifndef RESONANCE_HOST
+#line 378
+#endif
     mQueue.Poll();
 
     RendererBase *roots[kMaxDrawRoots];
@@ -451,6 +469,7 @@ void GameManagerImpl::OnBeginGameLocal(Message *) {
 
 #ifdef RESONANCE_HOST
     HostPracticeArm(0); // a game the player plays may be a practice run
+    HostNetBeginGame();
 #endif
 #ifndef RESONANCE_HOST
 #line 444
@@ -462,6 +481,12 @@ void GameManagerImpl::OnBeginGameLocal(Message *) {
     if (mpRecorder != nullptr) {
         mpRecorder->BeginRecording(mGameMode, mParams);
     }
+#ifdef RESONANCE_HOST
+    HostNetWaitStart(); // every machine of a net game loaded, then all start together
+#endif
+#ifndef RESONANCE_HOST
+#line 451
+#endif
     Application::shared()->GetWatchdog()->Flush();
 
     DoGameSystemPlayCmd *pCommand = new DoGameSystemPlayCmd;
@@ -518,6 +543,14 @@ void GameManagerImpl::StartPlay() {
 }
 
 void GameManagerImpl::AddPlayers() {
+#ifdef RESONANCE_HOST
+    if (HostNetAddPlayers() != 0) {
+        return;
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 501
+#endif
     AddPersonaPlayers();
 }
 

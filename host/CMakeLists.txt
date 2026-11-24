@@ -45,6 +45,8 @@ add_executable(
   kernel/iop.cpp
   kernel/kernel.cpp
   mpeg/mpeg.cpp
+  net/netgame.cpp
+  net/online.cpp
   stubs/stubs.S
   stubs/unimplemented.c
   "${CMAKE_SOURCE_DIR}/sce/ee/src/libgifpk.c"
@@ -98,6 +100,9 @@ else()
   find_package(PkgConfig REQUIRED)
   pkg_check_modules(LIBAVCODEC REQUIRED IMPORTED_TARGET libavcodec libavutil)
   target_link_libraries(resonance_host PRIVATE PkgConfig::LIBAVCODEC)
+  # Online play (host/net): the signalling server over HTTPS, and the datagrams' tags.
+  pkg_check_modules(ONLINE REQUIRED IMPORTED_TARGET libcurl libcrypto)
+  target_link_libraries(resonance_host PRIVATE PkgConfig::ONLINE)
 endif()
 
 # The OpenGL backend in host/gfx draws through libps2gfx (Play!, BSD-2) in an SDL2 window.
