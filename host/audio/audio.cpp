@@ -51,7 +51,8 @@ constexpr int kBlock = 480;                   // frames per rendered block, 10 m
 constexpr int64_t kBlockNs = 10000000;
 constexpr uint64_t kLeadCycles = 25 * 294912;        // 25 ms, a frame and a scheduler poll
 constexpr int64_t kMaxLagNs = 200000000;             // a longer stall is waited out, not caught up
-constexpr unsigned kMaxQueuedBytes = 4 * kRate / 10; // 100 ms of S16 stereo
+constexpr unsigned kMaxQueuedBytes = 4 * kRate / 10; // 100 ms of S16 stereo (times g_nChannels / 2)
+int g_nChannels = 2; // 6 with FREQ_SURROUND=1 on a device that takes 5.1
 constexpr uint32_t kSpuRamSize = 2 << 20;
 constexpr uint32_t kRegisterBase = 0x1F900000;
 
@@ -786,8 +787,27 @@ void RenderBlock(int nFrames) {
     const size_t nBytes = sizeof(int16_t) * 2 * nFrames;
     if (g_nDevice != 0 && nFrames > 0) {
         // A device slower than the wall clock loses a block now and then, rather than lagging.
-        if (SDL_GetQueuedAudioSize(g_nDevice) < kMaxQueuedBytes) {
-            SDL_QueueAudio(g_nDevice, pOut, nBytes);
+        if (SDL_GetQueuedAudioSize(g_nDevice) < kMaxQueuedBytes * g_nChannels / 2) {
+            if (g_nChannels == 6) {
+                // FREQ_SURROUND=1: a matrix upmix of the game's stereo, SDL's 5.1 order (front
+                // left, right, centre, LFE, surround left, right). The centre carries what both
+                // sides share, the surrounds what differs; the fronts stay as mixed.
+                static std::vector<int16_t> s_six;
+                s_six.resize(6 * static_cast<size_t>(nFrames));
+                for (int i = 0; i < nFrames; ++i) {
+                    const int nLeft = pOut[2 * i], nRight = pOut[2 * i + 1];
+                    int16_t *pSix = &s_six[6 * static_cast<size_t>(i)];
+                    pSix[0] = static_cast<int16_t>(nLeft);
+                    pSix[1] = static_cast<int16_t>(nRight);
+                    pSix[2] = static_cast<int16_t>((nLeft + nRight) * 181 / 512); // 0.707 of the mean
+                    pSix[3] = 0;
+                    pSix[4] = static_cast<int16_t>(std::clamp((nLeft - nRight) / 2, -32768, 32767));
+                    pSix[5] = static_cast<int16_t>(std::clamp((nRight - nLeft) / 2, -32768, 32767));
+                }
+                SDL_QueueAudio(g_nDevice, s_six.data(), static_cast<Uint32>(nBytes * 3));
+            } else {
+                SDL_QueueAudio(g_nDevice, pOut, nBytes);
+            }
         }
     }
     // FREQ_TEST_AUDIO_LAG=1, a test measure: how far the song time on screen is ahead of the sound
@@ -805,7 +825,7 @@ void RenderBlock(int nFrames) {
                              static_cast<int64_t>(g_nRendered) - 1) -
             llround(g_nLateCycles * static_cast<double>(g_flSpeed.load())) /
                 static_cast<int64_t>(kEeCyclesPerSample);
-        const double flQueued = SDL_GetQueuedAudioSize(g_nDevice) / 4.0;
+        const double flQueued = SDL_GetQueuedAudioSize(g_nDevice) / (2.0 * g_nChannels);
         // A stretch frame outputs kHop samples at once, each later against the clock than the
         // next: the frame's average sample is (1 - speed) kHop / 2 later than its newest.
         const double flShown = static_cast<double>(EeClock()) / kEeCyclesPerSample +
@@ -862,19 +882,28 @@ void OpenDevice() {
     SDL_AudioSpec want = {};
     want.freq = kRate;
     want.format = AUDIO_S16SYS;
-    want.channels = 2;
+    const char *pszSurround = getenv("FREQ_SURROUND");
+    want.channels = pszSurround != nullptr && strcmp(pszSurround, "1") == 0 ? 6 : 2;
     want.samples = kBlock;
     SDL_AudioSpec have;
-    g_nDevice = SDL_OpenAudioDevice(nullptr, 0, &want, &have, 0);
+    // Only the channel count may differ: a device without 5.1 opens in stereo, as before.
+    g_nDevice = SDL_OpenAudioDevice(nullptr, 0, &want, &have, SDL_AUDIO_ALLOW_CHANNELS_CHANGE);
+    g_nChannels = have.channels == 6 ? 6 : 2;
+    if (g_nDevice != 0 && have.channels != 6 && have.channels != 2) {
+        SDL_CloseAudioDevice(g_nDevice); // neither: stereo, converted by SDL
+        want.channels = 2;
+        g_nDevice = SDL_OpenAudioDevice(nullptr, 0, &want, &have, 0);
+        g_nChannels = 2;
+    }
     if (g_nDevice == 0) {
         fprintf(stderr, "AUDIO_NO_DEVICE %s\n", SDL_GetError());
         return;
     }
     // Two blocks of silence ahead of the first, so the device never waits on the renderer.
-    const std::vector<int16_t> silence(4 * kBlock);
+    const std::vector<int16_t> silence(2 * g_nChannels * kBlock);
     SDL_QueueAudio(g_nDevice, silence.data(), silence.size() * sizeof(int16_t));
     SDL_PauseAudioDevice(g_nDevice, 0);
-    fprintf(stderr, "AUDIO_OPEN %s %d Hz\n", SDL_GetCurrentAudioDriver(), have.freq);
+    fprintf(stderr, "AUDIO_OPEN %s %d Hz %d channels\n", SDL_GetCurrentAudioDriver(), have.freq, g_nChannels);
 }
 
 } // namespace

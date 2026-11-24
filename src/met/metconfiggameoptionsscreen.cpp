@@ -220,6 +220,7 @@ const HostSetting kHostSettings[] = {
     {"FREQ_HUD_EDGES", "HUD AT EDGES", true, {"0", "1"}, {"OFF", "ON"}},
     {"FREQ_SCALE", "SHARPNESS", true, {"2", "3", "4", "5", "6"}, {"2X", "3X", "4X", "5X", "6X"}},
     {"FREQ_FPS", "FRAME RATE", true, {"60", "120"}, {"60", "120"}},
+    {"FREQ_SURROUND", "SURROUND 5.1", true, {"0", "1"}, {"OFF", "ON"}},
     {"FREQ_TRAILS", "TRAILS", false, {"1", "0.5", "0"}, {"FULL", "HALF", "OFF"}},
     {"FREQ_GEM_PALETTE", "GEM COLOURS", false, {"original", "cb"}, {"ORIGINAL", "COLOURBLIND"}},
     {"FREQ_NO_FAIL", "NO FAIL", false, {"0", "1"}, {"OFF", "ON"}},
