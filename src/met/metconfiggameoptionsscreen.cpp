@@ -472,7 +472,8 @@ static const char *const kTitleText = "fst_title.txt";
 // Below the list are a rule, the help lines, and the footer (when it applies, the position).
 constexpr float kSeparatorZ = -146.0f;
 constexpr float kHelpZ = -156.0f;
-constexpr float kFooterZ = -202.0f;
+constexpr float kFooterZ = -200.0f;
+constexpr float kFooterRightX = 296.0f; // clear of the panel's rounded corner
 constexpr float kSmallScale = 0.7f;
 constexpr int kSelectedState = 1; // a Rnd::Button state, as MetButtonList sets it
 
@@ -738,7 +739,7 @@ void OpenPage() {
     pPosition->SetAlign(Rnd::Text::kTextAlignRight | Rnd::Text::kTextAlignMiddle);
     Place(pHelp, kAnchorLabel, kLeftX, kHelpZ, kSmallScale);
     Place(pApplies, kAnchorLabel, kLeftX, kFooterZ, kSmallScale);
-    Place(pPosition, kAnchorLabel, kRightX, kFooterZ, kSmallScale);
+    Place(pPosition, kAnchorLabel, kFooterRightX, kFooterZ, kSmallScale);
     PlaceRule(pSeparator, kLeftX, kRightX, kSeparatorZ);
     ScrollToSelection();
     ShowPage();
