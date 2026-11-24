@@ -22,7 +22,12 @@ namespace
 	using TEX0 = CGSHandler::TEX0;
 
 	const char* g_dumpDir = getenv("FREQ_TEX_DUMP");
-	const char* g_replaceDir = getenv("FREQ_TEX_REPLACE");
+	// An empty value is off, as the settings page writes it.
+	const char* NonEmpty(const char* value)
+	{
+		return value != nullptr && *value != '\0' ? value : nullptr;
+	}
+	const char* g_replaceDir = NonEmpty(getenv("FREQ_TEX_REPLACE"));
 
 	struct Entry
 	{

@@ -99,6 +99,7 @@ inline Rnd::Button *FindArrow(const char *pszFormat, int nNumber) {
 #include "app/playsound.h"
 #include "app/timeclock.h"
 #include "gfx/hostframe.h"
+#include "rnd/mesh.h"
 #include "sch/cmdid.h"
 #include "sch/command.h"
 
@@ -140,7 +141,8 @@ int CalibrationClickCmd::sCmdID;
 void PostClick(long long nInNs) {
     CalibrationClickCmd *pCommand = new CalibrationClickCmd;
     g_clickCommand.mValue = -2; // unallocated
-    Application::shared()->GetWatchdogTimer()->PostIn(pCommand, Sch::Time{nInNs}, g_clickCommand, 0);
+    Application::shared()->GetWatchdogTimer()->PostIn(
+        pCommand, Sch::Time{nInNs}, g_clickCommand, 0);
     pCommand->Release();
 }
 
@@ -187,7 +189,8 @@ bool CalibrationCommand(int nCommand, Rnd::Text *pLabel, Rnd::Text *pValue, cons
     g_lags.push_back(nLag);
     HostEvent("caltap lag_ns=%lld", nLag);
     if (static_cast<int>(g_lags.size()) < kCalibrationTaps) {
-        snprintf(szText, sizeof(szText), "TAP %d", kCalibrationTaps - static_cast<int>(g_lags.size()));
+        snprintf(
+            szText, sizeof(szText), "TAP %d", kCalibrationTaps - static_cast<int>(g_lags.size()));
         pValue->SetText(HxStr(szText));
         return true;
     }
@@ -204,13 +207,17 @@ bool CalibrationCommand(int nCommand, Rnd::Text *pLabel, Rnd::Text *pValue, cons
     return true;
 }
 
-// The remaster's settings, Circle on this screen: Up and Down pick one, Left and Right change it,
-// and each change is kept in the settings file at once (HostSaveSetting). Circle or Triangle
-// leaves. The first row shows the setting and its value, the second when it takes effect (a
-// setting read at start-up from the next start, the others from the next song), and the hint
-// line below them its help. The first value of a list is the one an unset key has. A row with a
-// step is a number of ms within plus or minus its range of its default.
+// The remaster's settings page, Circle on this screen, lists every setting under section
+// headings, ten lines at a time, on the screen's panel stretched to fit. Up and Down pick a
+// setting, L1 and R1 jump to the previous or next section, and Left and Right change it and save
+// it in the settings file at once (HostSaveSetting). Cross runs an action row's function. Circle
+// or Triangle closes the page. Under the list are the setting's help, when it takes effect (a
+// setting read at start-up from the next start, the others from the next song), and the
+// position in the list. The first value of a list is the one an unset key has. A row with a step
+// is a number of ms within plus or minus its range of its default.
 constexpr int kCircleCommand = 7; // MetCommandMap's code for Circle
+constexpr int kL1Command = 11;
+constexpr int kR1Command = 13;
 
 static const char *const kHint = "SQUARE: CALIBRATE\nCIRCLE: SETTINGS";
 
@@ -220,7 +227,16 @@ struct HostSetting {
     const char *apszValues[7], *apszNames[7];
     const char *pszHelp;
     int nRange = 0, nStep = 0, nDefault = 0;
+    // An action row has no values, and Cross runs pfnAction. Its value shows apszNames[0] until
+    // then, and after it apszNames[1] for a return of 0 or apszNames[2] for any other.
+    int (*pfnAction)(void) = nullptr;
 };
+
+#ifdef __PROSPERO__
+static const char *const kHdFolder = "/app0/hd";
+#else
+static const char *const kHdFolder = "hd";
+#endif
 
 // clang-format off
 const HostSetting kHostSettings[] = {
@@ -286,12 +302,13 @@ const HostSetting kHostSettings[] = {
      "L2 AND R2 CLICK WHEN THEY PLAY A LANE"},
     {"FREQ_RUMBLE_LEAD_MS", "RUMBLE LEAD", false, {}, {},
      "STARTS THE BEAT RUMBLE THIS EARLY", 90, 10, 90},
+    {"FREQ_TEX_REPLACE", "HD TEXTURES", true, {"", kHdFolder}, {"OFF", "ON"},
+     "DRAWS THE HD TEXTURES IN THE HD FOLDER"},
+    {"FREQ_UPDATE", "AUTO UPDATE", true, {"1", "0"}, {"ON", "OFF"},
+     "ON THE PS5, EACH START FETCHES A NEW BUILD"},
 };
 // clang-format on
 constexpr int kHostSettingCount = sizeof(kHostSettings) / sizeof(kHostSettings[0]);
-
-bool g_bHostSettings = false;
-int g_nHostSetting = 0;
 
 int ValueCount(const HostSetting &setting) {
     int n = 0;
@@ -318,53 +335,494 @@ int NumberValue(const HostSetting &setting) {
     return pszValue != nullptr ? atoi(pszValue) : setting.nDefault;
 }
 
-// The screen's texts the settings take over: both rows' labels and values, and the hint line.
-struct HostPageTexts {
-    Rnd::Text *pLabel, *pValue, *pMarkLabel, *pMark, *pHint;
+// The page's sections in order, each a heading and then its keys. A table row missing here is
+// listed under kOtherHeading at the end.
+// clang-format off
+const char *const kSectionKeys[] = {
+    "DISPLAY", "FREQ_SCALE", "FREQ_FPS", "FREQ_WIDESCREEN", "FREQ_HUD_EDGES", "FREQ_SCALE_EFFECTS",
+    "FREQ_TEX_FILTER", "FREQ_TEX_REPLACE", "FREQ_COLOR_DEPTH", "FREQ_AA", "FREQ_TRAILS",
+    "FREQ_FILTER",
+    "SOUND", "FREQ_SURROUND", "FREQ_SPATIAL", "FREQ_SPU_INTERP",
+    "TIMING", "FREQ_AUDIO_OFFSET_MS", "FREQ_VIDEO_OFFSET_MS", "FREQ_INPUT_OFFSET_MS",
+    "CONTROLLER", "FREQ_AUTOPAUSE", "FREQ_LIGHTBAR", "FREQ_TRIGGERS", "FREQ_RUMBLE_LEAD_MS",
+    "GAMEPLAY", "FREQ_UNLOCK_ALL", "FREQ_BONUS_SONGS", "FREQ_GHOST", "FREQ_WATCH", "FREQ_PRACTICE",
+    "FREQ_PRACTICE_SPEED",
+    "ACCESSIBILITY", "FREQ_NO_FAIL", "FREQ_TIMING_WINDOW", "FREQ_REDUCE_FLASH", "FREQ_GEM_PALETTE",
+    "SYSTEM", "FREQ_FAST_BOOT", "FREQ_UPDATE",
+};
+// clang-format on
+static const char *const kOtherHeading = "OTHER";
+constexpr int kPageLines = 10;
+
+// One line of the page, a setting or a section heading (nSetting negative).
+struct PageLine {
+    int nSetting;
+    const char *pszHeading;
 };
 
-void ShowHostSetting(const HostPageTexts &texts) {
-    const HostSetting &setting = kHostSettings[g_nHostSetting];
-    char szText[16];
-    texts.pLabel->SetText(HxStr(setting.pszLabel));
-    if (setting.nStep != 0) {
-        snprintf(szText, sizeof(szText), "%d MS", NumberValue(setting));
-        texts.pValue->SetText(HxStr(szText));
-    } else {
-        texts.pValue->SetText(HxStr(setting.apszNames[CurrentValue(setting)]));
+std::vector<PageLine> g_lines;
+bool g_bHostSettings = false;
+int g_nLine = 1; // the selected line, always a setting
+int g_nTop = 0;  // the first line on the screen
+int g_nActionSetting = -1;
+int g_nActionResult = 0;
+
+void BuildLines() {
+    if (!g_lines.empty()) {
+        return;
     }
-    texts.pMarkLabel->SetText(HxStr("APPLIES"));
-    texts.pMark->SetText(HxStr(setting.bAtStart ? "NEXT START" : "NEXT SONG"));
-    if (texts.pHint != nullptr) {
-        texts.pHint->SetText(HxStr(setting.pszHelp));
+    std::vector<bool> placed(kHostSettingCount, false);
+    for (const char *pszKey : kSectionKeys) {
+        if (strncmp(pszKey, "FREQ_", 5) != 0) {
+            g_lines.push_back({-1, pszKey});
+        }
+        for (int i = 0; i < kHostSettingCount; ++i) {
+            if (!placed[i] && strcmp(kHostSettings[i].pszKey, pszKey) == 0) {
+                placed[i] = true;
+                g_lines.push_back({i, nullptr});
+            }
+        }
     }
-    HostEvent("setting_row %s start=%d help=%s", setting.pszKey, setting.bAtStart, setting.pszHelp);
+    for (int i = 0; i < kHostSettingCount; ++i) {
+        if (!placed[i]) {
+            if (g_lines.back().pszHeading != kOtherHeading) {
+                g_lines.push_back({-1, kOtherHeading});
+            }
+            g_lines.push_back({i, nullptr});
+        }
+    }
 }
 
-bool HostSettingsCommand(int nCommand, const HostPageTexts &texts) {
+int LineCount() {
+    return static_cast<int>(g_lines.size());
+}
+
+// The next setting's line from nLine in the direction nStep, round the end of the list.
+int StepRow(int nLine, int nStep) {
+    do {
+        nLine = (nLine + nStep + LineCount()) % LineCount();
+    } while (g_lines[nLine].nSetting < 0);
+    return nLine;
+}
+
+// The heading of the section nStep sections from the one with nLine.
+int StepSection(int nLine, int nStep) {
+    while (g_lines[nLine].nSetting >= 0) {
+        --nLine; // the first line is a heading
+    }
+    do {
+        nLine = (nLine + nStep + LineCount()) % LineCount();
+    } while (g_lines[nLine].nSetting >= 0);
+    return nLine;
+}
+
+// Scroll the least that shows the selection with a line either side of it.
+void ScrollToSelection() {
+    g_nTop = std::clamp(g_nTop, g_nLine + 2 - kPageLines, g_nLine - 1);
+    g_nTop = std::clamp(g_nTop, 0, std::max(LineCount() - kPageLines, 0));
+}
+
+void SelectSetting(const char *pszKey) {
+    for (int nLine = 0; nLine < LineCount(); ++nLine) {
+        if (g_lines[nLine].nSetting >= 0 &&
+            strcmp(kHostSettings[g_lines[nLine].nSetting].pszKey, pszKey) == 0) {
+            g_nLine = nLine;
+        }
+    }
+    ScrollToSelection();
+}
+
+HxStr ValueText(int nSetting) {
+    const HostSetting &setting = kHostSettings[nSetting];
+    if (setting.pfnAction != nullptr) {
+        const char *pszStatus = setting.apszNames[nSetting != g_nActionSetting ? 0 :
+                                                  g_nActionResult == 0         ? 1 :
+                                                                                 2];
+        return HxStr(pszStatus != nullptr ? pszStatus : "");
+    }
+    if (setting.nStep != 0) {
+        char szText[16];
+        snprintf(szText, sizeof(szText), "%d MS", NumberValue(setting));
+        return HxStr(szText);
+    }
+    return HxStr(setting.apszNames[CurrentValue(setting)]);
+}
+
+// The layout, in the panel mesh's units (about one PS2 pixel) from its origin, x to the right and
+// z up. The panel grows by kGrow* at its edges; its corner pieces move with them unscaled.
+constexpr float kGrowLeft = 130.0f;
+constexpr float kGrowUp = 64.0f;
+constexpr float kGrowDown = 86.0f;
+constexpr float kLeftX = -148.0f;
+constexpr float kRightX = 312.0f;
+constexpr float kFirstLineZ = 106.0f;
+constexpr float kLinePitch = 26.0f;
+// A row's pill (its origin is off its centre), its arrows, and its value, at kRowScale of the
+// screen's row; the scroll arrows sit right of the pills.
+constexpr float kRowScale = 0.8f;
+constexpr float kPillX = 228.0f;
+constexpr float kLeftArrowX = 111.0f;
+constexpr float kRightArrowX = 286.0f;
+constexpr float kValueX = 201.0f;
+constexpr float kScrollX = 309.0f;
+constexpr float kScrollScale = 0.6f;
+constexpr float kHeadingGap = 8.0f;
+// Headings take the screen title's font, as the title screen draws it over every screen.
+static const char *const kTitleText = "fst_title.txt";
+// Below the list are a rule, the help lines, and the footer (when it applies, the position).
+constexpr float kSeparatorZ = -146.0f;
+constexpr float kHelpZ = -156.0f;
+constexpr float kFooterZ = -202.0f;
+constexpr float kSmallScale = 0.7f;
+constexpr int kSelectedState = 1; // a Rnd::Button state, as MetButtonList sets it
+
+// The screen's objects the page uses. The first row's pill, arrows, and value mark the selected
+// setting, the page copies the second row's for the others, and the stock rows are hidden while
+// the page is up.
+static const char *const kPanelMesh = "pan_game_options.mesh";
+static const char *const kPillMesh = "nop_but_06_01.mesh";
+static const char *const kLeftArrowMesh = "nop_arr_left_01.mesh";
+static const char *const kRightArrowMesh = "nop_arr_right_01.mesh";
+static const char *const kValueText = "nop_01.txt";
+static const char *const kRuleMesh = "nop_hr2.mesh";
+static const char *const kOtherPill = "nop_but_06_02.mesh";
+static const char *const kOtherLeftArrow = "nop_arr_left_02.mesh";
+static const char *const kOtherRightArrow = "nop_arr_right_02.mesh";
+static const char *const kOtherValue = "nop_02.txt";
+static const char *const kHiddenObjects[] = {kAudioLabel,
+                                             kForceFeedbackLabel,
+                                             kOtherValue,
+                                             kOtherPill,
+                                             kOtherLeftArrow,
+                                             kOtherRightArrow,
+                                             "nop_but_06stem_01.mesh",
+                                             "nop_but_06stem_02.mesh",
+                                             "nop_hr1.mesh",
+                                             kRuleMesh,
+                                             kHintText};
+
+template <class T>
+T *FindAs(const char *pszName) {
+    return dynamic_cast<T *>(Rnd::TheManager.Find(HxStr(pszName)));
+}
+
+void Show(const char *pszName, int nShowing) {
+    if (Rnd::Drawable *pDrawable = FindAs<Rnd::Drawable>(pszName)) {
+        pDrawable->SetShowing(nShowing);
+    }
+}
+
+// The page's copy of the screen's object pszSource, made once as pszFormat with nIndex in it,
+// drawn just before pszSource.
+template <class T>
+T *PageObject(const char *pszSource, const char *pszFormat, int nIndex) {
+    char szName[48];
+    snprintf(szName, sizeof(szName), pszFormat, nIndex);
+    if (T *pObject = FindAs<T>(szName)) {
+        return pObject;
+    }
+    T *pSource = FindAs<T>(pszSource);
+    T *pObject = dynamic_cast<T *>(Rnd::TheManager.Create(pSource->ClassName(), HxStr(szName)));
+    pObject->Copy(pSource, 0);
+    pObject->SetShowing(0);
+    if (Rnd::Drawable *pDrawParent = pSource->Drawable::Parent()) {
+        pDrawParent->AddDraw(pObject, pSource);
+    }
+    if (Rnd::Transformable *pTransParent = pSource->Transformable::Parent()) {
+        pTransParent->AddTrans(pObject);
+    }
+    return pObject;
+}
+
+struct PageSlot {
+    Rnd::Text *pLabel, *pHeading, *pValue;
+    Rnd::Mesh *pPill, *pLeftArrow, *pRightArrow, *pRule;
+};
+
+PageSlot FindSlot(int nSlot) {
+    return {PageObject<Rnd::Text>(kAudioLabel, "host_page_label_%d", nSlot),
+            PageObject<Rnd::Text>(kAudioLabel, "host_page_heading_%d", nSlot),
+            PageObject<Rnd::Text>(kOtherValue, "host_page_value_%d", nSlot),
+            PageObject<Rnd::Mesh>(kOtherPill, "host_page_pill_%d", nSlot),
+            PageObject<Rnd::Mesh>(kOtherLeftArrow, "host_page_left_%d", nSlot),
+            PageObject<Rnd::Mesh>(kOtherRightArrow, "host_page_right_%d", nSlot),
+            PageObject<Rnd::Mesh>(kRuleMesh, "host_page_rule_%d", nSlot)};
+}
+
+// A screen object's transform as the page opened, and its place in panel units then.
+struct Anchor {
+    float afLocal[4][4];
+    float flX, flZ;
+};
+
+enum AnchorId { kAnchorLabel, kAnchorValue, kAnchorPill, kAnchorLeft, kAnchorRight, kAnchorRule };
+const char *const kAnchorNames[] = {
+    kAudioLabel, kValueText, kPillMesh, kLeftArrowMesh, kRightArrowMesh, kRuleMesh};
+Anchor g_anchors[std::size(kAnchorNames)];
+std::vector<Rnd::MeshVert> g_panelVerts; // the panel's own shape while the page stretches it
+float g_flRuleMinX = 0.0f;
+float g_flRuleWidth = 1.0f;
+
+// Put pObject at (flX, flZ) in panel units, flScale times the size of the anchor's object.
+void Place(Rnd::Transformable *pObject, AnchorId nAnchor, float flX, float flZ, float flScale) {
+    const Anchor &anchor = g_anchors[nAnchor];
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            pObject->mLocalXfm[i][j] = anchor.afLocal[i][j] * flScale;
+        }
+    }
+    pObject->mLocalXfm[3][0] = anchor.afLocal[3][0] + flX - anchor.flX;
+    pObject->mLocalXfm[3][1] = anchor.afLocal[3][1];
+    pObject->mLocalXfm[3][2] = anchor.afLocal[3][2] + flZ - anchor.flZ;
+    pObject->mDirty = 1;
+}
+
+// A copy of the screen's rule from flFromX to flToX.
+void PlaceRule(Rnd::Mesh *pRule, float flFromX, float flToX, float flZ) {
+    const float flStretch = (flToX - flFromX) / g_flRuleWidth;
+    Place(pRule, kAnchorRule, flFromX - g_flRuleMinX * flStretch, flZ, 1.0f);
+    for (int j = 0; j < 3; ++j) {
+        pRule->mLocalXfm[0][j] *= flStretch;
+    }
+}
+
+// Turn a left arrow a quarter to point up (nUp 1) or down (-1).
+void PlaceScrollArrow(Rnd::Mesh *pArrow, float flZ, int nUp) {
+    Place(pArrow, kAnchorLeft, kScrollX, flZ, kScrollScale);
+    for (int i = 0; i < 2; ++i) {
+        const float flX = pArrow->mLocalXfm[i][0];
+        pArrow->mLocalXfm[i][0] = nUp * pArrow->mLocalXfm[i][2];
+        pArrow->mLocalXfm[i][2] = -nUp * flX;
+    }
+}
+
+void ShowPage() {
+    Rnd::Font *pLabelFont = FindAs<Rnd::Text>(kAudioLabel)->GetFont();
+    Rnd::Font *pSelectedFont = FindAs<Rnd::Button>(kAudioButton)->mFonts[kSelectedState];
+    for (int nSlot = 0; nSlot < kPageLines; ++nSlot) {
+        const PageSlot slot = FindSlot(nSlot);
+        const int nLine = g_nTop + nSlot;
+        const float flZ = kFirstLineZ - kLinePitch * nSlot;
+        const bool bHeading = nLine < LineCount() && g_lines[nLine].nSetting < 0;
+        const bool bRow = nLine < LineCount() && !bHeading;
+        const bool bOther = bRow && nLine != g_nLine;
+        slot.pHeading->SetShowing(bHeading);
+        slot.pRule->SetShowing(bHeading);
+        slot.pLabel->SetShowing(bRow);
+        slot.pValue->SetShowing(bOther);
+        slot.pPill->SetShowing(bOther);
+        slot.pLeftArrow->SetShowing(bOther);
+        slot.pRightArrow->SetShowing(bOther);
+        if (bHeading) {
+            const char *pszHeading = g_lines[nLine].pszHeading;
+            slot.pHeading->SetText(HxStr(pszHeading));
+            Place(slot.pHeading, kAnchorLabel, kLeftX, flZ, kRowScale);
+            const float flWidth =
+                slot.pHeading->GetFontWidth(pszHeading, static_cast<int>(strlen(pszHeading)));
+            PlaceRule(slot.pRule, kLeftX + flWidth * kRowScale + kHeadingGap, kRightX, flZ);
+        }
+        if (!bRow) {
+            continue;
+        }
+        const int nSetting = g_lines[nLine].nSetting;
+        slot.pLabel->SetFont(bOther ? pLabelFont : pSelectedFont);
+        slot.pLabel->SetText(HxStr(kHostSettings[nSetting].pszLabel));
+        Place(slot.pLabel, kAnchorLabel, kLeftX, flZ, kRowScale);
+        Rnd::Text *pValue = bOther ? slot.pValue : FindAs<Rnd::Text>(kValueText);
+        pValue->SetText(ValueText(nSetting));
+        Place(pValue, kAnchorValue, kValueX, flZ, kRowScale);
+        Place(bOther ? slot.pPill : FindAs<Rnd::Mesh>(kPillMesh),
+              kAnchorPill,
+              kPillX,
+              flZ,
+              kRowScale);
+        Place(bOther ? slot.pLeftArrow : FindAs<Rnd::Mesh>(kLeftArrowMesh),
+              kAnchorLeft,
+              kLeftArrowX,
+              flZ,
+              kRowScale);
+        Place(bOther ? slot.pRightArrow : FindAs<Rnd::Mesh>(kRightArrowMesh),
+              kAnchorRight,
+              kRightArrowX,
+              flZ,
+              kRowScale);
+    }
+
+    Rnd::Mesh *pUp = PageObject<Rnd::Mesh>(kOtherLeftArrow, "host_page_up", 0);
+    Rnd::Mesh *pDown = PageObject<Rnd::Mesh>(kOtherLeftArrow, "host_page_down", 0);
+    pUp->SetShowing(g_nTop > 0);
+    pDown->SetShowing(g_nTop + kPageLines < LineCount());
+    PlaceScrollArrow(pUp, kFirstLineZ, 1);
+    PlaceScrollArrow(pDown, kFirstLineZ - kLinePitch * (kPageLines - 1), -1);
+
+    const HostSetting &setting = kHostSettings[g_lines[g_nLine].nSetting];
+    Rnd::Text *pHelp = PageObject<Rnd::Text>(kAudioLabel, "host_page_help", 0);
+    pHelp->SetText(HxStr(setting.pszHelp));
+    Rnd::Text *pApplies = PageObject<Rnd::Text>(kAudioLabel, "host_page_applies", 0);
+    pApplies->SetText(HxStr(setting.pfnAction != nullptr ? "APPLIES  NOW" :
+                            setting.bAtStart             ? "APPLIES  NEXT START" :
+                                                           "APPLIES  NEXT SONG"));
+    int nRow = 0;
+    for (int nLine = 0; nLine <= g_nLine; ++nLine) {
+        nRow += g_lines[nLine].nSetting >= 0;
+    }
+    char szPosition[32];
+    snprintf(szPosition, sizeof(szPosition), "L1 R1 SECTION   %d / %d", nRow, kHostSettingCount);
+    PageObject<Rnd::Text>(kAudioLabel, "host_page_position", 0)->SetText(HxStr(szPosition));
+    HostEvent("setting_row %s start=%d top=%d help=%s",
+              setting.pszKey,
+              setting.bAtStart,
+              g_nTop,
+              setting.pszHelp);
+}
+
+void OpenPage() {
+    BuildLines();
+    g_nActionSetting = -1;
+    Rnd::Mesh *pPanel = FindAs<Rnd::Mesh>(kPanelMesh);
+    for (size_t i = 0; i < std::size(kAnchorNames); ++i) {
+        const Rnd::Transformable *pObject = FindAs<Rnd::Transformable>(kAnchorNames[i]);
+        memcpy(g_anchors[i].afLocal, pObject->mLocalXfm, sizeof(g_anchors[i].afLocal));
+        g_anchors[i].flX = pObject->mWorldXfm[3][0] - pPanel->mWorldXfm[3][0];
+        g_anchors[i].flZ = pObject->mWorldXfm[3][2] - pPanel->mWorldXfm[3][2];
+    }
+    const std::vector<Rnd::MeshVert> &rule = FindAs<Rnd::Mesh>(kRuleMesh)->mVertsOwner->mVerts;
+    const auto [pMin, pMax] = std::minmax_element(
+        rule.begin(), rule.end(), [](const Rnd::MeshVert &a, const Rnd::MeshVert &b) {
+            return a.mPoint.x < b.mPoint.x;
+        });
+    g_flRuleMinX = pMin->mPoint.x;
+    g_flRuleWidth = pMax->mPoint.x - pMin->mPoint.x;
+
+    // Each panel vertex left of the middle moves left, and each above or below it up or down.
+    std::vector<Rnd::MeshVert> &verts = pPanel->mVertsOwner->mVerts;
+    g_panelVerts = verts;
+    float flMinX = verts[0].mPoint.x, flMaxX = flMinX, flMinY = verts[0].mPoint.y, flMaxY = flMinY;
+    for (const Rnd::MeshVert &vert : verts) {
+        flMinX = std::min(flMinX, vert.mPoint.x);
+        flMaxX = std::max(flMaxX, vert.mPoint.x);
+        flMinY = std::min(flMinY, vert.mPoint.y);
+        flMaxY = std::max(flMaxY, vert.mPoint.y);
+    }
+    const float flUp = pPanel->mWorldXfm[1][2] < 0.0f ? -1.0f : 1.0f; // the mesh's y on the screen
+    for (Rnd::MeshVert &vert : verts) {
+        vert.mPoint.x -= vert.mPoint.x < (flMinX + flMaxX) / 2 ? kGrowLeft : 0.0f;
+        vert.mPoint.y += (vert.mPoint.y - (flMinY + flMaxY) / 2) * flUp > 0.0f ? flUp * kGrowUp :
+                                                                                 -flUp * kGrowDown;
+    }
+    pPanel->SyncChanged(Rnd::Mesh::kSyncPoints);
+
+    for (const char *pszName : kHiddenObjects) {
+        Show(pszName, 0);
+    }
+    for (int nSlot = 0; nSlot < kPageLines; ++nSlot) {
+        const PageSlot slot = FindSlot(nSlot);
+        slot.pLabel->SetAlign(Rnd::Text::kTextAlignLeft | Rnd::Text::kTextAlignMiddle);
+        slot.pHeading->SetAlign(Rnd::Text::kTextAlignLeft | Rnd::Text::kTextAlignMiddle);
+        if (Rnd::Text *pTitle = FindAs<Rnd::Text>(kTitleText)) {
+            slot.pHeading->SetFont(pTitle->GetFont());
+        }
+    }
+    Rnd::Text *pHelp = PageObject<Rnd::Text>(kAudioLabel, "host_page_help", 0);
+    Rnd::Text *pApplies = PageObject<Rnd::Text>(kAudioLabel, "host_page_applies", 0);
+    Rnd::Text *pPosition = PageObject<Rnd::Text>(kAudioLabel, "host_page_position", 0);
+    Rnd::Mesh *pSeparator = PageObject<Rnd::Mesh>(kRuleMesh, "host_page_separator", 0);
+    pHelp->SetShowing(1);
+    pApplies->SetShowing(1);
+    pPosition->SetShowing(1);
+    pSeparator->SetShowing(1);
+    pHelp->SetAlign(Rnd::Text::kTextAlignLeft | Rnd::Text::kTextAlignTop);
+    pHelp->SetWordWrap(1);
+    pHelp->SetWrapWidth((kRightX - kLeftX) / kSmallScale);
+    pApplies->SetAlign(Rnd::Text::kTextAlignLeft | Rnd::Text::kTextAlignMiddle);
+    pPosition->SetAlign(Rnd::Text::kTextAlignRight | Rnd::Text::kTextAlignMiddle);
+    Place(pHelp, kAnchorLabel, kLeftX, kHelpZ, kSmallScale);
+    Place(pApplies, kAnchorLabel, kLeftX, kFooterZ, kSmallScale);
+    Place(pPosition, kAnchorLabel, kRightX, kFooterZ, kSmallScale);
+    PlaceRule(pSeparator, kLeftX, kRightX, kSeparatorZ);
+    ScrollToSelection();
+    ShowPage();
+    HostEvent("setting_page open lines=%d rows=%d", LineCount(), kHostSettingCount);
+}
+
+void ClosePage() {
+    for (int nSlot = 0; nSlot < kPageLines; ++nSlot) {
+        const PageSlot slot = FindSlot(nSlot);
+        slot.pLabel->SetShowing(0);
+        slot.pHeading->SetShowing(0);
+        slot.pValue->SetShowing(0);
+        slot.pPill->SetShowing(0);
+        slot.pLeftArrow->SetShowing(0);
+        slot.pRightArrow->SetShowing(0);
+        slot.pRule->SetShowing(0);
+    }
+    for (const char *pszName : {"host_page_up",
+                                "host_page_down",
+                                "host_page_help",
+                                "host_page_applies",
+                                "host_page_position",
+                                "host_page_separator"}) {
+        Show(pszName, 0);
+    }
+    Rnd::Mesh *pPanel = FindAs<Rnd::Mesh>(kPanelMesh);
+    pPanel->mVertsOwner->mVerts = g_panelVerts;
+    pPanel->SyncChanged(Rnd::Mesh::kSyncPoints);
+    for (AnchorId nAnchor : {kAnchorValue, kAnchorPill, kAnchorLeft, kAnchorRight}) {
+        Rnd::Transformable *pObject = FindAs<Rnd::Transformable>(kAnchorNames[nAnchor]);
+        memcpy(pObject->mLocalXfm, g_anchors[nAnchor].afLocal, sizeof(pObject->mLocalXfm));
+        pObject->mDirty = 1;
+    }
+    for (const char *pszName : kHiddenObjects) {
+        Show(pszName, 1);
+    }
+    HostEvent("setting_page close");
+}
+
+bool HostSettingsCommand(int nCommand) {
     if (!g_bHostSettings) {
         if (nCommand != kCircleCommand || g_bCalibrating) {
             return false;
         }
         g_bHostSettings = true;
-        ShowHostSetting(texts);
+        OpenPage();
         return true;
     }
     if (nCommand == kCircleCommand || nCommand == kMetScreenCommandBack) {
         g_bHostSettings = false;
-        return nCommand == kCircleCommand; // Back leaves the screen as well
+        ClosePage();
+        return nCommand == kCircleCommand; // Back closes the screen as well
     }
-    const HostSetting &setting = kHostSettings[g_nHostSetting];
+    const int nSetting = g_lines[g_nLine].nSetting;
+    const HostSetting &setting = kHostSettings[nSetting];
     const int nCount = ValueCount(setting);
     switch (nCommand) {
     case kMetScreenCommandPrevious:
-        g_nHostSetting = (g_nHostSetting + kHostSettingCount - 1) % kHostSettingCount;
+        g_nLine = StepRow(g_nLine, -1);
         break;
     case kMetScreenCommandNext:
-        g_nHostSetting = (g_nHostSetting + 1) % kHostSettingCount;
+        g_nLine = StepRow(g_nLine, 1);
+        break;
+    case kL1Command:
+    case kR1Command: {
+        g_nTop = StepSection(g_nLine, nCommand == kL1Command ? -1 : 1);
+        g_nLine = StepRow(g_nTop, 1);
+        PlaySoundByName("SND_MET_HIGH"); // as Up and Down sound
+        HostEvent("setting_section %s", g_lines[g_nTop].pszHeading);
+        break;
+    }
+    case kMetScreenCommandSelect:
+        if (setting.pfnAction == nullptr) {
+            return true;
+        }
+        g_nActionResult = setting.pfnAction();
+        g_nActionSetting = nSetting;
+        HostEvent("setting_action %s result=%d", setting.pszKey, g_nActionResult);
         break;
     case kMetScreenCommandLeft:
     case kMetScreenCommandRight: {
+        if (setting.pfnAction != nullptr) {
+            return true;
+        }
         char szNumber[16];
         const char *pszValue = szNumber;
         if (setting.nStep != 0) {
@@ -380,14 +838,14 @@ bool HostSettingsCommand(int nCommand, const HostPageTexts &texts) {
             pszValue = setting.apszValues[(CurrentValue(setting) + nStep) % nCount];
         }
         const int bSaved = HostSaveSetting(setting.pszKey, pszValue);
-        PlaySoundByName("SND_MET_KEY1");
         HostEvent("setting %s=%s saved=%d", setting.pszKey, pszValue, bSaved);
         break;
     }
     default:
         return true; // the screen's own buttons wait while the settings are up
     }
-    ShowHostSetting(texts);
+    ScrollToSelection();
+    ShowPage();
     return true;
 }
 
@@ -474,29 +932,41 @@ MetConfigGameOptionsScreen::~MetConfigGameOptionsScreen() {
 
 void MetConfigGameOptionsScreen::HandleCommand(const MetScreenCommand *pCommand) {
 #ifdef RESONANCE_HOST
-    if (CalibrationCommand(pCommand->mCommand,
-                           dynamic_cast<Rnd::Text *>(Rnd::TheManager.Find(HxStr(kAudioLabel))),
-                           mRows->GetButton(kRowAudio)->mText,
-                           MetConfigText(kMetStrPangameAudioLbl, kPromptConfigCode, kAudioLabelKey))) {
+    const int nCommand = pCommand->mCommand;
+    Rnd::Text *pCalibrationLabel =
+        dynamic_cast<Rnd::Text *>(Rnd::TheManager.Find(HxStr(kAudioLabel)));
+    HxStr calibrationLabel =
+        MetConfigText(kMetStrPangameAudioLbl, kPromptConfigCode, kAudioLabelKey);
+    if (g_bHostSettings) {
+        // On the page, Square measures the input offset on its row.
+        if (nCommand == kSquareCommand && !g_bCalibrating) {
+            SelectSetting("FREQ_INPUT_OFFSET_MS");
+            ShowPage();
+        }
+        pCalibrationLabel = FindSlot(g_nLine - g_nTop).pLabel;
+        calibrationLabel = HxStr(kHostSettings[g_lines[g_nLine].nSetting].pszLabel);
+    }
+    if (CalibrationCommand(
+            nCommand, pCalibrationLabel, mRows->GetButton(kRowAudio)->mText, calibrationLabel)) {
         return;
     }
-    const HostPageTexts texts = {
-        dynamic_cast<Rnd::Text *>(Rnd::TheManager.Find(HxStr(kAudioLabel))),
-        mRows->GetButton(kRowAudio)->mText,
-        dynamic_cast<Rnd::Text *>(Rnd::TheManager.Find(HxStr(kForceFeedbackLabel))),
-        mRows->GetButton(kRowForceFeedback)->mText,
-        dynamic_cast<Rnd::Text *>(Rnd::TheManager.Find(HxStr(kHintText)))};
-    const bool bHostSettings = g_bHostSettings;
-    const bool bHandled = HostSettingsCommand(pCommand->mCommand, texts);
-    if (bHostSettings && !g_bHostSettings) {
-        texts.pLabel->SetText(
-            MetConfigText(kMetStrPangameAudioLbl, kPromptConfigCode, kAudioLabelKey));
-        texts.pMarkLabel->SetText(
-            MetConfigText(kMetStrPangameForceLbl, kPromptConfigCode, kForceFeedbackLabelKey));
-        if (texts.pHint != nullptr) {
-            texts.pHint->SetText(HxStr(kHint));
-        }
-        UpdateOptionLabels(); // both rows' own values back
+    const bool bWasOpen = g_bHostSettings;
+    if (!bWasOpen && nCommand == kCircleCommand && !g_bCalibrating) {
+        // The first row's pill marks the selected setting, and the page copies the second's.
+        mRows->SetSelected(kRowAudio);
+    }
+    const bool bHandled = HostSettingsCommand(nCommand);
+    if (!bWasOpen && g_bHostSettings) {
+        MetHelpScreen::SetText(HxStr(""), mRenderer->mAnimationFrame);
+    } else if (bWasOpen && !g_bHostSettings) {
+        UpdateOptionLabels();
+        MetHelpScreen::SetText(mHelpKeys[mRows->mSelected], mRenderer->mAnimationFrame);
+    } else if (bHandled &&
+               (nCommand == kMetScreenCommandLeft || nCommand == kMetScreenCommandRight)) {
+        StartRepeatingSound(mRenderer->mAnimationFrame,
+                            kArrowFlashInterval,
+                            (nCommand == kMetScreenCommandLeft ? mLeftArrows : mRightArrows)[0],
+                            kArrowFlashCycles);
     }
     if (bHandled) {
         return;
