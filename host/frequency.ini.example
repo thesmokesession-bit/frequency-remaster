@@ -62,3 +62,10 @@
 # Player colours (gems, catcher, pointer, lane, HUD): original, or cb for colours that stay
 # distinct with red-green colour blindness.
 #FREQ_GEM_PALETTE=cb
+
+# The DualSense light bar shows each player's colour (FREQ_GEM_PALETTE's when cb), pulsing on the
+# beat during a song and flashing on a captured section (1 = on, default; 0 leaves the bar alone).
+#FREQ_LIGHTBAR=0
+# On the PS5, L2 or R2 clicks at its press point when it plays a lane, through the adaptive
+# triggers (1 = on, default).
+#FREQ_TRIGGERS=0

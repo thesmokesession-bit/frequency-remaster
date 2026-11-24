@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "app/tnlutil.h"
+#include "game/globalsettings.h"
 #include "os/formatstring.h"
 #include "rnd/manager.h"
 #include "rnd/mat.h"
@@ -20,8 +21,30 @@
 
 extern "C" int HostTestGemColor(int nColor);         // host/gfx-null/gfx.cpp
 extern "C" void HostGemDump(const char *pszText); // host/gfx-null/gfx.cpp
+// These drive the controllers' light bars, triggers, and catch tick (host/io/pad.cpp).
+extern "C" void
+HostPadFrame(int nPlayer, float flRed, float flGreen, float flBlue, float flTick, int nTriggers);
+extern "C" void HostPadFlash(int nPlayer, float flRed, float flGreen, float flBlue);
+extern "C" void HostPadTick(int nPlayer);
 
 namespace {
+
+// A ControllerConfig stores L2 and R2 as these codes (the poller's control number plus one).
+constexpr int kButtonCodeL2 = 5;
+constexpr int kButtonCodeR2 = 6;
+
+// Reports the triggers that play a lane on input slot nSlot's controller, bit 0 for L2 and bit 1
+// for R2.
+int LaneTriggers(int nSlot) {
+    const std::vector<int> &buttons = GlobalSettings::shared()->mControllers[nSlot].mButtons;
+    int nTriggers = 0;
+    for (int i = ControllerConfig::kSlotPitchRiffFirst;
+         i < ControllerConfig::kSlotErase && i < static_cast<int>(buttons.size());
+         ++i) {
+        nTriggers |= buttons[i] == kButtonCodeL2 ? 1 : buttons[i] == kButtonCodeR2 ? 2 : 0;
+    }
+    return nTriggers;
+}
 
 // FREQ_GEM_PALETTE=cb: the textures and materials drawn in a player's colour (the hex gems, the
 // catcher, pointer and sabre trail, the HUD score font) are recoloured with TnlCbRecolour(). Gem
@@ -947,6 +970,11 @@ void AppTunnel::OnCatch(CatchMsg *pMsg) {
 #ifdef RESONANCE_HOST
     HostEvent("tnlcatch hit=%d gemtick=%d drawn=%d", pMsg->mHit, pMsg->mTick,
               static_cast<int>(mRenderer->mSongTick));
+    GrooveWorld *pWorld = Application::shared()->GetWorld();
+    if (pMsg->mHit && pWorld != nullptr && pWorld->mForceFeedback != nullptr &&
+        pWorld->mForceFeedback->IsLive()) {
+        HostPadTick(pMsg->mPlayer->GetInputSlot());
+    }
 #endif
 #ifndef RESONANCE_HOST
 #line 716
@@ -1044,6 +1072,12 @@ void AppTunnel::OnSectionCaptured(SectionCapturedMsg *pMsg) {
     // The binary copies the name before the lookup.
     const Color playerColor = TnlColorFromName(HxStr(pMsg->mPlayer->mColorName));
     const Color color = pMsg->mAutoCatch ? Color{0.0f, 0.0f, 1.0f, 1.0f} : playerColor;
+#ifdef RESONANCE_HOST
+    HostPadFlash(pMsg->mPlayer->GetInputSlot(), color.r, color.g, color.b);
+#endif
+#ifndef RESONANCE_HOST
+#line 809
+#endif
     StartFireFX(flPathStart, nIndex, pMsg->mTrack, color, playerColor, flPathEnd);
 }
 
@@ -1427,6 +1461,19 @@ void AppTunnel::SetFrame(float flFrame) {
         mNextStepBar = mPlayMap->FollowingStepBar(mNextStepBar);
     }
     UpdateGhostFades();
+#ifdef RESONANCE_HOST
+    for (TnlPlayer *pTnlPlayer : mPlayers) {
+        Player *pPlayer = pTnlPlayer->mPlayer;
+        const int nSlot = pPlayer->GetInputSlot();
+        if (nSlot >= 0 && nSlot < GlobalSettings::kControllerCount) {
+            const Color color = TnlColorFromName(HxStr(pPlayer->mColorName));
+            HostPadFrame(nSlot, color.r, color.g, color.b, flFrame, LaneTriggers(nSlot));
+        }
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 1192
+#endif
 }
 
 int AppTunnel::IsTrackBarLocked(int nTrack, int nBar) {

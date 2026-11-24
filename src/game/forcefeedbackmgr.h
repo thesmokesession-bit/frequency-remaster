@@ -275,6 +275,16 @@ public:
      * @ghidraAddress PAL: 0x00173550
      */
     void PlayCrippleEffect(Player *pPlayer);
+#ifdef RESONANCE_HOST
+
+    /** True while no flag (the option, a pause, a playback, and so on) stops the motors. */
+    bool IsLive() const {
+        return mFlags == 0;
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 277
+#endif
 
 private:
     /**

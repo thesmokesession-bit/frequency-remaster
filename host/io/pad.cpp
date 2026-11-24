@@ -30,6 +30,7 @@
 #include <libpad.h>
 
 #include "../gfx-null/gfxnull.h"
+#include "lightbar.h"
 
 namespace {
 
@@ -269,6 +270,43 @@ constexpr int kMaxPlayers = 4;
 // multitap does not change under a running song.
 SDL_GameController *g_controllers[kMaxPlayers];
 
+// The motors' bytes scePadSetActDirect() last sent for each player, which a catch tick restores.
+unsigned char g_abMotors[kMaxPlayers][2];
+
+// Each player holds what the tunnel last reported (HostPadFrame() once a frame, HostPadFlash() on
+// a capture), when the catch tick ends (HostPadTick()), and the light bar last sent.
+struct PadFeel {
+    float afColor[3];
+    float flTick;
+    int nTriggers; // Bit 0 is set when L2 plays a lane, bit 1 when R2 does.
+    bool bReported;
+    Uint32 nReportedAt;
+    float afFlash[3];
+    bool bFlash;
+    Uint32 nFlashAt;
+    bool bTick;
+    Uint32 nTickEnd;
+    SDL_GameController *pLit;
+    unsigned char abLit[3];
+    Uint32 nLitAt;
+};
+PadFeel g_feel[kMaxPlayers];
+
+// A report older than this means that no song is drawing (a menu, or the pause screen). The light
+// bar then holds the colour steady and the triggers go off.
+constexpr Uint32 kFeelStaleMs = 250;
+// The light bar is sent at most this often while it changes.
+constexpr Uint32 kLightBarIntervalMs = 20;
+// The catch tick is a short, light buzz of the high-frequency motor.
+constexpr Uint16 kCatchTickStrength = 0x5000;
+constexpr Uint32 kCatchTickMs = 40;
+
+// Reads FREQ_LIGHTBAR or FREQ_TRIGGERS each frame, so that a change in the options applies at once.
+bool SettingOn(const char *pszKey) {
+    const char *pszValue = getenv(pszKey);
+    return pszValue == nullptr || strcmp(pszValue, "0") != 0;
+}
+
 bool LiveInputOn() {
     static const bool s_bOn = getenv("FREQ_INPUT") == nullptr &&
                               SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER) == 0;
@@ -374,6 +412,154 @@ LivePad ReadLivePad(int nPlayer) {
     return pad;
 }
 
+// Drives player nPlayer's motors from the bytes scePadSetActDirect() took, low frequency (the big
+// motor) from byte 1 and high from byte 0. Each send lasts one second.
+void RumbleMotors(int nPlayer) {
+    SDL_GameControllerRumble(g_controllers[nPlayer],
+                             static_cast<Uint16>(g_abMotors[nPlayer][1] * 257),
+                             g_abMotors[nPlayer][0] != 0 ? 0xc000 : 0,
+                             1000);
+}
+
+#ifdef __PROSPERO__
+// The adaptive triggers go through the console's own pad calls, as in Perfect Eye, since SDL's PS5
+// driver has none. The layout is ScePadTriggerEffectParam, with command[0] for L2 and command[1]
+// for R2.
+struct TriggerEffect {
+    unsigned char nTriggerMask;
+    unsigned char abPadding[7];
+    struct {
+        unsigned nMode;
+        unsigned char abPadding[4];
+        unsigned char abData[48];
+    } command[2];
+};
+static_assert(sizeof(TriggerEffect) == 120, "ScePadTriggerEffectParam is 120 bytes");
+
+extern "C" int scePadGetHandle(int nUser, int nType, int nIndex);
+extern "C" int scePadSetTriggerEffect(int nHandle, const TriggerEffect *pEffect);
+extern "C" int sceUserServiceGetLoginUserIdList(int anUsers[4]);
+extern "C" int sceUserServiceGetUserName(int nUser, char *pszName, size_t nSize);
+
+// The weapon effect (mode 2) resists from zone 2 to zone 3 of the trigger's ten and breaks at its
+// end. ReadLivePad()'s kTriggerPressed (a quarter of the travel) lies inside it, so the press
+// counts as the click is felt. Strength runs from 0 to 8.
+constexpr unsigned kTriggerWeapon = 2;
+constexpr unsigned char kTriggerStart = 2;
+constexpr unsigned char kTriggerEnd = 3;
+constexpr unsigned char kTriggerStrength = 5;
+
+// Finds the pad's system handle. SDL names each pad after its user and opens it as (user, standard
+// port, 0), which scePadGetHandle() hands back. The result is -1 when no logged-in user has the
+// pad's name.
+int PadHandle(SDL_GameController *pController) {
+    int anUsers[4];
+    char szName[64];
+    const char *pszWant = SDL_GameControllerName(pController);
+    if (pszWant == nullptr || sceUserServiceGetLoginUserIdList(anUsers) != 0) {
+        return -1;
+    }
+    for (const int nUser : anUsers) {
+        if (nUser != -1 && sceUserServiceGetUserName(nUser, szName, sizeof(szName)) == 0 &&
+            strcmp(szName, pszWant) == 0) {
+            return scePadGetHandle(nUser, 0, 0);
+        }
+    }
+    return -1;
+}
+
+// Puts the weapon effect on the triggers in nTriggers (bit 0 L2, bit 1 R2) and turns the others
+// off, sent only on a change. A handle not found is looked up again a second later; one a send
+// fails on (a pad that went) is looked up again.
+void SetTriggers(int nPlayer, SDL_GameController *pController, int nTriggers, Uint32 nNow) {
+    static SDL_GameController *s_apFor[kMaxPlayers];
+    static int s_anHandle[kMaxPlayers];
+    static int s_anSent[kMaxPlayers];
+    static Uint32 s_anRetryAt[kMaxPlayers];
+    if (s_apFor[nPlayer] != pController) {
+        s_apFor[nPlayer] = pController;
+        s_anHandle[nPlayer] = -1;
+        s_anSent[nPlayer] = -1;
+        s_anRetryAt[nPlayer] = nNow;
+    }
+    if (nTriggers == s_anSent[nPlayer]) {
+        return;
+    }
+    if (s_anHandle[nPlayer] < 0) {
+        if (!SDL_TICKS_PASSED(nNow, s_anRetryAt[nPlayer])) {
+            return;
+        }
+        s_anHandle[nPlayer] = PadHandle(pController);
+        s_anRetryAt[nPlayer] = nNow + 1000;
+        fprintf(stderr,
+                "host: player %d's triggers: pad handle %d\n",
+                nPlayer + 1,
+                s_anHandle[nPlayer]);
+        if (s_anHandle[nPlayer] < 0) {
+            return;
+        }
+    }
+    TriggerEffect effect = {};
+    effect.nTriggerMask = 0x03;
+    for (int t = 0; t < 2; ++t) {
+        if ((nTriggers & (1 << t)) != 0) {
+            effect.command[t].nMode = kTriggerWeapon;
+            effect.command[t].abData[0] = kTriggerStart;
+            effect.command[t].abData[1] = kTriggerEnd;
+            effect.command[t].abData[2] = kTriggerStrength;
+        }
+    }
+    const int nResult = scePadSetTriggerEffect(s_anHandle[nPlayer], &effect);
+    if (nResult == 0) {
+        s_anSent[nPlayer] = nTriggers;
+    } else {
+        fprintf(stderr,
+                "host: player %d's triggers refused (0x%08x)\n",
+                nPlayer + 1,
+                static_cast<unsigned>(nResult));
+        s_anHandle[nPlayer] = -1;
+    }
+}
+#endif
+
+// Runs once a frame after UpdateControllers(). It sets each player's light bar and triggers from
+// the tunnel's reports and restores the game's own motors once a catch tick ends.
+void UpdateFeel() {
+    const Uint32 nNow = SDL_GetTicks();
+    const bool bLightBar = SettingOn("FREQ_LIGHTBAR");
+    for (int p = 0; p < kMaxPlayers; ++p) {
+        PadFeel &feel = g_feel[p];
+        SDL_GameController *pController = g_controllers[p];
+        if (pController == nullptr) {
+            feel.pLit = nullptr;
+            continue;
+        }
+        if (feel.bTick && SDL_TICKS_PASSED(nNow, feel.nTickEnd)) {
+            feel.bTick = false;
+            if (g_abMotors[p][0] != 0 || g_abMotors[p][1] != 0) {
+                RumbleMotors(p);
+            }
+        }
+        const bool bPlaying = feel.bReported && nNow - feel.nReportedAt < kFeelStaleMs;
+        if (bLightBar && feel.bReported) {
+            const float flFlash = feel.bFlash ? LightBarFlash(nNow - feel.nFlashAt) : 0.0f;
+            unsigned char abRgb[3];
+            LightBarRgb(feel.afColor, feel.flTick, !bPlaying, feel.afFlash, flFlash, abRgb);
+            if (pController != feel.pLit || (memcmp(abRgb, feel.abLit, sizeof(abRgb)) != 0 &&
+                                             nNow - feel.nLitAt >= kLightBarIntervalMs)) {
+                SDL_GameControllerSetLED(pController, abRgb[0], abRgb[1], abRgb[2]);
+                memcpy(feel.abLit, abRgb, sizeof(abRgb));
+                feel.pLit = pController;
+                feel.nLitAt = nNow;
+            }
+        }
+#ifdef __PROSPERO__
+        SetTriggers(
+            p, pController, bPlaying && SettingOn("FREQ_TRIGGERS") ? feel.nTriggers : 0, nNow);
+#endif
+    }
+}
+
 } // namespace
 
 // Reports a milestone of the game on stderr. The input script can time its entries from it, and
@@ -463,20 +649,18 @@ int scePadSetActAlign(int, int, const unsigned char *) {
 // actuator n); a game that aligns them otherwise would want scePadSetActAlign's table kept.
 int scePadSetActDirect(int nPort, int nSlot, const unsigned char *pData) {
     const int nPlayer = PlayerAt(nPort, nSlot);
-    if (pData != nullptr && nPlayer >= 0 && nPlayer < LivePlayers() && g_controllers[nPlayer] != nullptr) {
-        static unsigned char s_abLast[kMaxPlayers][2];
+    if (pData != nullptr && nPlayer >= 0 && nPlayer < LivePlayers() &&
+        g_controllers[nPlayer] != nullptr) {
         static Uint32 s_anSent[kMaxPlayers];
         const Uint32 nNow = SDL_GetTicks();
         // Sent on a change, and again every half second while a motor stays on, since each send
         // lasts one second (a still pad stops within it if the game stops calling).
-        if (s_abLast[nPlayer][0] != pData[0] || s_abLast[nPlayer][1] != pData[1] ||
+        if (g_abMotors[nPlayer][0] != pData[0] || g_abMotors[nPlayer][1] != pData[1] ||
             ((pData[0] != 0 || pData[1] != 0) && nNow - s_anSent[nPlayer] >= 500)) {
-            s_abLast[nPlayer][0] = pData[0];
-            s_abLast[nPlayer][1] = pData[1];
+            g_abMotors[nPlayer][0] = pData[0];
+            g_abMotors[nPlayer][1] = pData[1];
             s_anSent[nPlayer] = nNow;
-            // Low frequency (the big motor) from byte 1, high from byte 0.
-            SDL_GameControllerRumble(g_controllers[nPlayer], static_cast<Uint16>(pData[1] * 257),
-                                     pData[0] != 0 ? 0xc000 : 0, 1000);
+            RumbleMotors(nPlayer);
         }
     }
     return 1;
@@ -499,6 +683,7 @@ int scePadRead(int nPort, int nSlot, unsigned char *pData) {
     }
     if (nPort == 0 && nSlot == 0) {
         UpdateControllers();
+        UpdateFeel();
     }
     const int nPlayer = PlayerAt(nPort, nSlot);
     const LivePad live = ReadLivePad(nPlayer);
@@ -537,6 +722,57 @@ int sceMtapPortClose(int) {
 
 int sceMtapGetConnection(int nPort) {
     return nPort == 0 && Multitap() ? 1 : 0;
+}
+
+// Takes the tunnel's report for player nPlayer at each drawn frame (AppTunnel::SetFrame()). It
+// carries the player's colour (components 0 to 1, the colour-blind palette's when it is on), the
+// song tick drawn, and the triggers that play a lane (bit 0 L2, bit 1 R2).
+void HostPadFrame(
+    int nPlayer, float flRed, float flGreen, float flBlue, float flTick, int nTriggers) {
+    if (nPlayer < 0 || nPlayer >= kMaxPlayers) {
+        return;
+    }
+    PadFeel &feel = g_feel[nPlayer];
+    feel.afColor[0] = flRed;
+    feel.afColor[1] = flGreen;
+    feel.afColor[2] = flBlue;
+    feel.nTriggers = nTriggers;
+    // A song tick that stops moving (the pause screen) lets the report go stale.
+    if (!feel.bReported || flTick != feel.flTick) {
+        feel.nReportedAt = SDL_GetTicks();
+    }
+    feel.flTick = flTick;
+    feel.bReported = true;
+}
+
+// Flashes player nPlayer's light bar in the colour of a section the player captured
+// (AppTunnel::OnSectionCaptured()).
+void HostPadFlash(int nPlayer, float flRed, float flGreen, float flBlue) {
+    if (nPlayer < 0 || nPlayer >= kMaxPlayers) {
+        return;
+    }
+    PadFeel &feel = g_feel[nPlayer];
+    feel.afFlash[0] = flRed;
+    feel.afFlash[1] = flGreen;
+    feel.afFlash[2] = flBlue;
+    feel.bFlash = true;
+    feel.nFlashAt = SDL_GetTicks();
+}
+
+// Plays a light tick on the high-frequency motor, over whatever the game's motors do, for a gem
+// player nPlayer caught. AppTunnel::OnCatch() calls it only while the game's force feedback runs.
+void HostPadTick(int nPlayer) {
+    if (nPlayer < 0 || nPlayer >= kMaxPlayers || g_controllers[nPlayer] == nullptr) {
+        return;
+    }
+    const Uint16 nHigh =
+        std::max<Uint16>(g_abMotors[nPlayer][0] != 0 ? 0xc000 : 0, kCatchTickStrength);
+    SDL_GameControllerRumble(g_controllers[nPlayer],
+                             static_cast<Uint16>(g_abMotors[nPlayer][1] * 257),
+                             nHigh,
+                             kCatchTickMs);
+    g_feel[nPlayer].bTick = true;
+    g_feel[nPlayer].nTickEnd = SDL_GetTicks() + kCatchTickMs;
 }
 
 } // extern "C"
