@@ -23,6 +23,12 @@
 #include "rnd/text.h"
 #include "script/configquery.h"
 #include "synth/ps2hardsynth.h"
+#ifdef RESONANCE_HOST
+#include "hostlogs.h"
+#endif
+#ifndef RESONANCE_HOST
+#line 25
+#endif
 
 namespace {
 
@@ -306,6 +312,8 @@ const HostSetting kHostSettings[] = {
      "DRAWS THE HD TEXTURES IN THE HD FOLDER"},
     {"FREQ_UPDATE", "AUTO UPDATE", true, {"1", "0"}, {"ON", "OFF"},
      "ON THE PS5, EACH START FETCHES A NEW BUILD"},
+    {"FREQ_SEND_REPORT", "SEND REPORT", false, {}, {"PRESS X", "SENDING", "ALREADY SENDING"},
+     "SENDS THE LAST CRASH REPORT OR THIS LOG", 0, 0, 0, HostSendReport},
 };
 // clang-format on
 constexpr int kHostSettingCount = sizeof(kHostSettings) / sizeof(kHostSettings[0]);
@@ -348,7 +356,7 @@ const char *const kSectionKeys[] = {
     "GAMEPLAY", "FREQ_UNLOCK_ALL", "FREQ_BONUS_SONGS", "FREQ_GHOST", "FREQ_WATCH", "FREQ_PRACTICE",
     "FREQ_PRACTICE_SPEED",
     "ACCESSIBILITY", "FREQ_NO_FAIL", "FREQ_TIMING_WINDOW", "FREQ_REDUCE_FLASH", "FREQ_GEM_PALETTE",
-    "SYSTEM", "FREQ_FAST_BOOT", "FREQ_UPDATE",
+    "SYSTEM", "FREQ_FAST_BOOT", "FREQ_UPDATE", "FREQ_SEND_REPORT",
 };
 // clang-format on
 static const char *const kOtherHeading = "OTHER";
