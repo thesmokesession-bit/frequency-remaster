@@ -896,6 +896,9 @@ static int Fetch(const char *pszUrl, const char *pszAccept, Buffer *pBuffer, FIL
                     curl_easy_strerror(result), nStatus);
         }
         curl_easy_cleanup(pCurl);
+        if (pFile != NULL && !bRedirect) {
+            fprintf(stderr, "PS5: update: %s: connection closed\n", szHost);
+        }
         curl_slist_free_all(pResolve);
         curl_slist_free_all(pHeaders);
         if (bRedirect) {
@@ -976,8 +979,11 @@ static void *RunUpdater(void *pUnused) {
     fprintf(stderr, "PS5: update: downloading %s (this build is %s)\n", szTag, FREQ_VERSION);
     const char *pszNew = TITLE_DIR "/eboot.bin.new";
     FILE *pFile = fopen(pszNew, "wb");
-    if (pFile != NULL) { // unbuffered: the file's size is what has arrived
-        setvbuf(pFile, NULL, _IONBF, 0);
+    // Small writes to the title folder stall the game's frames (unbuffered: a freeze every second,
+    // 2026-11-24), so the download is written 1 MiB at a time.
+    static char s_abFileBuffer[1 << 20];
+    if (pFile != NULL) {
+        setvbuf(pFile, s_abFileBuffer, _IOFBF, sizeof(s_abFileBuffer));
     }
     int nFetched = -1;
     for (int nTry = 0; pFile != NULL && nFetched != 0 && nTry < 5; ++nTry) {
