@@ -88,11 +88,12 @@ namespace {
 // (catches, misses, captures) that long, so its effect lands where the drawn gems are; a negative
 // one cannot show an event before it happens, so those effects come |offset| late. In song time
 // (HostSongOffsetNs()): at a practice speed, the offset's wall time at that speed, plus the time
-// stretch's lag, so the picture keeps with the stretched sound.
+// stretch's lag, so the picture keeps with the stretched sound. Read as each level's renderer is
+// made, so a change on the settings screen shows from the next song.
+long long g_nVideoOffsetNs = 0;
+
 long long VideoOffsetNs() {
-    static const long long s_nOffsetNs = static_cast<long long>(
-        atof(getenv("FREQ_VIDEO_OFFSET_MS") != nullptr ? getenv("FREQ_VIDEO_OFFSET_MS") : "0") * 1e6);
-    return HostSongOffsetNs(s_nOffsetNs);
+    return HostSongOffsetNs(g_nVideoOffsetNs);
 }
 
 // Messages held back, with the song time PollMessages() took them at.
@@ -197,6 +198,13 @@ Renderer::Renderer()
         cell.mEffects.reset();
     }
 
+#ifdef RESONANCE_HOST
+    g_nVideoOffsetNs = static_cast<long long>(
+        atof(getenv("FREQ_VIDEO_OFFSET_MS") != nullptr ? getenv("FREQ_VIDEO_OFFSET_MS") : "0") * 1e6);
+#endif
+#ifndef RESONANCE_HOST
+#line 161
+#endif
     g_pRenderer = this;
 }
 

@@ -1,5 +1,6 @@
 #include "met/metconfiggameoptionsscreen.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -206,13 +207,14 @@ bool CalibrationCommand(int nCommand, Rnd::Text *pLabel, Rnd::Text *pValue, cons
 // The remaster's settings, Circle on this screen: Up and Down pick one, Left and Right change it,
 // and each change is kept in the settings file at once (HostSaveSetting). Circle or Triangle
 // leaves. A setting read at start-up (marked) takes effect from the next start, the others from
-// the next song.
+// the next song. A row with a step is a number of ms within plus or minus its range.
 constexpr int kCircleCommand = 7; // MetCommandMap's code for Circle
 
 struct HostSetting {
     const char *pszKey, *pszLabel;
     bool bAtStart;
     const char *apszValues[7], *apszNames[7];
+    int nRange, nStep;
 };
 
 const HostSetting kHostSettings[] = {
@@ -225,6 +227,9 @@ const HostSetting kHostSettings[] = {
     {"FREQ_GEM_PALETTE", "GEM COLOURS", false, {"original", "cb"}, {"ORIGINAL", "COLOURBLIND"}},
     {"FREQ_NO_FAIL", "NO FAIL", false, {"0", "1"}, {"OFF", "ON"}},
     {"FREQ_TIMING_WINDOW", "TIMING WINDOW", false, {"1.0", "1.5", "2.0"}, {"1X", "1.5X", "2X"}},
+    {"FREQ_AUDIO_OFFSET_MS", "AUDIO OFFSET", true, {}, {}, 250, 5},
+    {"FREQ_VIDEO_OFFSET_MS", "VIDEO OFFSET", false, {}, {}, 250, 5},
+    {"FREQ_INPUT_OFFSET_MS", "INPUT OFFSET", false, {}, {}, 250, 5},
 };
 constexpr int kHostSettingCount = sizeof(kHostSettings) / sizeof(kHostSettings[0]);
 
@@ -251,11 +256,21 @@ int CurrentValue(const HostSetting &setting) {
     return strcmp(setting.pszKey, "FREQ_SCALE") == 0 ? 3 : 0;
 }
 
+int NumberValue(const HostSetting &setting) {
+    const char *pszValue = getenv(setting.pszKey);
+    return pszValue != nullptr ? atoi(pszValue) : 0;
+}
+
 void ShowHostSetting(Rnd::Text *pLabel, Rnd::Text *pValue) {
     const HostSetting &setting = kHostSettings[g_nHostSetting];
     char szText[48];
     snprintf(szText, sizeof(szText), "%s%s", setting.pszLabel, setting.bAtStart ? " *" : "");
     pLabel->SetText(HxStr(szText));
+    if (setting.nStep != 0) {
+        snprintf(szText, sizeof(szText), "%d MS", NumberValue(setting));
+        pValue->SetText(HxStr(szText));
+        return;
+    }
     pValue->SetText(HxStr(setting.apszNames[CurrentValue(setting)]));
 }
 
@@ -284,9 +299,16 @@ bool HostSettingsCommand(int nCommand, Rnd::Text *pLabel, Rnd::Text *pValue, con
         break;
     case kMetScreenCommandLeft:
     case kMetScreenCommandRight: {
-        const int nStep = nCommand == kMetScreenCommandLeft ? nCount - 1 : 1;
-        const char *pszValue = setting.apszValues[(CurrentValue(setting) + nStep) % nCount];
-        setenv(setting.pszKey, pszValue, 1);
+        char szNumber[16];
+        const char *pszValue = szNumber;
+        if (setting.nStep != 0) {
+            const int nStep = nCommand == kMetScreenCommandLeft ? -setting.nStep : setting.nStep;
+            snprintf(szNumber, sizeof(szNumber), "%d",
+                     std::clamp(NumberValue(setting) + nStep, -setting.nRange, setting.nRange));
+        } else {
+            const int nStep = nCommand == kMetScreenCommandLeft ? nCount - 1 : 1;
+            pszValue = setting.apszValues[(CurrentValue(setting) + nStep) % nCount];
+        }
         const int bSaved = HostSaveSetting(setting.pszKey, pszValue);
         PlaySoundByName("SND_MET_KEY1");
         HostEvent("setting %s=%s saved=%d", setting.pszKey, pszValue, bSaved);
