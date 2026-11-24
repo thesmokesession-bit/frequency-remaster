@@ -1,0 +1,18 @@
+--- a/src/vulkan/wsi/wsi_common_videoout.c	2026-11-24 02:00:27.359603072 +0000
++++ b/src/vulkan/wsi/wsi_common_videoout.c	2026-11-24 02:00:27.374276810 +0000
+@@ -383,7 +383,14 @@
+             : supported;
+       out->high_frame_rate = configured == 0;
+       if (out->high_frame_rate) {
+-         const uint64_t period = videoout_vblank_period_ns(out->handle);
++         /* The display can take a moment to settle into the new mode (the TV
++          * re-syncs): measure again for up to about two seconds before giving
++          * up on it (Frequency, 2026-11-23: 20.9 ms once, 8.3 ms the next run). */
++         uint64_t period = videoout_vblank_period_ns(out->handle);
++         for (unsigned attempt = 0; attempt < 10 && period > VIDEOOUT_HIGH_REFRESH_LIMIT_NS; attempt++) {
++            os_time_sleep(200000);
++            period = videoout_vblank_period_ns(out->handle);
++         }
+          if (period > VIDEOOUT_HIGH_REFRESH_LIMIT_NS) {
+             sceVideoOutConfigureOutput(out->handle, PS5_VIDEO_OUT_MODE_RESTORE, NULL, NULL, NULL);
+             out->high_frame_rate = false;

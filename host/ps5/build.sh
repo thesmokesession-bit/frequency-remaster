@@ -4,6 +4,8 @@
 #   host/ps5/build.sh package    then assemble out/PPSA64010 (eboot, sce_sys, sce_module)
 # Needs P8 (default: two levels above the worktree's p8 parent) with docker/run.sh, PS5_Vulkan at
 # probe/src/PS5_Vulkan with RADV built (P8/docker/build-radv.sh) and the PacBrew sysroot.
+# RADV's source tree there takes host/ps5/radv-videoout-120hz.patch before it is built (patch -p1 in
+# .deps/work/radv-src): the 119.88 Hz check measures again while the TV settles into the mode.
 set -euo pipefail
 tree=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 : "${P8:=$(cd -- "$tree/../.." && pwd)}"
