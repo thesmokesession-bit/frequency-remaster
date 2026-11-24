@@ -204,8 +204,12 @@ public:
 
     int ProvideText(int nItem, int nColumn, Rnd::Text *pText, int) override {
         const bool bRow = nColumn == 0 && nItem < static_cast<int>(mRows.size());
-        Rnd::Font *pFont = dynamic_cast<Rnd::Font *>(
-            Rnd::TheManager.Find(HxStr(bRow && mRows[nItem].bLit ? kLitFont : kDimFont)));
+        // The grey font does not read on the highlight bar, so the selected row is always lit and
+        // its help line gives the locked state.
+        const bool bLit =
+            bRow && (mRows[nItem].bLit || (mList != nullptr && nItem == mList->getSelected()));
+        Rnd::Font *pFont =
+            dynamic_cast<Rnd::Font *>(Rnd::TheManager.Find(HxStr(bLit ? kLitFont : kDimFont)));
         if (pFont != nullptr && pFont != pText->GetFont()) {
             pText->SetFont(pFont);
         }
@@ -265,11 +269,12 @@ private:
             for (const HostAchievement &achievement : HostAchievementList()) {
                 const std::string text = achievement.pszTitle;
                 const size_t nColon = text.find(": ");
-                const char *pszStatus = achievement.bUnlocked ? "unlocked" : "not unlocked yet";
+                const char *pszStatus = achievement.bUnlocked ? "unlocked" : "locked";
                 mRows.push_back({text.substr(0, nColon),
                                  achievement.bUnlocked,
-                                 nColon != std::string::npos ? text.substr(nColon + 2) :
-                                                               std::string(pszStatus)});
+                                 nColon != std::string::npos ?
+                                     text.substr(nColon + 2) + ", " + pszStatus :
+                                     std::string(pszStatus)});
                 nUnlocked += achievement.bUnlocked;
                 fprintf(stderr,
                         "extras: achievement %zu unlocked=%d %s\n",

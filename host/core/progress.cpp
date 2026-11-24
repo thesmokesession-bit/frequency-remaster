@@ -181,7 +181,7 @@ const Achievement kAchievements[] = {
     {"remix", "Remix saved"},
     {"godspeed", "Cleared the cut song Godspeed"},
     {"scratchotronic", "Cleared the cut song Scratchotronic"},
-    {"board", "On the board: post a best to the friends board"},
+    {"board", "On the board: post a best to the scoreboard"},
 };
 constexpr size_t kAchievementCount = sizeof(kAchievements) / sizeof(kAchievements[0]);
 
