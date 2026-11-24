@@ -285,6 +285,14 @@ namespace Iop
 		int16 m_reverbOutVolL = 0;
 		int16 m_reverbOutVolR = 0;
 
+		//The spatial mix (host/audio/audio.cpp, FREQ_SPATIAL). While m_spatialOut is set, a voice
+		//in m_spatialPlaced adds its level (the power sum of its two volumes) times its six gains
+		//to m_spatialOut, six floats a sample, instead of mixing into the stereo output. Its reverb
+		//send is unchanged.
+		float* m_spatialOut = nullptr;
+		uint32 m_spatialPlaced = 0;
+		float m_spatialGains[24][6] = {};
+
 		static void MixSamples(int32, int32, int16*);
 
 	private:

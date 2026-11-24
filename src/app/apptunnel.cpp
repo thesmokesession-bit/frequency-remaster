@@ -26,6 +26,7 @@ extern "C" void
 HostPadFrame(int nPlayer, float flRed, float flGreen, float flBlue, float flTick, int nTriggers);
 extern "C" void HostPadFlash(int nPlayer, float flRed, float flGreen, float flBlue);
 extern "C" void HostPadTick(int nPlayer);
+extern "C" void HostSpatialLane(float flLane, int nRings); // host/audio/audio.cpp: FREQ_SPATIAL
 
 namespace {
 
@@ -1604,5 +1605,18 @@ void AppTunnel::PlaceStringFlareOnRing(int nRing, float flBlend) {
 }
 
 void AppTunnel::PrepareLocalView(int nView, [[maybe_unused]] float flFrame) {
+#ifdef RESONANCE_HOST
+    // The listener of the spatial mix is the first local player, where its camera turns to.
+    for (TnlPlayer *pPlayer : mPlayers) {
+        if (nView == 0 && pPlayer->mCam != nullptr) {
+            Rnd::Tunnel *pTunnel = GetCachedTunnelObject();
+            HostSpatialLane(pTunnel->GetSeeker(pPlayer->mIndex)->mLane, pTunnel->mRingCount);
+            break;
+        }
+    }
+#endif
+#ifndef RESONANCE_HOST
+#line 1322
+#endif
     mNowRing->SetRotation(nView);
 }

@@ -33,6 +33,7 @@
 
 #include "Iop_Spu2.h"
 #include "Iop_SpuBase.h"
+#include "ezmidi/hsyn.h"
 
 extern "C" {
 void HostUseSystemHeap(int bOn);  // host/core/heap.c
@@ -421,6 +422,77 @@ uint64_t EeClock() {
     return std::max(nNow, nLast);
 }
 
+// ---- Spatial mix --------------------------------------------------------------------------------
+
+// FREQ_SPATIAL=1, with FREQ_SURROUND=1 on a 5.1 output: each voice of a track's notes plays from
+// where the track's lane is around the player instead of through the matrix upmix. The track the
+// player is on is in front, track + 1 a lane to the right (as the game's own pan has it), the
+// opposite lane behind, and all of them turn with the player's lane as the tunnel rotates. Backing
+// tracks, sound effects, reverb, and the movies stay in the upmix, and so does everything outside
+// a song (no lane drawn for a quarter of a second) and at a practice speed (the stretch is stereo).
+const bool g_bSpatial =
+    getenv("FREQ_SPATIAL") != nullptr && strcmp(getenv("FREQ_SPATIAL"), "1") == 0;
+std::atomic<int> g_aChannelTrack[16]; // the track of each MIDI channel's mixer plus 1, or 0
+std::atomic<float> g_flLane{0.0f};
+std::atomic<int> g_nRings{0};
+std::atomic<int64_t> g_nLaneNs{0}; // when the lane was last drawn
+constexpr int64_t kLaneStaleNs = 250000000;
+
+// Constant-power gains between the two speakers either side of an azimuth (degrees clockwise from
+// the front), in SDL's 5.1 order: front left at -30 degrees, front right at 30, centre, LFE,
+// surround left at -110, and surround right at 110.
+void SpeakerGains(float flAzimuth, float *pGains) {
+    static constexpr float kAngles[] = {0, 30, 110, 250, 330, 360};
+    static constexpr int kSpeakers[] = {2, 1, 5, 4, 0, 2};
+    float flAngle = fmodf(flAzimuth, 360.0f);
+    flAngle += flAngle < 0 ? 360.0f : 0.0f;
+    int i = 0;
+    while (i < 4 && flAngle > kAngles[i + 1]) {
+        ++i;
+    }
+    const float t = (flAngle - kAngles[i]) / (kAngles[i + 1] - kAngles[i]) * 1.5707963f;
+    // The SPU's level is the power of both volumes: a voice the stereo mix centres at 0.75 a side
+    // would reach 1.06 on one speaker. At 0.707 of it a speaker peaks as a stereo side did, so the
+    // already hot mix clips no more than it does in stereo.
+    constexpr float kHeadroom = 0.70710678f;
+    std::fill(pGains, pGains + 6, 0.0f);
+    pGains[kSpeakers[i]] += kHeadroom * cosf(t);
+    pGains[kSpeakers[i + 1]] += kHeadroom * sinf(t);
+}
+
+// Places the voice of every sounding note whose channel a track's mixer drives, for the lane now,
+// or reports false (nothing placed) while no lane is being drawn. FREQ_TEST_SPATIAL_SOLO=<track>,
+// a test control, silences every other voice (with FREQ_TEST_NO_REVERB=1, the track alone).
+bool PlaceVoices(Iop::CSpuBase *apCores[2]) {
+    const int nRings = g_nRings.load();
+    if (nRings <= 0 || NowNs() - g_nLaneNs.load() > kLaneStaleNs) {
+        return false;
+    }
+    static const int s_nSolo =
+        getenv("FREQ_TEST_SPATIAL_SOLO") != nullptr ? atoi(getenv("FREQ_TEST_SPATIAL_SOLO")) : -1;
+    for (int nCore = 0; nCore < 2; ++nCore) {
+        apCores[nCore]->m_spatialPlaced = s_nSolo >= 0 ? 0xffffff : 0;
+        if (s_nSolo >= 0) {
+            std::fill(&apCores[nCore]->m_spatialGains[0][0],
+                      &apCores[nCore]->m_spatialGains[0][0] + 24 * 6,
+                      0.0f);
+        }
+    }
+    const float flLane = g_flLane.load();
+    for (const sSynNote &note : gCurrentNotes) {
+        const int nTrack = g_aChannelTrack[note.chan & 15].load() - 1;
+        const int nVoice = note.slot >> 1;
+        if ((note.flag & HSYN_NOTE_ON) == 0 || nTrack < 0 || nVoice >= HSYN_VOICES_PER_CORE ||
+            (s_nSolo >= 0 && nTrack != s_nSolo)) {
+            continue;
+        }
+        Iop::CSpuBase *pCore = apCores[note.slot & 1];
+        SpeakerGains((nTrack - flLane) * 360.0f / nRings, pCore->m_spatialGains[nVoice]);
+        pCore->m_spatialPlaced |= 1u << nVoice;
+    }
+    return true;
+}
+
 // ---- SPU2 registers through libsd entry values --------------------------------------------------
 
 // The register of core `nCore` whose core 0 offset is nOffset.
@@ -749,9 +821,11 @@ void ReleaseMidi() {
     }
 }
 
-void RenderLocked(int16_t *pOut, int nFrames) {
+// pSpace, when not null, takes the placed voices (PlaceVoices()) as six channels a frame.
+void RenderLocked(int16_t *pOut, int nFrames, float *pSpace) {
     int16_t aCore0[2 * kBlock];
     int16_t aCore1[2 * kBlock];
+    float aSpace0[6 * kBlock];
     while (nFrames > 0) {
         int nRun = std::min(nFrames, kBlock);
         if (g_bTicking) {
@@ -765,6 +839,14 @@ void RenderLocked(int16_t *pOut, int nFrames) {
                 nRun, static_cast<int>((nToTick + kIopCyclesPerSample - 1) / kIopCyclesPerSample));
             g_nTickAccumulated += nRun * kIopCyclesPerSample;
         }
+        Iop::CSpuBase *apCores[2] = {&g_pSpu->core0, &g_pSpu->core1};
+        const bool bPlaced = pSpace != nullptr && PlaceVoices(apCores);
+        if (bPlaced) {
+            std::fill(aSpace0, aSpace0 + 6 * nRun, 0.0f);
+            std::fill(pSpace, pSpace + 6 * nRun, 0.0f);
+            g_pSpu->core0.m_spatialOut = aSpace0;
+            g_pSpu->core1.m_spatialOut = pSpace;
+        }
         g_pSpu->core0.Render(aCore0, 2 * nRun);
         g_pSpu->core1.Render(aCore1, 2 * nRun);
         // Core 0's output is core 1's external input, at core 1's AVOL (as in Play!'s PS2VM).
@@ -773,6 +855,17 @@ void RenderLocked(int16_t *pOut, int nFrames) {
                 (i & 1) ? g_pSpu->core1.m_extInputVolR : g_pSpu->core1.m_extInputVolL;
             Iop::CSpuBase::MixSamples(aCore0[i], nVolume, &aCore1[i]);
         }
+        if (bPlaced) {
+            g_pSpu->core0.m_spatialOut = g_pSpu->core1.m_spatialOut = nullptr;
+            const float flVolume =
+                (g_pSpu->core1.m_extInputVolL + g_pSpu->core1.m_extInputVolR) / (2.0f * 0x7fff);
+            for (int i = 0; i < 6 * nRun; ++i) {
+                pSpace[i] += flVolume * aSpace0[i];
+            }
+        } else if (pSpace != nullptr) {
+            std::fill(pSpace, pSpace + 6 * nRun, 0.0f);
+        }
+        pSpace = pSpace != nullptr ? pSpace + 6 * nRun : nullptr;
         // Core 1's sound data input, at its BVOL, straight to its output (MMIX SINL/SINR).
         for (int i = 0; i < nRun && g_block.nSize != 0; ++i) {
             if ((g_nRendered + i) * kEeCyclesPerSample < g_block.nStart) {
@@ -804,16 +897,17 @@ void RenderLocked(int16_t *pOut, int nFrames) {
 }
 
 void WriteWavHeader() {
-    const uint32_t nData = static_cast<uint32_t>(g_nWavFrames * 4);
+    const uint32_t nFrameBytes = 2 * g_nChannels;
+    const uint32_t nData = static_cast<uint32_t>(g_nWavFrames * nFrameBytes);
     const uint32_t aHeader[] = {0x46464952,
                                 36 + nData,
                                 0x45564157,
                                 0x20746d66,
                                 16,
-                                0x00020001,
+                                static_cast<uint32_t>(g_nChannels) << 16 | 1,
                                 kRate,
-                                kRate * 4,
-                                0x00100004,
+                                kRate * nFrameBytes,
+                                0x00100000 | nFrameBytes,
                                 0x61746164,
                                 nData};
     fseek(g_pWav, 0, SEEK_SET);
@@ -826,9 +920,26 @@ extern "C" long long HostSongOffsetNs(long long nWallNs);
 
 void RenderBlock(int nFrames) {
     int16_t aBlock[2 * kBlock];
+    static float s_aSpace[6 * kBlock];
+    const bool bSpace =
+        g_bSpatial && g_nChannels == 6 && g_flSpeed.load() == 1.0f && !g_bStretching;
     {
         std::lock_guard<std::mutex> lock(g_iop);
-        RenderLocked(aBlock, nFrames);
+        RenderLocked(aBlock, nFrames, bSpace ? s_aSpace : nullptr);
+    }
+    // FREQ_TEST_SPATIAL_SOLO: the lane against the capture's frames, for a test to read.
+    static const bool s_bSpaceLog = getenv("FREQ_TEST_SPATIAL_SOLO") != nullptr;
+    if (bSpace && s_bSpaceLog && NowNs() - g_nLaneNs.load() <= kLaneStaleNs) {
+        static float s_flLogged = -1e9f;
+        if (fabsf(g_flLane.load() - s_flLogged) >= 0.01f) {
+            s_flLogged = g_flLane.load();
+            fprintf(stderr,
+                    "SPATIAL_SOLO track=%s rings=%d\nSPATIAL_LANE wav=%llu lane=%.3f\n",
+                    getenv("FREQ_TEST_SPATIAL_SOLO"),
+                    g_nRings.load(),
+                    static_cast<unsigned long long>(g_nWavFrames),
+                    s_flLogged);
+        }
     }
     g_nAnchorNs.store(NowNs());
     g_nAnchorCycles.store(g_nRendered * kEeCyclesPerSample);
@@ -854,31 +965,33 @@ void RenderBlock(int nFrames) {
             nFrames = static_cast<int>(s_stretched.size() / 2);
         }
     }
-    const size_t nBytes = sizeof(int16_t) * 2 * nFrames;
-    if (g_nDevice != 0 && nFrames > 0) {
-        // A device slower than the wall clock loses a block now and then, rather than lagging.
-        if (QueuedBytes() < kMaxQueuedBytes * g_nChannels / 2) {
-            if (g_nChannels == 6) {
-                // FREQ_SURROUND=1: a matrix upmix of the game's stereo, SDL's 5.1 order (front
-                // left, right, centre, LFE, surround left, right). The centre carries what both
-                // sides share, the surrounds what differs; the fronts stay as mixed.
-                static std::vector<int16_t> s_six;
-                s_six.resize(6 * static_cast<size_t>(nFrames));
-                for (int i = 0; i < nFrames; ++i) {
-                    const int nLeft = pOut[2 * i], nRight = pOut[2 * i + 1];
-                    int16_t *pSix = &s_six[6 * static_cast<size_t>(i)];
-                    pSix[0] = static_cast<int16_t>(nLeft);
-                    pSix[1] = static_cast<int16_t>(nRight);
-                    pSix[2] = static_cast<int16_t>((nLeft + nRight) * 181 / 512); // 0.707 of the mean
-                    pSix[3] = 0;
-                    pSix[4] = static_cast<int16_t>(std::clamp((nLeft - nRight) / 2, -32768, 32767));
-                    pSix[5] = static_cast<int16_t>(std::clamp((nRight - nLeft) / 2, -32768, 32767));
-                }
-                QueueOut(s_six.data(), static_cast<Uint32>(nBytes * 3));
-            } else {
-                QueueOut(pOut, static_cast<Uint32>(nBytes));
+    const int16_t *pFrames = pOut; // what plays, stereo or 5.1
+    if (g_nChannels == 6) {
+        // FREQ_SURROUND=1: a matrix upmix of the game's stereo, SDL's 5.1 order (front left,
+        // right, centre, LFE, surround left, right). The centre carries what both sides share,
+        // the surrounds what differs; the fronts stay as mixed. The spatial mix adds its voices.
+        static std::vector<int16_t> s_six;
+        s_six.resize(6 * static_cast<size_t>(nFrames));
+        for (int i = 0; i < nFrames; ++i) {
+            const int nLeft = pOut[2 * i], nRight = pOut[2 * i + 1];
+            int16_t *pSix = &s_six[6 * static_cast<size_t>(i)];
+            pSix[0] = static_cast<int16_t>(nLeft);
+            pSix[1] = static_cast<int16_t>(nRight);
+            pSix[2] = static_cast<int16_t>((nLeft + nRight) * 181 / 512); // 0.707 of the mean
+            pSix[3] = 0;
+            pSix[4] = static_cast<int16_t>(std::clamp((nLeft - nRight) / 2, -32768, 32767));
+            pSix[5] = static_cast<int16_t>(std::clamp((nRight - nLeft) / 2, -32768, 32767));
+            for (int c = 0; bSpace && c < 6; ++c) {
+                pSix[c] = static_cast<int16_t>(
+                    std::clamp(pSix[c] + lrintf(s_aSpace[6 * i + c]), -32768L, 32767L));
             }
         }
+        pFrames = s_six.data();
+    }
+    const size_t nBytes = sizeof(int16_t) * g_nChannels * nFrames;
+    // A device slower than the wall clock loses a block now and then, rather than lagging.
+    if (g_nDevice != 0 && nFrames > 0 && QueuedBytes() < kMaxQueuedBytes * g_nChannels / 2) {
+        QueueOut(pFrames, static_cast<Uint32>(nBytes));
     }
     // FREQ_TEST_AUDIO_LAG=1, a test measure: how far the song time on screen is ahead of the sound
     // heard, in ms, when the newest sample plays (after the device's queue); the median each second.
@@ -910,7 +1023,7 @@ void RenderBlock(int nFrames) {
         }
     }
     if (g_pWav != nullptr) {
-        fwrite(pOut, nBytes, 1, g_pWav);
+        fwrite(pFrames, nBytes, 1, g_pWav);
         const bool bSecond = (g_nWavFrames + nFrames) / kRate != g_nWavFrames / kRate;
         g_nWavFrames += nFrames;
         if (bSecond) {
@@ -940,6 +1053,11 @@ void *RunAudio(void *) {
     return nullptr;
 }
 
+bool WantsSurround() {
+    const char *pszSurround = getenv("FREQ_SURROUND");
+    return pszSurround != nullptr && strcmp(pszSurround, "1") == 0;
+}
+
 void OpenDevice() {
     // Without a session bus, D-Bus would try to start one for SDL2 and wait on it for ever.
     setenv("DBUS_SESSION_BUS_ADDRESS", "disabled:", 0);
@@ -952,8 +1070,7 @@ void OpenDevice() {
     SDL_AudioSpec want = {};
     want.freq = kRate;
     want.format = AUDIO_S16SYS;
-    const char *pszSurround = getenv("FREQ_SURROUND");
-    want.channels = pszSurround != nullptr && strcmp(pszSurround, "1") == 0 ? 6 : 2;
+    want.channels = WantsSurround() ? 6 : 2;
 #ifdef __PROSPERO__
     if (want.channels == 6 && OpenSurroundPort()) {
         g_bDirect = true;
@@ -1108,6 +1225,19 @@ long long HostSongOffsetNs(long long nWallNs) {
                    HostPracticeVideoLagSamples() * 1e9 / kRate);
 }
 
+// src/gs/mixer.cpp: the track whose mixer drives a MIDI channel (-1: a backing track, or none).
+void HostSpatialTrack(int nChannel, int nTrack) {
+    g_aChannelTrack[nChannel & 15].store(nTrack + 1);
+}
+
+// src/app/apptunnel.cpp, each frame drawn in the tunnel: the lane of the first local player, in
+// rings, fractional while the tunnel turns, of the tunnel's nRings.
+void HostSpatialLane(float flLane, int nRings) {
+    g_flLane.store(flLane);
+    g_nRings.store(nRings);
+    g_nLaneNs.store(NowNs());
+}
+
 // The EE cycle counter, on the audio clock.
 uint64_t HostAudioCycles() {
     return EeClock();
@@ -1195,6 +1325,12 @@ void HostAudioStart() {
     HostUseSystemHeap(1);
     g_pSpu = new Spu;
     SdInit();
+    // FREQ_CLOCK=fixed renders at the frame loop's ticks (HostAudioFixedTick()), to the file only:
+    // in 5.1 with FREQ_SURROUND=1.
+    const bool bFixed = HostFixedClockNs() >= 0;
+    if (bFixed && WantsSurround()) {
+        g_nChannels = 6;
+    }
     if (const char *pszWav = getenv("FREQ_WAV")) {
         // The game defines its own fopen() and write() (src/os/filelog.cpp), so the file is
         // opened with open() and written through the C library's stream.
@@ -1206,8 +1342,6 @@ void HostAudioStart() {
         }
         WriteWavHeader();
     }
-    // FREQ_CLOCK=fixed renders at the frame loop's ticks (HostAudioFixedTick()), to the file only.
-    const bool bFixed = HostFixedClockNs() >= 0;
     if (!bFixed) {
         OpenDevice();
     }

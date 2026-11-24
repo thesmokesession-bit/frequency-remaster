@@ -778,8 +778,20 @@ void CSpuBase::Render(int16* samples, unsigned int sampleCount)
 			int32 volumeLeft = channel.volumeLeftAbs >> 16;
 			int32 volumeRight = channel.volumeRightAbs >> 16;
 
-			MixSamples(inputSample, volumeLeft, samples + 0);
-			MixSamples(inputSample, volumeRight, samples + 1);
+			if(m_spatialOut && (m_spatialPlaced & (1 << i)))
+			{
+				const float level = inputSample *
+				                    sqrtf(static_cast<float>(volumeLeft) * volumeLeft + static_cast<float>(volumeRight) * volumeRight) / 0x7FFF;
+				for(unsigned int c = 0; c < 6; c++)
+				{
+					m_spatialOut[6 * j + c] += level * m_spatialGains[i][c];
+				}
+			}
+			else
+			{
+				MixSamples(inputSample, volumeLeft, samples + 0);
+				MixSamples(inputSample, volumeRight, samples + 1);
+			}
 
 			//Mix in reverb if enabled for this channel
 			if(updateReverb && (m_channelReverb.f & (1 << i)))
