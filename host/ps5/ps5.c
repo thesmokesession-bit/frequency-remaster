@@ -842,9 +842,10 @@ static int Fetch(const char *pszUrl, const char *pszAccept, Buffer *pBuffer, FIL
         }
         // ponytail: after the last byte of a download, closing its connection to the asset host
         // never returns on the console (59894545 of 59894545 bytes, HTTP 200, then no return from
-        // curl_easy_cleanup, 2026-11-24), so that one handle and its socket are left open until
-        // the title exits. Find the blocking close if updates ever run more than once a launch.
-        if (pFile == NULL || bRedirect) {
+        // curl_easy_cleanup, 2026-11-24), so each asset's handle and socket (the signature's and
+        // the eboot's) are left open until the title exits. Find the blocking close if updates
+        // ever run more than once a launch.
+        if (bRedirect || strcmp(szHost, "api.github.com") == 0) {
             curl_easy_cleanup(pCurl);
         }
         curl_slist_free_all(pResolve);
@@ -879,6 +880,28 @@ static const char *JsonString(const char *pszFrom, const char *pszKey, char *psz
     return pszEnd;
 }
 
+// The API address of the release asset pszName: the "url" its object starts with, before its
+// "name". Returns the asset's size, 0 when there is no such asset.
+static long AssetUrl(const char *pszRelease, const char *pszName, char *pszOut, size_t nOut) {
+    char szNeedle[96];
+    snprintf(szNeedle, sizeof(szNeedle), "\"name\":\"%s\"", pszName);
+    pszOut[0] = '\0';
+    const char *pszAsset = strstr(pszRelease, szNeedle);
+    for (const char *pszAt = pszRelease; pszAsset != NULL;) {
+        const char *pszUrl = strstr(pszAt, "\"url\":\"");
+        if (pszUrl == NULL || pszUrl > pszAsset) {
+            break;
+        }
+        JsonString(pszUrl, "url", pszOut, nOut);
+        pszAt = pszUrl + 1;
+    }
+    const char *pszSize = pszAsset != NULL ? strstr(pszAsset, "\"size\":") : NULL;
+    return pszSize != NULL ? strtol(pszSize + 7, NULL, 10) : 0;
+}
+
+// host/ps5/update-sig.c: 1 when the release key signed the file.
+int HostUpdateSignatureValid(const char *pszPath, const unsigned char *pSignature, size_t nSignature);
+
 static void *RunUpdater(void *pUnused) {
     (void)pUnused;
     // A build that does not know its commit would take every release for an update, every start.
@@ -906,22 +929,22 @@ static void *RunUpdater(void *pUnused) {
         free(release.pData);
         return NULL;
     }
-    // The eboot.bin asset's API address: the "url" its object starts with, before its "name".
-    char szAsset[512] = "";
-    const char *pszName = strstr(release.pData, "\"name\":\"eboot.bin\"");
-    for (const char *pszAt = release.pData; pszName != NULL;) {
-        const char *pszUrl = strstr(pszAt, "\"url\":\"");
-        if (pszUrl == NULL || pszUrl > pszName) {
-            break;
-        }
-        JsonString(pszUrl, "url", szAsset, sizeof(szAsset));
-        pszAt = pszUrl + 1;
-    }
-    const char *pszSize = pszName != NULL ? strstr(pszName, "\"size\":") : NULL;
-    const long nAssetSize = pszSize != NULL ? strtol(pszSize + 7, NULL, 10) : 0;
+    char szAsset[512];
+    char szSignatureAsset[512];
+    const long nAssetSize = AssetUrl(release.pData, "eboot.bin", szAsset, sizeof(szAsset));
+    AssetUrl(release.pData, "eboot.bin.sig", szSignatureAsset, sizeof(szSignatureAsset));
     free(release.pData);
     if (strstr(szAsset, "/releases/assets/") == NULL) {
         fprintf(stderr, "PS5: update: release %s has no eboot.bin\n", szTag);
+        return NULL;
+    }
+    // The signature first: an unsigned release is not worth 60 MB of download.
+    Buffer signature = {NULL, 0};
+    if (strstr(szSignatureAsset, "/releases/assets/") == NULL ||
+        Fetch(szSignatureAsset, "application/octet-stream", &signature, NULL) != 0 ||
+        signature.nSize != 64) {
+        fprintf(stderr, "PS5: update: release %s has no eboot.bin.sig, not installed\n", szTag);
+        free(signature.pData);
         return NULL;
     }
     fprintf(stderr, "PS5: update: downloading %s (this build is %s)\n", szTag, FREQ_VERSION);
@@ -952,9 +975,13 @@ static void *RunUpdater(void *pUnused) {
         fclose(pFile);
     }
     static const unsigned char kSelfMagic[4] = {0x4f, 0x15, 0x3d, 0x1d};
+    const int bSigned = nFetched == 0 &&
+                        HostUpdateSignatureValid(pszNew, (const unsigned char *)signature.pData, signature.nSize);
+    free(signature.pData);
+    fprintf(stderr, "PS5: update: signature %s\n", bSigned ? "valid" : "INVALID");
     // 0777: without the executable bit the home screen cannot start the title (Perfect Eye,
     // 2026-10-19).
-    if (nFetched != 0 || nSize < (1 << 20) || nSize != nAssetSize ||
+    if (nFetched != 0 || nSize < (1 << 20) || nSize != nAssetSize || !bSigned ||
         memcmp(abMagic, kSelfMagic, 4) != 0 ||
         chmod(pszNew, 0777) != 0 || rename(pszNew, TITLE_DIR "/eboot.bin") != 0) {
         fprintf(stderr, "PS5: update: %s not installed (%ld bytes)\n", szTag, nSize);

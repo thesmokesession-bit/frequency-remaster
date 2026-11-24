@@ -97,7 +97,7 @@ endif()
 if(PS5)
   # The PS5 title: PacBrew's static FFmpeg and what it needs (host/ps5/link-title.sh finds each
   # -l name in the PacBrew sysroot) and the platform layer.
-  target_sources(resonance_host PRIVATE ps5/ps5.c)
+  target_sources(resonance_host PRIVATE ps5/ps5.c ps5/update-sig.c)
   target_link_libraries(resonance_host PRIVATE avcodec swresample avutil x264 lzma curl psl ssl crypto
                         zstd z)
   # The game's gzip inflate() apart from zlib's, which the RADV archive links whole.

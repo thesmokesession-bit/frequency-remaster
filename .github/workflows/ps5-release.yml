@@ -24,11 +24,22 @@ jobs:
             echo "eboot.bin is not build ${version}, or tag ${tag} does not end with it." >&2
             exit 1
           fi
+          # The console installs a release only with this key's signature (host/ps5/update-sig.c).
+          printf '%s\n' '-----BEGIN PUBLIC KEY-----' \
+            'MCowBQYDK2VwAyEAIapu1iWrYMbt3onNPZw6TLA/zE3ZqIGfxJQ7dpvoT1c=' \
+            '-----END PUBLIC KEY-----' > "$RUNNER_TEMP/update.pub"
+          openssl dgst -sha256 -binary eboot.bin > "$RUNNER_TEMP/eboot.sha256"
+          if ! openssl pkeyutl -verify -pubin -inkey "$RUNNER_TEMP/update.pub" -rawin \
+            -in "$RUNNER_TEMP/eboot.sha256" -sigfile eboot.bin.sig; then
+            echo "eboot.bin.sig is not the release key's signature of eboot.bin." >&2
+            exit 1
+          fi
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
             echo "Release ${tag} already exists."
             exit 0
           fi
-          gh release create "$tag" eboot.bin --notes-file notes.md --repo "$GITHUB_REPOSITORY" \
+          gh release create "$tag" eboot.bin eboot.bin.sig --notes-file notes.md \
+            --repo "$GITHUB_REPOSITORY" \
             --target "$commit" --title "$(head -n 1 title.txt)"
 name: 'PS5 release'
 'on':

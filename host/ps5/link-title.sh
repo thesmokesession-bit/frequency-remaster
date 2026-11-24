@@ -36,7 +36,8 @@ for arg in "$@"; do
         # zlib is in the RADV archive, which is linked whole
         -lz|*/libz.a|-lm|-latomic|-pthread|-ldl|-lpthread|-lSce*) ;;
         -l*)
-            lib="$PACBREW/lib/lib${arg#-l}.a"
+            lib="${OPENSSL_ROOT:?}/lib/lib${arg#-l}.a" # ssl and crypto, newer than the sysroot's
+            [[ -f $lib ]] || lib="$PACBREW/lib/lib${arg#-l}.a"
             [[ -f $lib ]] || { echo "link-title.sh: no archive for $arg" >&2; exit 2; }
             inputs+=("$lib") ;;
         -*) ;;

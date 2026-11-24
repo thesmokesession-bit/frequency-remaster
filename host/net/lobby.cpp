@@ -1,7 +1,8 @@
 // Online play and the friends board in the menus. Main > Multiplayer first offers LOCAL, ONLINE,
 // SCOREBOARD, and TIPS on the player count screen's four buttons, and LOCAL gives the buttons back
 // their counts. ONLINE turns the buttons into the role (HOST or JOIN) and the three words of a room
-// code. Up and Down pick a button, Left and Right change it, and Cross opens the room. The lobby
+// code. Up and Down pick a button, Left and Right change it, L1 and R1 move a word to the first one
+// of the previous or next letter, and Cross opens the room. The lobby
 // then lists the room's players on the four buttons, with the code in the title and the status on
 // the help line. In the lobby Cross goes to the main menu with the room open (the host picks a song
 // there as it does without a lobby), and Triangle exits the room. SCOREBOARD sets the friends
@@ -42,14 +43,35 @@ void HostBreadcrumb(const char *pszName);                                    // 
 
 namespace {
 
-// Short common words, unlike each other when spoken, for a code that is easy to tell a friend.
+// Short common words, unlike each other when spoken, for a code that is easy to tell a friend, in
+// alphabetical order for L1 and R1. 256 words make 16.7 million codes, too many to guess the room
+// topics from (online.cpp derives each from its code). The first builds' 64 words are among them.
 const char *const kWords[] = {
-    "ACE",  "ANT",  "APE",  "ARCH", "BASS", "BEAR", "BELL", "BIRD", "BLUE", "BOLT", "BUG",
-    "CAKE", "CAT",  "COIN", "CORN", "CRAB", "CUBE", "DEER", "DISC", "DOG",  "DOVE", "DRUM",
-    "DUCK", "ECHO", "EGG",  "ELK",  "FERN", "FIRE", "FISH", "FLAG", "FOX",  "FROG", "GOAT",
-    "GOLD", "HAT",  "HAWK", "HILL", "HORN", "ICE",  "INK",  "JAZZ", "JET",  "KITE", "LAMP",
-    "LAVA", "LEAF", "LION", "LOCK", "MOON", "MOTH", "NEON", "NEST", "OAK",  "OWL",  "PEAR",
-    "PINE", "PLUM", "RAIN", "ROCK", "SAND", "SNOW", "STAR", "WAVE", "WOLF"};
+    "ACE", "AMBER", "ANT", "APE", "APPLE", "ARCH", "ARROW", "ATOM", "AXE", "BALL", "BAND", "BARN",
+    "BASS", "BEACH", "BEAN", "BEAR", "BELL", "BERRY", "BIKE", "BIRD", "BLUE", "BOAT", "BOLT",
+    "BONE", "BOOK", "BOOT", "BOX", "BREAD", "BRICK", "BUG", "CABIN", "CAKE", "CAMEL", "CANDY",
+    "CARD", "CAT", "CHAIR", "CHALK", "CLAY", "CLOCK", "CLOUD", "COAT", "COIN", "COMET", "CORAL",
+    "CORN", "COW", "CRAB", "CROWN", "CUBE", "CUP", "DAISY", "DART", "DEER", "DICE", "DISC", "DOG",
+    "DOOR", "DOVE", "DRUM", "DUCK", "DUNE", "EAGLE", "EARTH", "ECHO", "EGG", "ELK", "EMBER",
+    "FARM", "FERN", "FIG", "FIRE", "FISH", "FLAG", "FLUTE", "FOG", "FORK", "FOX", "FROG", "GATE",
+    "GEM", "GHOST", "GIFT", "GLOVE", "GLUE", "GOAT", "GOLD", "GRAPE", "HARP", "HAT", "HAWK", "HEN",
+    "HILL", "HIVE", "HONEY", "HOOK", "HORN", "ICE", "IGLOO", "INK", "IRIS", "IRON", "IVY", "JAM",
+    "JAZZ", "JELLY", "JET", "JEWEL", "JUICE", "KAYAK", "KEY", "KING", "KITE", "KIWI", "KOALA",
+    "LAKE", "LAMP", "LASER", "LAVA", "LEAF", "LEMON", "LILY", "LIME", "LION", "LLAMA", "LOCK",
+    "LOOP", "MANGO", "MAP", "MAPLE", "MASK", "MELON", "MINT", "MOLE", "MOON", "MOOSE", "MOTH",
+    "MOUSE", "NAIL", "NEON", "NEST", "NET", "NORTH", "NOTE", "OAK", "OASIS", "OCEAN", "OLIVE",
+    "ONION", "ORBIT", "OTTER", "OWL", "PAINT", "PALM", "PANDA", "PAPER", "PARK", "PEACH", "PEAR",
+    "PEARL", "PEN", "PIANO", "PIG", "PINE", "PIPE", "PIZZA", "PLUM", "POND", "PONY", "QUAIL",
+    "QUEEN", "QUILT", "RADAR", "RADIO", "RAFT", "RAIN", "RAVEN", "RHINO", "RING", "RIVER", "ROBIN",
+    "ROBOT", "ROCK", "ROOF", "ROPE", "RUBY", "SAIL", "SALT", "SAND", "SEAL", "SEED", "SHARK",
+    "SHEEP", "SHELL", "SHIP", "SHOE", "SILK", "SKATE", "SLED", "SLOTH", "SNAIL", "SNOW", "SOAP",
+    "SOCK", "SOFA", "SOUP", "SPOON", "STAR", "STEAM", "STONE", "STORM", "SUGAR", "SWAN", "TABLE",
+    "TACO", "TAPE", "TENT", "TIGER", "TOAD", "TOAST", "TORCH", "TOWER", "TOY", "TRAIN", "TREE",
+    "TRUCK", "TUBA", "TULIP", "TUNA", "VAN", "VASE", "VINE", "VIOLA", "VOLT", "WAGON", "WALL",
+    "WAND", "WASP", "WATCH", "WAVE", "WELL", "WHALE", "WHEAT", "WHEEL", "WIND", "WING", "WOLF",
+    "WORM", "YAK", "YARN", "YETI", "YOYO", "ZEBRA", "ZERO", "ZINC", "ZONE"};
+constexpr int kL1Command = 11; // MetCommandMap's codes, as on the settings page
+constexpr int kR1Command = 13;
 constexpr int kWordCount = sizeof(kWords) / sizeof(kWords[0]);
 constexpr int kCodeWords = 3;
 constexpr int kButtons = 4; // the player count screen's: 2, 3, and 4 players, then the tips
@@ -239,15 +261,13 @@ void CodeHelp() {
     const int nButton = g_page.pButtons->mSelected;
     std::string help;
     if (g_page.stage == kStageBoard) {
-        help = nButton == 0 ?
-                   BoardStatus() :
-                   "left and right change word " + std::to_string(nButton) + ", cross saves";
+        help = nButton == 0 ? BoardStatus() :
+                              "left right word " + std::to_string(nButton) + ", l1 r1 a letter";
     } else if (nButton == 0) {
         help = g_page.bHost ? "host a room, left and right switch to join" :
                               "join a friend's room, left and right switch";
     } else {
-        help = "left and right change word " + std::to_string(nButton) + ", cross " +
-               (g_page.bHost ? "opens" : "joins");
+        help = "left right word " + std::to_string(nButton) + ", l1 r1 a letter";
     }
     Help(help);
 }
@@ -429,17 +449,26 @@ int HostOnlinePageCommand(int nCommand) {
         }
         return kMetScreenCommandNone;
     case kMetScreenCommandLeft:
-    case kMetScreenCommandRight: {
-        if (stage != kStageSetup && stage != kStageBoard) {
+    case kMetScreenCommandRight:
+    case kL1Command:
+    case kR1Command: {
+        const bool bJump = nCommand == kL1Command || nCommand == kR1Command;
+        if ((stage != kStageSetup && stage != kStageBoard) || (bJump && nButton == 0)) {
             return kMetScreenCommandNone;
         }
-        const int nStep = nCommand == kMetScreenCommandRight ? 1 : -1;
+        const int nStep = nCommand == kMetScreenCommandRight || nCommand == kR1Command ? 1 : -1;
         if (nButton == 0) {
             g_page.bHost = stage == kStageSetup ? !g_page.bHost : g_page.bHost;
             g_page.bBoardOn = stage == kStageBoard ? !g_page.bBoardOn : g_page.bBoardOn;
         } else {
             int &nWord = g_page.anWords[nButton - 1];
-            nWord = (nWord + kWordCount + nStep) % kWordCount;
+            const char cLetter = kWords[nWord][0];
+            do {
+                nWord = (nWord + kWordCount + nStep) % kWordCount;
+            } while (bJump && kWords[nWord][0] == cLetter);
+            while (bJump && nWord > 0 && kWords[nWord - 1][0] == kWords[nWord][0]) {
+                --nWord;
+            }
         }
         PlaySoundByName("SND_MET_KEY1");
         ShowCode();

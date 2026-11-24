@@ -11,8 +11,15 @@ tree=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 : "${P8:=$(cd -- "$tree/../.." && pwd)}"
 radv=$P8/probe/src/PS5_Vulkan
 pacbrew=$P8/ref/perfect-eye/.deps/pacbrew/v0.40.2/sysroot/user/homebrew
+# PacBrew's OpenSSL is 3.5.2. OpenSSL 3.5.9 (openssl-3.5.9.tar.gz from its GitHub release, SHA-256
+# 603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a) is built as PacBrew builds its
+# own, in this container after `source $PS5_PAYLOAD_SDK/toolchain/prospero.sh`:
+#   ./Configure BSD-x86_64 no-tests no-apps no-shared --prefix=$P8/deps/openssl/install --libdir=lib
+#   make build_sw && make install_sw
+openssl=$P8/deps/openssl/install
+[[ -f $openssl/lib/libssl.a ]] || { echo "build.sh: build OpenSSL into $openssl first" >&2; exit 1; }
 env="export PS5_PAYLOAD_SDK=$radv/.deps/native/ps5-payload-sdk RADV_ROOT=$radv PACBREW=$pacbrew \
-RADV_INCLUDE_ROOT=$radv/.deps/native/radv-release;"
+OPENSSL_ROOT=$openssl RADV_INCLUDE_ROOT=$radv/.deps/native/radv-release;"
 "$P8/docker/run.sh" "$env
     cd $tree && { [[ -f build-ps5/build.ninja ]] || cmake -S . -B build-ps5 -G Ninja -DRESONANCE_HOST=ON \
         -DENABLE_PATCHES=OFF -DCMAKE_TOOLCHAIN_FILE=$tree/cmake/ps5-toolchain.cmake > /dev/null; } &&
