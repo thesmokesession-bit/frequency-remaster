@@ -739,6 +739,12 @@ void Catcher::PostPhraseMuffedMsg(int nBar, Sch::Tick position) {
     if (IsBarFree(nBar)) {
         nTried = (mMissedGems + mCaughtGems) > 0;
     }
+#ifdef RESONANCE_HOST
+    HostEvent("muffed track=%d bar=%d tick=%d tried=%d", mTrack, nBar, position.mTick, nTried);
+#endif
+#ifndef RESONANCE_HOST
+#line 550
+#endif
     PhraseMuffedMsg msg(mTrack, mPlayer, position, nTried);
     Send(&msg);
 }

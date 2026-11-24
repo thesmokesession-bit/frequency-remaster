@@ -212,7 +212,7 @@ bool CalibrationCommand(int nCommand, Rnd::Text *pLabel, Rnd::Text *pValue, cons
 // step is a number of ms within plus or minus its range of its default.
 constexpr int kCircleCommand = 7; // MetCommandMap's code for Circle
 
-static const char *const kHint = "SQUARE: CALIBRATE   CIRCLE: SETTINGS";
+static const char *const kHint = "SQUARE: CALIBRATE\nCIRCLE: SETTINGS";
 
 struct HostSetting {
     const char *pszKey, *pszLabel;
@@ -248,6 +248,8 @@ const HostSetting kHostSettings[] = {
      "COLOURBLIND KEEPS RED AND GREEN APART"},
     {"FREQ_SURROUND", "SURROUND 5.1", true, {"0", "1"}, {"OFF", "ON"},
      "SOUND ON 5.1 SPEAKERS, OFF FOR STEREO"},
+    {"FREQ_SPATIAL", "SPATIAL MIX", true, {"0", "1"}, {"OFF", "ON"},
+     "WITH 5.1, EACH LANE PLAYS FROM ITS PLACE"},
     {"FREQ_SPU_INTERP", "SOUND FILTER", true, {"gaussian", "linear", "cubic", "sinc"},
      {"GAUSSIAN", "LINEAR", "CUBIC", "SINC"}, "GAUSSIAN SOUNDS AS THE PS2, SINC CLEAREST"},
     {"FREQ_AUDIO_OFFSET_MS", "AUDIO OFFSET", true, {}, {},
@@ -262,6 +264,10 @@ const HostSetting kHostSettings[] = {
      "WIDER FORGIVES EARLY AND LATE PRESSES"},
     {"FREQ_UNLOCK_ALL", "UNLOCK ALL", false, {"0", "1"}, {"OFF", "ON"},
      "EVERY ARENA AND SONG OPEN, SCORES STILL SAVE"},
+    {"FREQ_BONUS_SONGS", "BONUS SONGS", true, {"1", "0"}, {"ON", "OFF"},
+     "THE TWO CUT SONGS ON THE STAGE SCREEN"},
+    {"FREQ_FAST_BOOT", "FAST BOOT", true, {"1", "0"}, {"ON", "OFF"},
+     "SKIPS THE SONY SCREEN AND INTRO MOVIE"},
     {"FREQ_WATCH", "WATCH MODE", false, {"0", "1"}, {"OFF", "ON"},
      "THE GAME PLAYS ITSELF, NO SCORE IS SAVED"},
     {"FREQ_PRACTICE", "PRACTICE", true, {"0", "1"}, {"OFF", "ON"},
@@ -423,6 +429,19 @@ void MetConfigGameOptionsScreen::ResolveContainerViews() {
             pHint->mLocalXfm[3][i] =
                 2.0f * pSecondLabel->mLocalXfm[3][i] - pFirstLabel->mLocalXfm[3][i];
         }
+        // Smaller than the labels and wrapped at the panel's edge, the width of this many
+        // characters at the labels' size: two lines for a setting's help.
+        constexpr float kHintScale = 0.8f;
+        static const char *const kPanelWidthText = "MOVE UNTIL GEMS MEET";
+        for (int i = 0; i < 3; ++i) {
+            for (int j = 0; j < 3; ++j) {
+                pHint->mLocalXfm[i][j] *= kHintScale;
+            }
+        }
+        pHint->SetWordWrap(1);
+        pHint->SetWrapWidth(
+            pHint->GetFontWidth(kPanelWidthText, static_cast<int>(strlen(kPanelWidthText))) /
+            kHintScale);
         pHint->mDirty = 1;
         pHint->SetShowing(1); // the label it copies is hidden until the screen shows it
         pHint->SetText(HxStr(kHint));

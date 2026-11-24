@@ -103,8 +103,6 @@
 # setting, Left and Right change it and save it here at once, and Circle or Triangle closes the
 # page. The help line explains the setting, and APPLIES shows whether it takes effect from the
 # next start or the next song. The keys below are on the page too.
-# Sound on 5.1 speakers (1 = on; off is stereo).
-#FREQ_SURROUND=1
 # Reduce flashing: the white flash of each caught gem at full strength (0, default), half (0.5),
 # or none (1).
 #FREQ_REDUCE_FLASH=1
