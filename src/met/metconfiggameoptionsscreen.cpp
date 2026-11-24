@@ -206,31 +206,78 @@ bool CalibrationCommand(int nCommand, Rnd::Text *pLabel, Rnd::Text *pValue, cons
 
 // The remaster's settings, Circle on this screen: Up and Down pick one, Left and Right change it,
 // and each change is kept in the settings file at once (HostSaveSetting). Circle or Triangle
-// leaves. A setting read at start-up (marked) takes effect from the next start, the others from
-// the next song. A row with a step is a number of ms within plus or minus its range.
+// leaves. The first row shows the setting and its value, the second when it takes effect (a
+// setting read at start-up from the next start, the others from the next song), and the hint
+// line below them its help. The first value of a list is the one an unset key has. A row with a
+// step is a number of ms within plus or minus its range of its default.
 constexpr int kCircleCommand = 7; // MetCommandMap's code for Circle
+
+static const char *const kHint = "SQUARE: CALIBRATE   CIRCLE: SETTINGS";
 
 struct HostSetting {
     const char *pszKey, *pszLabel;
     bool bAtStart;
     const char *apszValues[7], *apszNames[7];
-    int nRange, nStep;
+    const char *pszHelp;
+    int nRange = 0, nStep = 0, nDefault = 0;
 };
 
+// clang-format off
 const HostSetting kHostSettings[] = {
-    {"FREQ_WIDESCREEN", "WIDESCREEN", true, {"0", "1"}, {"OFF", "ON"}},
-    {"FREQ_HUD_EDGES", "HUD AT EDGES", true, {"0", "1"}, {"OFF", "ON"}},
-    {"FREQ_SCALE", "SHARPNESS", true, {"2", "3", "4", "5", "6"}, {"2X", "3X", "4X", "5X", "6X"}},
-    {"FREQ_FPS", "FRAME RATE", true, {"60", "120"}, {"60", "120"}},
-    {"FREQ_SURROUND", "SURROUND 5.1", true, {"0", "1"}, {"OFF", "ON"}},
-    {"FREQ_TRAILS", "TRAILS", false, {"1", "0.5", "0"}, {"FULL", "HALF", "OFF"}},
-    {"FREQ_GEM_PALETTE", "GEM COLOURS", false, {"original", "cb"}, {"ORIGINAL", "COLOURBLIND"}},
-    {"FREQ_NO_FAIL", "NO FAIL", false, {"0", "1"}, {"OFF", "ON"}},
-    {"FREQ_TIMING_WINDOW", "TIMING WINDOW", false, {"1.0", "1.5", "2.0"}, {"1X", "1.5X", "2X"}},
-    {"FREQ_AUDIO_OFFSET_MS", "AUDIO OFFSET", true, {}, {}, 250, 5},
-    {"FREQ_VIDEO_OFFSET_MS", "VIDEO OFFSET", false, {}, {}, 250, 5},
-    {"FREQ_INPUT_OFFSET_MS", "INPUT OFFSET", false, {}, {}, 250, 5},
+    {"FREQ_SCALE", "SHARPNESS", true, {"2", "3", "4", "5", "6"}, {"2X", "3X", "4X", "5X", "6X"},
+     "TIMES THE PS2 PIXELS, 5X FILLS A 4K TV"},
+    {"FREQ_FPS", "FRAME RATE", true, {"60", "120"}, {"60", "120"},
+     "120 FOR A 120 HZ TV, 60 AS THE ORIGINAL"},
+    {"FREQ_WIDESCREEN", "WIDESCREEN", true, {"0", "1"}, {"OFF", "ON"},
+     "A 16:9 PICTURE, OFF FOR THE ORIGINAL 4:3"},
+    {"FREQ_HUD_EDGES", "HUD AT EDGES", true, {"0", "1"}, {"OFF", "ON"},
+     "IN 16:9 THE HUD SITS AT THE SCREEN EDGES"},
+    {"FREQ_SCALE_EFFECTS", "EFFECT SIZE", true, {"on", "off"}, {"SCALED", "THIN"},
+     "LINES AND BLUR AT PS2 SIZE, OR ONE PIXEL"},
+    {"FREQ_TEX_FILTER", "TEXTURES", true, {"enhanced", "original"}, {"ENHANCED", "ORIGINAL"},
+     "ENHANCED STOPS FAR WALLS SHIMMERING"},
+    {"FREQ_COLOR_DEPTH", "COLOUR DEPTH", true, {"full", "original"}, {"FULL", "ORIGINAL"},
+     "FULL REMOVES BANDING IN GLOWS AND TRAILS"},
+    {"FREQ_AA", "SMOOTH EDGES", true, {"off", "on"}, {"OFF", "ON"},
+     "FXAA ON EDGES, SOFTENS HUD TEXT A LITTLE"},
+    {"FREQ_TRAILS", "TRAILS", true, {"1", "0.5", "0"}, {"FULL", "HALF", "OFF"},
+     "STRENGTH OF THE MOTION TRAILS AND BLUR"},
+    {"FREQ_REDUCE_FLASH", "REDUCE FLASH", false, {"0", "0.5", "1"}, {"OFF", "HALF", "NO FLASH"},
+     "DIMS THE WHITE FLASH OF EACH CAUGHT GEM"},
+    {"FREQ_GEM_PALETTE", "GEM COLOURS", true, {"original", "cb"}, {"ORIGINAL", "COLOURBLIND"},
+     "COLOURBLIND KEEPS RED AND GREEN APART"},
+    {"FREQ_SURROUND", "SURROUND 5.1", true, {"0", "1"}, {"OFF", "ON"},
+     "SOUND ON 5.1 SPEAKERS, OFF FOR STEREO"},
+    {"FREQ_SPU_INTERP", "SOUND FILTER", true, {"gaussian", "linear", "cubic", "sinc"},
+     {"GAUSSIAN", "LINEAR", "CUBIC", "SINC"}, "GAUSSIAN SOUNDS AS THE PS2, SINC CLEAREST"},
+    {"FREQ_AUDIO_OFFSET_MS", "AUDIO OFFSET", true, {}, {},
+     "PLAYS THE SOUND LATER, MINUS FOR EARLIER", 250, 5},
+    {"FREQ_VIDEO_OFFSET_MS", "VIDEO OFFSET", false, {}, {},
+     "MOVE UNTIL GEMS MEET THE CATCHER ON THE BEAT", 250, 5},
+    {"FREQ_INPUT_OFFSET_MS", "INPUT OFFSET", false, {}, {},
+     "JUDGES PRESSES EARLIER, SQUARE MEASURES IT", 250, 5},
+    {"FREQ_NO_FAIL", "NO FAIL", false, {"0", "1"}, {"OFF", "ON"},
+     "THE SONG GOES ON WHEN ENERGY RUNS OUT"},
+    {"FREQ_TIMING_WINDOW", "TIMING WINDOW", false, {"1.0", "1.5", "2.0"}, {"1X", "1.5X", "2X"},
+     "WIDER FORGIVES EARLY AND LATE PRESSES"},
+    {"FREQ_UNLOCK_ALL", "UNLOCK ALL", false, {"0", "1"}, {"OFF", "ON"},
+     "EVERY ARENA AND SONG OPEN, SCORES STILL SAVE"},
+    {"FREQ_WATCH", "WATCH MODE", false, {"0", "1"}, {"OFF", "ON"},
+     "THE GAME PLAYS ITSELF, NO SCORE IS SAVED"},
+    {"FREQ_PRACTICE", "PRACTICE", true, {"0", "1"}, {"OFF", "ON"},
+     "NO ENERGY DRAIN OR SAVING, CREATE RESTARTS"},
+    {"FREQ_PRACTICE_SPEED", "PRACTICE SPEED", true, {"1", "0.9", "0.75", "0.5"},
+     {"100%", "90%", "75%", "50%"}, "SLOWER AT THE SAME PITCH, A PRACTICE RUN"},
+    {"FREQ_AUTOPAUSE", "AUTO-PAUSE", true, {"1", "0"}, {"ON", "OFF"},
+     "PAUSES WHEN A PAD DROPS OR ON THE PS BUTTON"},
+    {"FREQ_LIGHTBAR", "LIGHT BAR", false, {"1", "0"}, {"ON", "OFF"},
+     "THE LIGHT BAR SHOWS YOUR PLAYER COLOUR"},
+    {"FREQ_TRIGGERS", "TRIGGERS", false, {"1", "0"}, {"ON", "OFF"},
+     "L2 AND R2 CLICK WHEN THEY PLAY A LANE"},
+    {"FREQ_RUMBLE_LEAD_MS", "RUMBLE LEAD", false, {}, {},
+     "STARTS THE BEAT RUMBLE THIS EARLY", 90, 10, 90},
 };
+// clang-format on
 constexpr int kHostSettingCount = sizeof(kHostSettings) / sizeof(kHostSettings[0]);
 
 bool g_bHostSettings = false;
@@ -258,34 +305,43 @@ int CurrentValue(const HostSetting &setting) {
 
 int NumberValue(const HostSetting &setting) {
     const char *pszValue = getenv(setting.pszKey);
-    return pszValue != nullptr ? atoi(pszValue) : 0;
+    return pszValue != nullptr ? atoi(pszValue) : setting.nDefault;
 }
 
-void ShowHostSetting(Rnd::Text *pLabel, Rnd::Text *pValue) {
+// The screen's texts the settings take over: both rows' labels and values, and the hint line.
+struct HostPageTexts {
+    Rnd::Text *pLabel, *pValue, *pMarkLabel, *pMark, *pHint;
+};
+
+void ShowHostSetting(const HostPageTexts &texts) {
     const HostSetting &setting = kHostSettings[g_nHostSetting];
-    char szText[48];
-    snprintf(szText, sizeof(szText), "%s%s", setting.pszLabel, setting.bAtStart ? " *" : "");
-    pLabel->SetText(HxStr(szText));
+    char szText[16];
+    texts.pLabel->SetText(HxStr(setting.pszLabel));
     if (setting.nStep != 0) {
         snprintf(szText, sizeof(szText), "%d MS", NumberValue(setting));
-        pValue->SetText(HxStr(szText));
-        return;
+        texts.pValue->SetText(HxStr(szText));
+    } else {
+        texts.pValue->SetText(HxStr(setting.apszNames[CurrentValue(setting)]));
     }
-    pValue->SetText(HxStr(setting.apszNames[CurrentValue(setting)]));
+    texts.pMarkLabel->SetText(HxStr("APPLIES"));
+    texts.pMark->SetText(HxStr(setting.bAtStart ? "NEXT START" : "NEXT SONG"));
+    if (texts.pHint != nullptr) {
+        texts.pHint->SetText(HxStr(setting.pszHelp));
+    }
+    HostEvent("setting_row %s start=%d help=%s", setting.pszKey, setting.bAtStart, setting.pszHelp);
 }
 
-bool HostSettingsCommand(int nCommand, Rnd::Text *pLabel, Rnd::Text *pValue, const HxStr &label) {
+bool HostSettingsCommand(int nCommand, const HostPageTexts &texts) {
     if (!g_bHostSettings) {
         if (nCommand != kCircleCommand || g_bCalibrating) {
             return false;
         }
         g_bHostSettings = true;
-        ShowHostSetting(pLabel, pValue);
+        ShowHostSetting(texts);
         return true;
     }
     if (nCommand == kCircleCommand || nCommand == kMetScreenCommandBack) {
         g_bHostSettings = false;
-        pLabel->SetText(label);
         return nCommand == kCircleCommand; // Back leaves the screen as well
     }
     const HostSetting &setting = kHostSettings[g_nHostSetting];
@@ -303,8 +359,12 @@ bool HostSettingsCommand(int nCommand, Rnd::Text *pLabel, Rnd::Text *pValue, con
         const char *pszValue = szNumber;
         if (setting.nStep != 0) {
             const int nStep = nCommand == kMetScreenCommandLeft ? -setting.nStep : setting.nStep;
-            snprintf(szNumber, sizeof(szNumber), "%d",
-                     std::clamp(NumberValue(setting) + nStep, -setting.nRange, setting.nRange));
+            snprintf(szNumber,
+                     sizeof(szNumber),
+                     "%d",
+                     std::clamp(NumberValue(setting) + nStep,
+                                setting.nDefault - setting.nRange,
+                                setting.nDefault + setting.nRange));
         } else {
             const int nStep = nCommand == kMetScreenCommandLeft ? nCount - 1 : 1;
             pszValue = setting.apszValues[(CurrentValue(setting) + nStep) % nCount];
@@ -317,7 +377,7 @@ bool HostSettingsCommand(int nCommand, Rnd::Text *pLabel, Rnd::Text *pValue, con
     default:
         return true; // the screen's own buttons wait while the settings are up
     }
-    ShowHostSetting(pLabel, pValue);
+    ShowHostSetting(texts);
     return true;
 }
 
@@ -365,7 +425,7 @@ void MetConfigGameOptionsScreen::ResolveContainerViews() {
         }
         pHint->mDirty = 1;
         pHint->SetShowing(1); // the label it copies is hidden until the screen shows it
-        pHint->SetText(HxStr("SQUARE: CALIBRATE"));
+        pHint->SetText(HxStr(kHint));
         if (Rnd::Drawable *pDrawParent = pSecondLabel->Drawable::Parent()) {
             pDrawParent->AddDraw(pHint, pSecondLabel);
         }
@@ -397,14 +457,25 @@ void MetConfigGameOptionsScreen::HandleCommand(const MetScreenCommand *pCommand)
                            MetConfigText(kMetStrPangameAudioLbl, kPromptConfigCode, kAudioLabelKey))) {
         return;
     }
+    const HostPageTexts texts = {
+        dynamic_cast<Rnd::Text *>(Rnd::TheManager.Find(HxStr(kAudioLabel))),
+        mRows->GetButton(kRowAudio)->mText,
+        dynamic_cast<Rnd::Text *>(Rnd::TheManager.Find(HxStr(kForceFeedbackLabel))),
+        mRows->GetButton(kRowForceFeedback)->mText,
+        dynamic_cast<Rnd::Text *>(Rnd::TheManager.Find(HxStr(kHintText)))};
     const bool bHostSettings = g_bHostSettings;
-    if (HostSettingsCommand(pCommand->mCommand,
-                            dynamic_cast<Rnd::Text *>(Rnd::TheManager.Find(HxStr(kAudioLabel))),
-                            mRows->GetButton(kRowAudio)->mText,
-                            MetConfigText(kMetStrPangameAudioLbl, kPromptConfigCode, kAudioLabelKey))) {
-        if (bHostSettings && !g_bHostSettings) {
-            UpdateOptionLabels(); // the audio row's own value back
+    const bool bHandled = HostSettingsCommand(pCommand->mCommand, texts);
+    if (bHostSettings && !g_bHostSettings) {
+        texts.pLabel->SetText(
+            MetConfigText(kMetStrPangameAudioLbl, kPromptConfigCode, kAudioLabelKey));
+        texts.pMarkLabel->SetText(
+            MetConfigText(kMetStrPangameForceLbl, kPromptConfigCode, kForceFeedbackLabelKey));
+        if (texts.pHint != nullptr) {
+            texts.pHint->SetText(HxStr(kHint));
         }
+        UpdateOptionLabels(); // both rows' own values back
+    }
+    if (bHandled) {
         return;
     }
 #endif

@@ -23,6 +23,7 @@
 
 #ifdef RESONANCE_HOST
 #include <cmath>
+#include <cstring>
 
 #include "game/globalsettings.h"
 #include "game/grooveworld.h"
@@ -116,6 +117,18 @@ void PostAutoplay(
     pClock->PostAtSongTick(pCommand, nTick, id);
     pCommand->Release();
 }
+
+} // namespace
+
+// FREQ_WATCH=1, watch mode: the autoplay presses every gem of a local player's track on time,
+// outside network play, and GrooveWorld::StartPlay() marks the run cheated (no score saved).
+extern "C" int HostWatch(void) {
+    const char *pszWatch = getenv("FREQ_WATCH");
+    return pszWatch != nullptr && strcmp(pszWatch, "0") != 0 &&
+           Application::shared()->GetGameMode() != kGameModeNet;
+}
+
+namespace {
 
 // Press a gem of the track the player is on, or about to be on, autoplay-late; once per gem.
 void AutoplayPress(Sch::TickClock *pClock, int nSlot, int nTrack, int nTick, int nGem) {
@@ -785,11 +798,12 @@ void Catcher::Start() {
     const char *pszOffset = getenv("FREQ_INPUT_OFFSET_MS");
     g_nInputOffsetNs = pszOffset != nullptr ? std::llround(atof(pszOffset) * 1e6) : 0;
     const char *pszAutoplay = getenv("FREQ_TEST_AUTOPLAY_MS");
-    g_bAutoplay = pszAutoplay != nullptr;
+    g_bAutoplay = pszAutoplay != nullptr || HostWatch() != 0;
     if (mTrack >= 0 && mTrack < kChannels) {
         g_autoplayTracks[mTrack] = AutoplayTrack();
     }
-    g_nAutoplayTicks = g_bAutoplay ? MsToTicks(mClock, pszAutoplay) : 0;
+    // Watch mode presses as late as the input offset judges, so each press lands on its gem.
+    g_nAutoplayTicks = pszAutoplay != nullptr ? MsToTicks(mClock, pszAutoplay) : JudgeTicks(mClock);
 #endif
 #ifndef RESONANCE_HOST
 #line 605

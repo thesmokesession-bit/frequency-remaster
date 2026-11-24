@@ -3,6 +3,7 @@
 #ifdef RESONANCE_HOST
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -510,7 +511,22 @@ inline int AppTunnel::GemFlash::Start(const Vector3 &pos) {
     }
     // The binary does not test the new particle for null.
     mParticle = mSystem->AllocParticle();
+#ifdef RESONANCE_HOST
+    // FREQ_REDUCE_FLASH: 0 (default) keeps the white flash of a caught gem, 0.5 halves it, and 1
+    // hides it.
+    const char *pszReduce = getenv("FREQ_REDUCE_FLASH");
+    const float flReduce = pszReduce != nullptr ? strtof(pszReduce, nullptr) : 0.0f;
+    const float flFlash = 1.0f - std::clamp(flReduce, 0.0f, 1.0f);
+    mParticle->mCol = Color{flFlash, flFlash, flFlash, flFlash};
+#else
+#ifndef RESONANCE_HOST
+#line 277
+#endif
     mParticle->mCol = Color{1.0f, 1.0f, 1.0f, 1.0f};
+#endif
+#ifndef RESONANCE_HOST
+#line 278
+#endif
     mParticle->mSize = 1.0f;
     mParticle->mPos = pos;
     return 1;

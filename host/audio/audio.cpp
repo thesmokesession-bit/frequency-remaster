@@ -1009,11 +1009,11 @@ struct PracticeSettings {
         const char *pszSpeed = getenv("FREQ_PRACTICE_SPEED");
         const char *pszLoop = getenv("FREQ_PRACTICE_LOOP");
         const char *pszOn = getenv("FREQ_PRACTICE");
-        bOn = (pszOn != nullptr && atoi(pszOn) != 0) || pszSpeed != nullptr || pszLoop != nullptr;
         if (pszSpeed != nullptr) {
             const float flValue = strtof(pszSpeed, nullptr);
             flSpeed = std::clamp(flValue > 1.0f ? flValue / 100.0f : flValue, 0.5f, 1.0f);
         }
+        bOn = (pszOn != nullptr && atoi(pszOn) != 0) || flSpeed < 1.0f || pszLoop != nullptr;
         int nFirst = 0, nLast = 0;
         if (pszLoop != nullptr) {
             const bool bPhrases = *pszLoop == 'p' || *pszLoop == 'P';
