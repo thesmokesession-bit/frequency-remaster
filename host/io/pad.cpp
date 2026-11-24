@@ -25,6 +25,7 @@
 #include <unistd.h>
 #include <vector>
 
+#include <SDL.h>
 #include <libmtap.h>
 #include <libpad.h>
 
@@ -245,6 +246,80 @@ int StartRequest() {
     return 1;
 }
 
+// A real controller, through SDL2's game controllers (as Perfect Eye and Rush 2 read the
+// DualSense on the PS5), for player 1 when no input script runs. Every connected controller
+// counts, so whichever is picked up plays. ponytail: one player; local multiplayer maps
+// controller n to player n (Phase 6).
+struct LivePad {
+    unsigned nButtons;
+    unsigned char abSticks[4]; // right X, right Y, left X, left Y, as the report orders them
+};
+
+bool LiveInputOn() {
+    static const bool s_bOn = getenv("FREQ_INPUT") == nullptr &&
+                              SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER) == 0;
+    return s_bOn;
+}
+
+unsigned char StickByte(SDL_GameController *pController, SDL_GameControllerAxis axis) {
+    return static_cast<unsigned char>((SDL_GameControllerGetAxis(pController, axis) + 32768) >> 8);
+}
+
+LivePad ReadLivePad() {
+    LivePad pad = {0, {kAnalogCentre, kAnalogCentre, kAnalogCentre, kAnalogCentre}};
+    if (!LiveInputOn()) {
+        return pad;
+    }
+    static std::vector<SDL_GameController *> s_controllers;
+    SDL_GameControllerUpdate(); // finds controllers plugged in or paired since, too
+    if (static_cast<int>(s_controllers.size()) != SDL_NumJoysticks()) {
+        for (SDL_GameController *pController : s_controllers) {
+            SDL_GameControllerClose(pController);
+        }
+        s_controllers.clear();
+        for (int i = 0; i < SDL_NumJoysticks(); ++i) {
+            SDL_GameController *pController =
+                SDL_IsGameController(i) ? SDL_GameControllerOpen(i) : nullptr;
+            if (pController != nullptr) {
+                fprintf(stderr, "host: controller %s\n", SDL_GameControllerName(pController));
+                s_controllers.push_back(pController);
+            }
+        }
+    }
+    static const struct {
+        SDL_GameControllerButton button;
+        unsigned nBit;
+    } kMap[] = {{SDL_CONTROLLER_BUTTON_A, 0x0040},          {SDL_CONTROLLER_BUTTON_B, 0x0020},
+                {SDL_CONTROLLER_BUTTON_X, 0x0080},          {SDL_CONTROLLER_BUTTON_Y, 0x0010},
+                {SDL_CONTROLLER_BUTTON_LEFTSHOULDER, 0x0004}, {SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, 0x0008},
+                {SDL_CONTROLLER_BUTTON_BACK, 0x0100},       {SDL_CONTROLLER_BUTTON_START, 0x0800},
+                {SDL_CONTROLLER_BUTTON_LEFTSTICK, 0x0200},  {SDL_CONTROLLER_BUTTON_RIGHTSTICK, 0x0400},
+                {SDL_CONTROLLER_BUTTON_DPAD_UP, 0x1000},    {SDL_CONTROLLER_BUTTON_DPAD_RIGHT, 0x2000},
+                {SDL_CONTROLLER_BUTTON_DPAD_DOWN, 0x4000},  {SDL_CONTROLLER_BUTTON_DPAD_LEFT, 0x8000}};
+    constexpr Sint16 kTriggerPressed = 8000;
+    for (SDL_GameController *pController : s_controllers) {
+        for (const auto &entry : kMap) {
+            if (SDL_GameControllerGetButton(pController, entry.button) != 0) {
+                pad.nButtons |= entry.nBit;
+            }
+        }
+        if (SDL_GameControllerGetAxis(pController, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > kTriggerPressed) {
+            pad.nButtons |= 0x0001; // L2
+        }
+        if (SDL_GameControllerGetAxis(pController, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > kTriggerPressed) {
+            pad.nButtons |= 0x0002; // R2
+        }
+    }
+    if (!s_controllers.empty()) {
+        SDL_GameController *pFirst = s_controllers.front();
+        pad.abSticks[0] = StickByte(pFirst, SDL_CONTROLLER_AXIS_RIGHTX);
+        pad.abSticks[1] = StickByte(pFirst, SDL_CONTROLLER_AXIS_RIGHTY);
+        pad.abSticks[2] = StickByte(pFirst, SDL_CONTROLLER_AXIS_LEFTX);
+        pad.abSticks[3] = StickByte(pFirst, SDL_CONTROLLER_AXIS_LEFTY);
+    }
+    return pad;
+}
+
 } // namespace
 
 // Reports a milestone of the game on stderr. The input script can time its entries from it, and
@@ -348,12 +423,14 @@ int scePadRead(int nPort, int nSlot, unsigned char *pData) {
     if (!Connected(nPort, nSlot)) {
         return 0;
     }
-    const unsigned nHeld = HeldButtons(PlayerAt(nPort, nSlot));
+    const int nPlayer = PlayerAt(nPort, nSlot);
+    const LivePad live = nPlayer == 0 ? ReadLivePad() : LivePad{0, {kAnalogCentre, kAnalogCentre, kAnalogCentre, kAnalogCentre}};
+    const unsigned nHeld = HeldButtons(nPlayer) | live.nButtons;
     const unsigned short nWire = static_cast<unsigned short>(~nHeld);
     pData[1] = kDualShockPressureMode;
     pData[2] = static_cast<unsigned char>(nWire >> 8);
     pData[3] = static_cast<unsigned char>(nWire);
-    memset(pData + 4, kAnalogCentre, 4);
+    memcpy(pData + 4, live.abSticks, 4);
     for (int nAxis = 0; nAxis < 4; ++nAxis) {
         const unsigned nPush = (nHeld >> (kStickShift + 2 * nAxis)) & 3;
         if (nPush == 1 || nPush == 2) {

@@ -49,8 +49,10 @@ inputs+=("$PACBREW/lib/libiconv.a")
 # read, write, close and isatty, host/io/stdio.cpp's fopen). On Linux the version script keeps them
 # from SDL2 and Mesa, which call the C library's; here those are static archives too, so the game's
 # own objects and archives (the build tree's, relative paths) get the names renamed apart instead.
+# scePadInit and scePadRead: host/io/pad.cpp's PS2 libpad, which share their names with the
+# console's libScePad; SDL2's controller driver calls the console's (2026-11-23: no controller).
 rename=()
-for name in close fopen isatty read write; do
+for name in close fopen isatty read write scePadInit scePadRead; do
     rename+=(--redefine-sym "$name=resonance_$name")
 done
 for i in "${!inputs[@]}"; do
