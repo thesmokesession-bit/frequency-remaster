@@ -808,9 +808,11 @@ static size_t ToBuffer(void *pData, size_t nSize, size_t nCount, void *pUser) {
 // up through the console's resolver and given to curl (CURLOPT_RESOLVE), so curl's own threaded
 // resolver never runs: it crashed in Curl_async_is_resolved (SYSTEM_XO_VIOLATION, 2026-11-23).
 // The token goes to api.github.com only, not to the download host a redirect names.
+// A file download resumes from the file's current position, so a caller can retry a stalled one.
 static int Fetch(const char *pszUrl, const char *pszAccept, Buffer *pBuffer, FILE *pFile) {
     char szUrl[4096];
     snprintf(szUrl, sizeof(szUrl), "%s", pszUrl);
+    const long nFrom = pFile != NULL ? ftell(pFile) : 0;
     for (int nHop = 0; nHop < 5; ++nHop) {
         // The host is everything up to the path's '/', letters, digits, dots and dashes only: no
         // port (CURLOPT_RESOLVE below covers 443 only) and no user part, which would make
@@ -843,8 +845,8 @@ static int Fetch(const char *pszUrl, const char *pszAccept, Buffer *pBuffer, FIL
         }
         if (pFile != NULL) { // a redirect's own body is not the file
             fflush(pFile);
-            ftruncate(fileno(pFile), 0);
-            rewind(pFile);
+            ftruncate(fileno(pFile), nFrom);
+            fseek(pFile, nFrom, SEEK_SET);
         } else if (pBuffer->pData != NULL) {
             pBuffer->nSize = 0;
         }
@@ -868,6 +870,11 @@ static int Fetch(const char *pszUrl, const char *pszAccept, Buffer *pBuffer, FIL
         curl_easy_setopt(pCurl, CURLOPT_MAXFILESIZE_LARGE, (curl_off_t)(pFile != NULL ? 256 << 20 : 1 << 20));
         if (pFile != NULL) {
             curl_easy_setopt(pCurl, CURLOPT_WRITEDATA, pFile); // curl's own fwrite
+            curl_easy_setopt(pCurl, CURLOPT_RESUME_FROM_LARGE, (curl_off_t)nFrom);
+            // The first console download stalled 60 KB from the end for the full 600 s
+            // (2026-11-24): under 1 KB/s for 30 s ends the attempt and the caller resumes.
+            curl_easy_setopt(pCurl, CURLOPT_LOW_SPEED_LIMIT, 1024L);
+            curl_easy_setopt(pCurl, CURLOPT_LOW_SPEED_TIME, 30L);
         } else {
             curl_easy_setopt(pCurl, CURLOPT_WRITEFUNCTION, ToBuffer);
             curl_easy_setopt(pCurl, CURLOPT_WRITEDATA, pBuffer);
@@ -953,6 +960,8 @@ static void *RunUpdater(void *pUnused) {
         JsonString(pszUrl, "url", szAsset, sizeof(szAsset));
         pszAt = pszUrl + 1;
     }
+    const char *pszSize = pszName != NULL ? strstr(pszName, "\"size\":") : NULL;
+    const long nAssetSize = pszSize != NULL ? strtol(pszSize + 7, NULL, 10) : 0;
     free(release.pData);
     if (strstr(szAsset, "/releases/assets/") == NULL) {
         fprintf(stderr, "PS5: update: release %s has no eboot.bin\n", szTag);
@@ -961,7 +970,10 @@ static void *RunUpdater(void *pUnused) {
     fprintf(stderr, "PS5: update: downloading %s (this build is %s)\n", szTag, FREQ_VERSION);
     const char *pszNew = TITLE_DIR "/eboot.bin.new";
     FILE *pFile = fopen(pszNew, "wb");
-    const int nFetched = pFile != NULL ? Fetch(szAsset, "application/octet-stream", NULL, pFile) : -1;
+    int nFetched = -1;
+    for (int nTry = 0; pFile != NULL && nFetched != 0 && nTry < 5; ++nTry) {
+        nFetched = Fetch(szAsset, "application/octet-stream", NULL, pFile);
+    }
     const long nSize = pFile != NULL ? ftell(pFile) : 0;
     if (pFile != NULL) {
         fflush(pFile); // on the disk before it replaces the eboot: a power cut must not leave half
@@ -978,7 +990,8 @@ static void *RunUpdater(void *pUnused) {
     static const unsigned char kSelfMagic[4] = {0x4f, 0x15, 0x3d, 0x1d};
     // 0777: without the executable bit the home screen cannot start the title (Perfect Eye,
     // 2026-10-19).
-    if (nFetched != 0 || nSize < (1 << 20) || memcmp(abMagic, kSelfMagic, 4) != 0 ||
+    if (nFetched != 0 || nSize < (1 << 20) || nSize != nAssetSize ||
+        memcmp(abMagic, kSelfMagic, 4) != 0 ||
         chmod(pszNew, 0777) != 0 || rename(pszNew, TITLE_DIR "/eboot.bin") != 0) {
         fprintf(stderr, "PS5: update: %s not installed (%ld bytes)\n", szTag, nSize);
         unlink(pszNew);
