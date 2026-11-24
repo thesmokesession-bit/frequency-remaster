@@ -1967,6 +1967,12 @@ VkDescriptorSet CGSH_Vulkan::PrepareTextureImage(const TEX0& tex0, const TEX1& t
 {
 	//A sampler wraps as REPEAT and CLAMP do; the region modes stay in GS memory (Frequency uses neither).
 	if((clamp.nWMS >= CLAMP_MODE_REGION_CLAMP) || (clamp.nWMT >= CLAMP_MODE_REGION_CLAMP)) return VK_NULL_HANDLE;
+	//Each image and sampler pair takes a set from m_textureImagePool (0x1000 sets), and a call here makes
+	//at most one: start again before it runs out. Out of sets, the allocation gave a null set and the
+	//update crashed in the driver (PS5, 2026-11-24, 20 s into the attract demo's song, every run).
+	//ponytail: HD images keep their images and only their sets are made again; if HD sets alone ever
+	//approach the pool, this would release on every call (slow, not a crash): a larger pool then.
+	if(m_textureImageSets.size() >= 0x1000 - 16) ReleaseMipImages();
 
 	uint64 contentHash = 0;
 	TextureVersion(tex0, &contentHash);
