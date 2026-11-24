@@ -130,11 +130,19 @@
 # /app0/photos, with a notification of the file), and Circle or the touchpad goes back to the pause
 # menu.
 
-# Every setting above except the disc, memory card, renderer, practice loop and online keys is
-# also on the remaster's settings page (Options > Game Options, press Circle). Up and Down pick a
-# setting, Left and Right change it and save it here at once, and Circle or Triangle closes the
-# page. The help line explains the setting, and APPLIES shows whether it takes effect from the
-# next start or the next song. The keys below are on the page too.
+# Every setting above except the disc, memory card, renderer, songs folder, practice loop and
+# online keys is also on the remaster's settings page (Options > Game Options, press Circle), a
+# list in sections. Up and Down pick a setting, L1 and R1 jump to the previous or next section,
+# Left and Right change it and save it here at once, and Circle or Triangle closes the page. The
+# panel under the list explains the setting and shows whether it takes effect from the next start
+# or the next song. The keys below are on the page too, except the board code.
+# Automatic updates on the PS5, on by default: each start looks for a newer build of the remaster
+# and downloads it for the next start (0 = off).
+#FREQ_UPDATE=0
+# HD textures: a folder of replacement textures (host/gfx/ps2gfx/src/TexReplace.h describes the
+# files). Empty or unset is off. The page's HD TEXTURES row sets hd in the working directory
+# (/app0/hd on the PS5).
+#FREQ_TEX_REPLACE=hd
 # Reduce flashing: the white flash of each caught gem at full strength (0, default), half (0.5),
 # or none (1).
 #FREQ_REDUCE_FLASH=1
