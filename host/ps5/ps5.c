@@ -344,7 +344,17 @@ static void Report(const char *pszFormat, ...) {
 
 // The faulting instruction and the code addresses on the stack, with main's address, so that they
 // match the unsigned ELF (eboot.bin.elf): address - main here + main there.
+// The console calls it the old BSD way even with SA_SIGINFO: the second argument is the fault code
+// (1), not a siginfo, and reading it as one faulted inside this handler (2026-11-24 klog: fault
+// address 9 = 1 + si_code's offset), which hid the real crash. The third is the context either way.
 static void OnCrash(int nSignal, siginfo_t *pInfo, void *pContext) {
+    if ((uintptr_t)pInfo < 0x1000) {
+        pInfo = NULL;
+    }
+    if (pContext == NULL) {
+        Report("CRASH signal %d, no context\n", nSignal);
+        _Exit(128 + nSignal);
+    }
     const mcontext_t *pMachine = &((ucontext_t *)pContext)->uc_mcontext;
     const uintptr_t nCodeStart = (uintptr_t)&main & ~(uintptr_t)0x3fffff;
     const uintptr_t nCodeEnd = nCodeStart + 0x4000000;
