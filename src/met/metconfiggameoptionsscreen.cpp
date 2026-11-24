@@ -1,6 +1,8 @@
 #include "met/metconfiggameoptionsscreen.h"
 
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <vector>
 
 #include "app/application.h"
@@ -201,6 +203,101 @@ bool CalibrationCommand(int nCommand, Rnd::Text *pLabel, Rnd::Text *pValue, cons
     return true;
 }
 
+// The remaster's settings, Circle on this screen: Up and Down pick one, Left and Right change it,
+// and each change is kept in the settings file at once (HostSaveSetting). Circle or Triangle
+// leaves. A setting read at start-up (marked) takes effect from the next start, the others from
+// the next song.
+constexpr int kCircleCommand = 7; // MetCommandMap's code for Circle
+
+struct HostSetting {
+    const char *pszKey, *pszLabel;
+    bool bAtStart;
+    const char *apszValues[7], *apszNames[7];
+};
+
+const HostSetting kHostSettings[] = {
+    {"FREQ_WIDESCREEN", "WIDESCREEN", true, {"0", "1"}, {"OFF", "ON"}},
+    {"FREQ_HUD_EDGES", "HUD AT EDGES", true, {"0", "1"}, {"OFF", "ON"}},
+    {"FREQ_SCALE", "SHARPNESS", true, {"2", "3", "4", "5", "6"}, {"2X", "3X", "4X", "5X", "6X"}},
+    {"FREQ_FPS", "FRAME RATE", true, {"60", "120"}, {"60", "120"}},
+    {"FREQ_TRAILS", "TRAILS", false, {"1", "0.5", "0"}, {"FULL", "HALF", "OFF"}},
+    {"FREQ_GEM_PALETTE", "GEM COLOURS", false, {"original", "cb"}, {"ORIGINAL", "COLOURBLIND"}},
+    {"FREQ_NO_FAIL", "NO FAIL", false, {"0", "1"}, {"OFF", "ON"}},
+    {"FREQ_TIMING_WINDOW", "TIMING WINDOW", false, {"1.0", "1.5", "2.0"}, {"1X", "1.5X", "2X"}},
+};
+constexpr int kHostSettingCount = sizeof(kHostSettings) / sizeof(kHostSettings[0]);
+
+bool g_bHostSettings = false;
+int g_nHostSetting = 0;
+
+int ValueCount(const HostSetting &setting) {
+    int n = 0;
+    while (n < 7 && setting.apszValues[n] != nullptr) {
+        ++n;
+    }
+    return n;
+}
+
+// The setting's current value as an index into its list (the first when unset or unknown; for
+// the scale, the PS5's own default of 5x).
+int CurrentValue(const HostSetting &setting) {
+    const char *pszValue = getenv(setting.pszKey);
+    for (int i = 0; pszValue != nullptr && i < ValueCount(setting); ++i) {
+        if (strcmp(pszValue, setting.apszValues[i]) == 0) {
+            return i;
+        }
+    }
+    return strcmp(setting.pszKey, "FREQ_SCALE") == 0 ? 3 : 0;
+}
+
+void ShowHostSetting(Rnd::Text *pLabel, Rnd::Text *pValue) {
+    const HostSetting &setting = kHostSettings[g_nHostSetting];
+    char szText[48];
+    snprintf(szText, sizeof(szText), "%s%s", setting.pszLabel, setting.bAtStart ? " *" : "");
+    pLabel->SetText(HxStr(szText));
+    pValue->SetText(HxStr(setting.apszNames[CurrentValue(setting)]));
+}
+
+bool HostSettingsCommand(int nCommand, Rnd::Text *pLabel, Rnd::Text *pValue, const HxStr &label) {
+    if (!g_bHostSettings) {
+        if (nCommand != kCircleCommand || g_bCalibrating) {
+            return false;
+        }
+        g_bHostSettings = true;
+        ShowHostSetting(pLabel, pValue);
+        return true;
+    }
+    if (nCommand == kCircleCommand || nCommand == kMetScreenCommandBack) {
+        g_bHostSettings = false;
+        pLabel->SetText(label);
+        return nCommand == kCircleCommand; // Back leaves the screen as well
+    }
+    const HostSetting &setting = kHostSettings[g_nHostSetting];
+    const int nCount = ValueCount(setting);
+    switch (nCommand) {
+    case kMetScreenCommandPrevious:
+        g_nHostSetting = (g_nHostSetting + kHostSettingCount - 1) % kHostSettingCount;
+        break;
+    case kMetScreenCommandNext:
+        g_nHostSetting = (g_nHostSetting + 1) % kHostSettingCount;
+        break;
+    case kMetScreenCommandLeft:
+    case kMetScreenCommandRight: {
+        const int nStep = nCommand == kMetScreenCommandLeft ? nCount - 1 : 1;
+        const char *pszValue = setting.apszValues[(CurrentValue(setting) + nStep) % nCount];
+        setenv(setting.pszKey, pszValue, 1);
+        const int bSaved = HostSaveSetting(setting.pszKey, pszValue);
+        PlaySoundByName("SND_MET_KEY1");
+        HostEvent("setting %s=%s saved=%d", setting.pszKey, pszValue, bSaved);
+        break;
+    }
+    default:
+        return true; // the screen's own buttons wait while the settings are up
+    }
+    ShowHostSetting(pLabel, pValue);
+    return true;
+}
+
 } // namespace
 #endif
 #ifndef RESONANCE_HOST
@@ -275,6 +372,16 @@ void MetConfigGameOptionsScreen::HandleCommand(const MetScreenCommand *pCommand)
                            dynamic_cast<Rnd::Text *>(Rnd::TheManager.Find(HxStr(kAudioLabel))),
                            mRows->GetButton(kRowAudio)->mText,
                            MetConfigText(kMetStrPangameAudioLbl, kPromptConfigCode, kAudioLabelKey))) {
+        return;
+    }
+    const bool bHostSettings = g_bHostSettings;
+    if (HostSettingsCommand(pCommand->mCommand,
+                            dynamic_cast<Rnd::Text *>(Rnd::TheManager.Find(HxStr(kAudioLabel))),
+                            mRows->GetButton(kRowAudio)->mText,
+                            MetConfigText(kMetStrPangameAudioLbl, kPromptConfigCode, kAudioLabelKey))) {
+        if (bHostSettings && !g_bHostSettings) {
+            UpdateOptionLabels(); // the audio row's own value back
+        }
         return;
     }
 #endif
