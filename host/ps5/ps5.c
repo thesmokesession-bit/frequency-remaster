@@ -895,9 +895,12 @@ static int Fetch(const char *pszUrl, const char *pszAccept, Buffer *pBuffer, FIL
             fprintf(stderr, "PS5: update: %s: %lld bytes, %s (HTTP %ld)\n", szHost, (long long)nGot,
                     curl_easy_strerror(result), nStatus);
         }
-        curl_easy_cleanup(pCurl);
-        if (pFile != NULL && !bRedirect) {
-            fprintf(stderr, "PS5: update: %s: connection closed\n", szHost);
+        // ponytail: after the last byte of a download, closing its connection to the asset host
+        // never returns on the console (59894545 of 59894545 bytes, HTTP 200, then no return from
+        // curl_easy_cleanup, 2026-11-24), so that one handle and its socket are left open until
+        // the title exits. Find the blocking close if updates ever run more than once a launch.
+        if (pFile == NULL || bRedirect) {
+            curl_easy_cleanup(pCurl);
         }
         curl_slist_free_all(pResolve);
         curl_slist_free_all(pHeaders);
