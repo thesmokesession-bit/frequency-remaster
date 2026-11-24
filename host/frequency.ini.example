@@ -155,3 +155,18 @@
 # Freq's name). Anyone with the code can post any score, so give it to friends only. A notification
 # shows your rank after each new best; a post goes out at most every 6 minutes.
 #FREQ_BOARD=green tunnel scores
+
+# Logs and crash reports have no setting. frequency.log in the title folder (beside this file on
+# Linux) is the log of this run. Each start moves the last run's log to
+# logs/frequency-<date>-<time>.log, and a crash writes logs/crash-<date>-<time>.txt (the build, the
+# signal, the registers and stack, and the end of the log). The newest 10 of each stay; older ones
+# are deleted. After a crash the next start shows a notification.
+# Send report (on the settings page) sends the last run's crash report, or this run's log, to an
+# ntfy topic (free, with no account) as up to 24000 bytes in messages of at most 3800, with tokens,
+# keys, room codes, and board codes removed. Open https://ntfy.sh/<topic> (or subscribe to the
+# topic in the ntfy app) within 12 hours to read it. The first start writes a random topic here.
+#FREQ_REPORT_TOPIC=frequency-0123456789abcdef
+# The ntfy server reports go to (default https://ntfy.sh).
+#FREQ_REPORT_SERVER=https://ntfy.sh
+# A crash at start, to try the crash report (1 = on; remove the line afterwards).
+#FREQ_TEST_CRASH=1

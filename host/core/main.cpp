@@ -10,6 +10,7 @@
 
 #include <exception>
 
+#include "hostlogs.h"
 #include "lowmem.h"
 
 // The game's main() in src/main.cpp, which host/CMakeLists.txt compiles under this name.
@@ -189,6 +190,9 @@ void *RunGame(void *pSelfTest) {
     if (pszSelfTest != nullptr && strcmp(pszSelfTest, "board") == 0) {
         return reinterpret_cast<void *>(static_cast<intptr_t>(HostBoardSelfTest()));
     }
+    if (pszSelfTest != nullptr && strcmp(pszSelfTest, "report") == 0) {
+        return reinterpret_cast<void *>(static_cast<intptr_t>(HostReportSelfTest()));
+    }
     fprintf(stderr, "GAME_MAIN_REACHED\n");
     return reinterpret_cast<void *>(static_cast<intptr_t>(GameMain()));
 }
@@ -215,6 +219,8 @@ extern "C" void PyErr_Print(); // src/script: an uncaught Py::Exception's Python
 int main() {
 #ifdef __PROSPERO__
     HostStartTitle();
+#else
+    HostLogStart();
 #endif
     std::set_terminate([] {
         fprintf(stderr, "host: uncaught exception; the Python error, if any:\n");
