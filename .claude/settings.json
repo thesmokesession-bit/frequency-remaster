@@ -9,7 +9,6 @@
     "allow": [
       "Bash(clang-format *)",
       "Bash(cmake *)",
-      "Bash(gh api *)",
       "Bash(gh release edit *)",
       "Bash(gh release list *)",
       "Bash(gh release view *)",
@@ -41,6 +40,12 @@
       "Update(/.vscode/dictionary.txt)",
       "WebFetch(domain:api.github.com)",
       "WebFetch(domain:npmjs.com)"
+    ],
+    "deny": [
+      "Bash(gh release delete *)",
+      "Bash(gh repo delete *)",
+      "Bash(git push --force *)",
+      "Bash(git push -f *)"
     ]
   }
 }
