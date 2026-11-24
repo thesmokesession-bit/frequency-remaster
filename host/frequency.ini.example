@@ -29,7 +29,10 @@
 # the game judges (negative: earlier). The input offset judges your presses that much earlier: the
 # calibration sets it (Options > Game Options, press Square, tap any button with the 12 clicks;
 # Triangle cancels) and saves it here. A positive video offset also delays catch effects with the
-# picture; a negative one cannot show them early.
+# picture; a negative one cannot show them early. All three are on the remaster's settings too
+# (Options > Game Options, press Circle), in 5 ms steps from -250 to 250: the video and input
+# offsets apply from the next song, the audio offset from the next start. To line up a TV, play a
+# song and move VIDEO OFFSET until the gems reach the catcher on the beat you hear.
 #FREQ_AUDIO_OFFSET_MS=0
 #FREQ_VIDEO_OFFSET_MS=0
 #FREQ_INPUT_OFFSET_MS=0
