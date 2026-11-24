@@ -263,7 +263,10 @@ void HostRunBegin(const char *pszLevel, int nDifficulty, int bPlayback) {
     }
     g_run.bGhostShown = bGhostOn && !bPlayback && !g_run.ghost.empty();
     if (g_run.bGhostShown) {
-        fprintf(stderr, "ghost: the kept run of %s-%d (%zu score changes)\n", pszLevel, nDifficulty,
+        fprintf(stderr,
+                "ghost: the kept run of %s-%d (%zu score changes)\n",
+                pszLevel,
+                nDifficulty,
                 g_run.ghost.size());
     }
 }
@@ -281,7 +284,9 @@ int HostGhostAt(int nScore) {
 }
 
 // The game ended (GameManagerImpl::EndGame()). A playback is compared with the kept timeline: the
-// same scores in the same order, each at a song tick at most a frame or so off.
+// same scores in the same order, and the spread of the song ticks they came at (playback less
+// live). A playback's presses come FREQ_INPUT_OFFSET_MS early (src/app/recorder.cpp), so its scores
+// do too; the readout notices a change at the next frame.
 void HostRunEnd(int nScore, int nStreak, float flRatio, int bCompleted) {
     if (g_run.level.empty()) {
         return;
@@ -304,20 +309,24 @@ void HostRunEnd(int nScore, int nStreak, float flRatio, int bCompleted) {
         return;
     }
     size_t nSame = 0;
+    int nMinTicks = 0;
     int nMaxTicks = 0;
     for (size_t i = 0; i < std::min(g_run.samples.size(), g_run.ghost.size()); ++i) {
         if (g_run.samples[i].second != g_run.ghost[i].second) {
             break;
         }
+        const int nTicks = g_run.samples[i].first - g_run.ghost[i].first;
+        nMinTicks = nSame == 0 ? nTicks : std::min(nMinTicks, nTicks);
+        nMaxTicks = nSame == 0 ? nTicks : std::max(nMaxTicks, nTicks);
         ++nSame;
-        nMaxTicks = std::max(nMaxTicks, abs(g_run.samples[i].first - g_run.ghost[i].first));
     }
     fprintf(stderr,
-            "replay: timeline check %zu of %zu changes the same (kept run %zu), largest tick "
-            "difference %d\n",
+            "replay: timeline check %zu of %zu changes the same (kept run %zu), ticks off from %d "
+            "to %d\n",
             nSame,
             g_run.samples.size(),
             g_run.ghost.size(),
+            nMinTicks,
             nMaxTicks);
 }
 
