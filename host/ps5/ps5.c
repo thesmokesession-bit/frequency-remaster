@@ -889,6 +889,12 @@ static int Fetch(const char *pszUrl, const char *pszAccept, Buffer *pBuffer, FIL
         if (bRedirect) {
             snprintf(szUrl, sizeof(szUrl), "%s", pszLocation);
         }
+        if (pFile != NULL && !bRedirect) {
+            curl_off_t nGot = 0;
+            curl_easy_getinfo(pCurl, CURLINFO_SIZE_DOWNLOAD_T, &nGot);
+            fprintf(stderr, "PS5: update: %s: %lld bytes, %s (HTTP %ld)\n", szHost, (long long)nGot,
+                    curl_easy_strerror(result), nStatus);
+        }
         curl_easy_cleanup(pCurl);
         curl_slist_free_all(pResolve);
         curl_slist_free_all(pHeaders);
@@ -970,10 +976,14 @@ static void *RunUpdater(void *pUnused) {
     fprintf(stderr, "PS5: update: downloading %s (this build is %s)\n", szTag, FREQ_VERSION);
     const char *pszNew = TITLE_DIR "/eboot.bin.new";
     FILE *pFile = fopen(pszNew, "wb");
+    if (pFile != NULL) { // unbuffered: the file's size is what has arrived
+        setvbuf(pFile, NULL, _IONBF, 0);
+    }
     int nFetched = -1;
     for (int nTry = 0; pFile != NULL && nFetched != 0 && nTry < 5; ++nTry) {
         nFetched = Fetch(szAsset, "application/octet-stream", NULL, pFile);
     }
+    fprintf(stderr, "PS5: update: download %s\n", nFetched == 0 ? "complete" : "failed");
     const long nSize = pFile != NULL ? ftell(pFile) : 0;
     if (pFile != NULL) {
         fflush(pFile); // on the disk before it replaces the eboot: a power cut must not leave half
