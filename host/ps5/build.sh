@@ -16,6 +16,7 @@ RADV_INCLUDE_ROOT=$radv/.deps/native/radv-release;"
 "$P8/docker/run.sh" "$env
     cd $tree && { [[ -f build-ps5/build.ninja ]] || cmake -S . -B build-ps5 -G Ninja -DRESONANCE_HOST=ON \
         -DENABLE_PATCHES=OFF -DCMAKE_TOOLCHAIN_FILE=$tree/cmake/ps5-toolchain.cmake > /dev/null; } &&
+    cmake build-ps5 -DFREQ_VERSION=$(git -C "$tree" rev-parse --short=9 HEAD) > /dev/null &&
     cmake --build build-ps5 -j2 -- -k 0"
 [[ ${1:-} == package ]] || exit 0
 bash "$tree/host/ps5/check-imports.sh" "$tree/build-ps5/host/resonance_host.elf" "$radv"
@@ -27,5 +28,6 @@ cp "$tree/build-ps5/host/resonance_host" "$app/eboot.bin"
 cp "$tree/host/ps5/sce_sys/"* "$app/sce_sys/"
 cp "$radv/runtime/libc.prx" "$app/sce_module/libc.prx"
 cp "$tree/host/frequency.ini.example" "$app/frequency.ini.example"
+cp "$P8/ref/perfect-eye/assets/cacert.pem" "$app/cacert.pem"   # the updater's HTTPS (Perfect Eye's bundle)
 cp "$tree/build-ps5/host/resonance_host.elf" "$P8/out/eboot-$id.elf"   # symbols, for crash addresses
 echo "build.sh: $app ($(du -sh "$app" | cut -f1))"

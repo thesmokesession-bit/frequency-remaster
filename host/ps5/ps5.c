@@ -136,6 +136,65 @@ int syscall(int nNumber, ...) {
 
 // ---- C library functions the console's lacks ----
 
+// libcurl and OpenSSL (the updater) name these; as Perfect Eye's ps5/ps5-shims.c defines them.
+// curl's socketpair fallback:
+int pipe2(int anFds[2], int nFlags) {
+    if (pipe(anFds) != 0) {
+        return -1;
+    }
+    for (int i = 0; i < 2; i++) {
+        if (nFlags & O_NONBLOCK) {
+            fcntl(anFds[i], F_SETFL, fcntl(anFds[i], F_GETFL) | O_NONBLOCK);
+        }
+        if (nFlags & O_CLOEXEC) {
+            fcntl(anFds[i], F_SETFD, FD_CLOEXEC);
+        }
+    }
+    return 0;
+}
+// curl: an IPv6 link-local scope by interface name.
+unsigned int if_nametoindex(const char *pszName) {
+    (void)pszName;
+    errno = ENXIO;
+    return 0;
+}
+// OpenSSL's DTLS batching, which falls back to one datagram at a time on ENOSYS.
+struct mmsghdr;
+ssize_t sendmmsg(int nSocket, struct mmsghdr *pVector, size_t nCount, int nFlags) {
+    (void)nSocket, (void)pVector, (void)nCount, (void)nFlags;
+    errno = ENOSYS;
+    return -1;
+}
+ssize_t recvmmsg(int nSocket, struct mmsghdr *pVector, size_t nCount, int nFlags, const struct timespec *pTimeout) {
+    (void)nSocket, (void)pVector, (void)nCount, (void)nFlags, (void)pTimeout;
+    errno = ENOSYS;
+    return -1;
+}
+// OpenSSL's async jobs switch stacks with these; nothing here starts one.
+int _setjmp(void *pEnv) {
+    (void)pEnv;
+    return 0;
+}
+void _longjmp(void *pEnv, int nValue) {
+    (void)pEnv, (void)nValue;
+    abort();
+}
+// libzstd's tracing hooks, weak imports the title converter refuses: no tracing.
+unsigned long long ZSTD_trace_compress_begin(const void *pContext) {
+    (void)pContext;
+    return 0;
+}
+void ZSTD_trace_compress_end(unsigned long long nContext, const void *pTrace) {
+    (void)nContext, (void)pTrace;
+}
+unsigned long long ZSTD_trace_decompress_begin(const void *pContext) {
+    (void)pContext;
+    return 0;
+}
+void ZSTD_trace_decompress_end(unsigned long long nContext, const void *pTrace) {
+    (void)nContext, (void)pTrace;
+}
+
 // libiconv's multibyte width: the C locale is the only one in a title.
 int ___mb_cur_max(void) {
     return 1;
@@ -332,6 +391,8 @@ __attribute__((constructor(100))) static void StartTitle(void) {
 
 // The rest waits for main (host/core/main.cpp), as Perfect Eye's ps5PlatformInit does: a thread
 // or a signal handler set up from a constructor ended the title before main (2026-11-23).
+static void StartUpdater(void);
+
 void HostStartTitle(void) {
     int anPipe[2];
     if (freopen(LOG_PATH, "a", stdout) != NULL && pipe(anPipe) == 0) {
@@ -364,6 +425,7 @@ void HostStartTitle(void) {
     }
 
     fprintf(stderr, "PS5: logging and crash report set up\n");
+    StartUpdater();
 }
 
 // ---- the disc image and the memory card ----
@@ -398,4 +460,397 @@ __attribute__((constructor(102))) static void FindGameFiles(void) {
     InTitleFolder("FREQ_DISC", s_szIso[0] != '\0' ? s_szIso : NULL);
     InTitleFolder("FREQ_MC", "memcard");
     fprintf(stderr, "PS5: disc %s, memory card %s\n", getenv("FREQ_DISC"), getenv("FREQ_MC"));
+}
+
+// ---- the network, for the updater (as Perfect Eye's ps5/ps5_platform.c and ps5-shims.c) ----
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <sys/ioctl.h>
+#include <sys/socket.h>
+
+// getaddrinfo (link-title.sh binds the name here): numbers as they are, names through the
+// console's resolver in libSceNet, since the SDK's own only fails. IPv4 answers; an IPv6 request
+// gets them mapped. Each import is read through a volatile pointer, so one the console leaves
+// unresolved is a failed lookup rather than a call to address 0.
+int sceNetPoolCreate(const char *pszName, int nSize, int nFlags);
+int sceNetResolverCreate(const char *pszName, int nMemory, int nFlags);
+int sceNetResolverStartNtoa(int nResolver, const char *pszHost, uint32_t *pnAddress, int nTimeout, int nRetry,
+                            int nFlags);
+int sceNetResolverDestroy(int nResolver);
+
+static int ResolveName(const char *pszName, struct in_addr *pOut) {
+    static pthread_mutex_t s_lock = PTHREAD_MUTEX_INITIALIZER;
+    static int s_nPool = -1;
+    if (strcasecmp(pszName, "localhost") == 0) {
+        pOut->s_addr = htonl(INADDR_LOOPBACK);
+        return 0;
+    }
+    int (*volatile pfnPoolCreate)(const char *, int, int) = sceNetPoolCreate;
+    int (*volatile pfnCreate)(const char *, int, int) = sceNetResolverCreate;
+    int (*volatile pfnNtoa)(int, const char *, uint32_t *, int, int, int) = sceNetResolverStartNtoa;
+    int (*volatile pfnDestroy)(int) = sceNetResolverDestroy;
+    if (pfnPoolCreate == NULL || pfnCreate == NULL || pfnNtoa == NULL || pfnDestroy == NULL) {
+        return -1;
+    }
+    pthread_mutex_lock(&s_lock);
+    if (s_nPool < 0) {
+        s_nPool = pfnPoolCreate("freq_resolver", 64 * 1024, 0);
+    }
+    const int nPool = s_nPool;
+    pthread_mutex_unlock(&s_lock);
+    const int nResolver = pfnCreate("freq_resolver", nPool, 0);
+    if (nResolver < 0) {
+        return -1;
+    }
+    uint32_t nAddress = 0;
+    const int nResult = pfnNtoa(nResolver, pszName, &nAddress, 0, 0, 0);
+    pfnDestroy(nResolver);
+    if (nResult < 0 || nAddress == 0) {
+        fprintf(stderr, "PS5: %s did not resolve: 0x%08x\n", pszName, (unsigned)nResult);
+        return -1;
+    }
+    pOut->s_addr = nAddress;
+    return 0;
+}
+
+int freq_ps5_getaddrinfo(const char *pszNode, const char *pszService, const struct addrinfo *pHints,
+                         struct addrinfo **ppResult) {
+    const int nFamily = pHints != NULL ? pHints->ai_family : AF_UNSPEC;
+    const int nFlags = pHints != NULL ? pHints->ai_flags : 0;
+    int nPort = 0, bSix = 0;
+    struct in_addr v4;
+    struct in6_addr v6;
+    if (ppResult == NULL) {
+        return EAI_FAIL;
+    }
+    *ppResult = NULL;
+    if (nFamily != AF_UNSPEC && nFamily != AF_INET && nFamily != AF_INET6) {
+        return EAI_FAMILY;
+    }
+    if (pszService != NULL && *pszService != '\0') {
+        char *pszEnd;
+        const long n = strtol(pszService, &pszEnd, 10);
+        if (*pszEnd == '\0' && n >= 0 && n < 65536) {
+            nPort = (int)n;
+        } else if (strcasecmp(pszService, "https") == 0) {
+            nPort = 443;
+        } else if (strcasecmp(pszService, "http") == 0) {
+            nPort = 80;
+        } else {
+            return EAI_SERVICE;
+        }
+    }
+    if (pszNode == NULL) {
+        if (nFamily == AF_INET6) {
+            bSix = 1;
+            v6 = (nFlags & AI_PASSIVE) ? in6addr_any : in6addr_loopback;
+        } else {
+            v4.s_addr = htonl((nFlags & AI_PASSIVE) ? INADDR_ANY : INADDR_LOOPBACK);
+        }
+    } else if (inet_pton(AF_INET6, pszNode, &v6) == 1) {
+        if (nFamily == AF_INET) {
+            return EAI_NONAME;
+        }
+        bSix = 1;
+    } else if (inet_pton(AF_INET, pszNode, &v4) != 1) {
+        if ((nFlags & AI_NUMERICHOST) || ResolveName(pszNode, &v4) != 0) {
+            return EAI_NONAME;
+        }
+    }
+    if (!bSix && nFamily == AF_INET6) { // v4-mapped, ::ffff:a.b.c.d
+        memset(&v6, 0, sizeof(v6));
+        v6.s6_addr[10] = 0xff;
+        v6.s6_addr[11] = 0xff;
+        memcpy(&v6.s6_addr[12], &v4, 4);
+        bSix = 1;
+    }
+    struct Block {
+        struct addrinfo info;
+        struct sockaddr_storage address;
+    } *pBlock = calloc(1, sizeof(*pBlock));
+    if (pBlock == NULL) {
+        return EAI_MEMORY;
+    }
+    pBlock->info.ai_flags = nFlags;
+    pBlock->info.ai_socktype = pHints != NULL ? pHints->ai_socktype : 0;
+    pBlock->info.ai_protocol = pHints != NULL ? pHints->ai_protocol : 0;
+    pBlock->info.ai_addr = (struct sockaddr *)&pBlock->address;
+    if (bSix) {
+        struct sockaddr_in6 *pIn6 = (struct sockaddr_in6 *)&pBlock->address;
+        pIn6->sin6_len = sizeof(*pIn6);
+        pIn6->sin6_family = AF_INET6;
+        pIn6->sin6_port = htons((uint16_t)nPort);
+        pIn6->sin6_addr = v6;
+        pBlock->info.ai_family = AF_INET6;
+        pBlock->info.ai_addrlen = sizeof(*pIn6);
+    } else {
+        struct sockaddr_in *pIn = (struct sockaddr_in *)&pBlock->address;
+        pIn->sin_len = sizeof(*pIn);
+        pIn->sin_family = AF_INET;
+        pIn->sin_port = htons((uint16_t)nPort);
+        pIn->sin_addr = v4;
+        pBlock->info.ai_family = AF_INET;
+        pBlock->info.ai_addrlen = sizeof(*pIn);
+    }
+    *ppResult = &pBlock->info;
+    return 0;
+}
+
+void freq_ps5_freeaddrinfo(struct addrinfo *pInfo) {
+    while (pInfo != NULL) {
+        struct addrinfo *pNext = pInfo->ai_next;
+        free(pInfo); // one block each, the addrinfo first
+        pInfo = pNext;
+    }
+}
+
+// Only libScePosixForWebKit's stub defines these, so they are null at run time: curl and OpenSSL's
+// few uses, numbers only.
+const char *gai_strerror(int nCode) {
+    (void)nCode;
+    return "name resolution failed";
+}
+struct hostent *gethostbyname(const char *pszName) {
+    (void)pszName;
+    return NULL;
+}
+int getnameinfo(const struct sockaddr *pAddress, socklen_t nLength, char *pszHost, size_t nHost, char *pszService,
+                size_t nService, int nFlags) {
+    (void)nLength, (void)nFlags;
+    unsigned nPort = 0;
+    if (pAddress->sa_family == AF_INET) {
+        const struct sockaddr_in *pIn = (const struct sockaddr_in *)pAddress;
+        if (pszHost != NULL && nHost != 0 && inet_ntop(AF_INET, &pIn->sin_addr, pszHost, nHost) == NULL) {
+            return EAI_FAIL;
+        }
+        nPort = ntohs(pIn->sin_port);
+    } else if (pAddress->sa_family == AF_INET6) {
+        const struct sockaddr_in6 *pIn6 = (const struct sockaddr_in6 *)pAddress;
+        if (pszHost != NULL && nHost != 0 && inet_ntop(AF_INET6, &pIn6->sin6_addr, pszHost, nHost) == NULL) {
+            return EAI_FAIL;
+        }
+        nPort = ntohs(pIn6->sin6_port);
+    } else {
+        return EAI_FAMILY;
+    }
+    if (pszService != NULL && nService != 0) {
+        snprintf(pszService, nService, "%u", nPort);
+    }
+    return 0;
+}
+
+// fcntl, as everything here calls it (link-title.sh wraps the name): the console answers EINVAL
+// to a socket's close-on-exec, and curl gave up on every connection over it (Perfect Eye,
+// 2026-10-18). There is no exec here, so that is done; a non-blocking mode it refuses goes
+// through FIONBIO.
+int __real_fcntl(int nFd, int nCommand, ...);
+int __wrap_fcntl(int nFd, int nCommand, ...) {
+    va_list args;
+    va_start(args, nCommand);
+    const long nArgument = va_arg(args, long);
+    va_end(args);
+    const int nResult = __real_fcntl(nFd, nCommand, nArgument);
+    if (nResult == -1 && errno == EINVAL) {
+        if (nCommand == F_SETFD) {
+            return 0;
+        }
+        if (nCommand == F_SETFL) {
+            int bOn = (nArgument & O_NONBLOCK) != 0;
+            if (ioctl(nFd, FIONBIO, &bOn) == 0) {
+                return 0;
+            }
+            errno = EINVAL;
+        }
+    }
+    return nResult;
+}
+
+// ---- the updater ----
+
+// At start-up a thread asks the release repo (FREQ_UPDATE_REPO, owner/name) for its latest
+// release. When its tag is not this build's (FREQ_VERSION, the commit it was built from), the
+// release's eboot.bin is downloaded into the title folder in this one's place, as Perfect Eye's
+// port/src/update.c does on the PS5, and a notification says so: the new build runs from the next
+// start. FREQ_UPDATE_TOKEN is a read-only token for the repo while it is private; FREQ_UPDATE=0
+// turns the check off.
+#include <curl/curl.h>
+
+#ifndef FREQ_VERSION
+#define FREQ_VERSION "unknown"
+#endif
+
+typedef struct {
+    char useless[45];
+    char message[3075];
+} NotifyRequest;
+int sceKernelSendNotificationRequest(int nDevice, NotifyRequest *pRequest, size_t nSize, int bBlocking);
+
+static void Notify(const char *pszMessage) {
+    static NotifyRequest s_request;
+    memset(&s_request, 0, sizeof(s_request));
+    snprintf(s_request.message, sizeof(s_request.message), "%s", pszMessage);
+    fprintf(stderr, "PS5: notification: %s\n", pszMessage);
+    sceKernelSendNotificationRequest(0, &s_request, sizeof(s_request), 0);
+}
+
+typedef struct {
+    char *pData;
+    size_t nSize;
+} Buffer;
+
+static size_t ToBuffer(void *pData, size_t nSize, size_t nCount, void *pUser) {
+    Buffer *pBuffer = pUser;
+    const size_t nAdd = nSize * nCount;
+    char *pGrown = realloc(pBuffer->pData, pBuffer->nSize + nAdd + 1);
+    if (pGrown == NULL) {
+        return 0;
+    }
+    memcpy(pGrown + pBuffer->nSize, pData, nAdd);
+    pBuffer->pData = pGrown;
+    pBuffer->nSize += nAdd;
+    pBuffer->pData[pBuffer->nSize] = '\0';
+    return nAdd;
+}
+
+// GET pszUrl from GitHub's API into a buffer (pFile NULL) or a file. A redirect to the download's
+// host goes without the token: curl keeps an Authorization header to the host it was given.
+static int Fetch(const char *pszUrl, const char *pszAccept, Buffer *pBuffer, FILE *pFile) {
+    CURL *pCurl = curl_easy_init();
+    if (pCurl == NULL) {
+        return -1;
+    }
+    struct curl_slist *pHeaders = NULL;
+    char szHeader[512];
+    snprintf(szHeader, sizeof(szHeader), "Accept: %s", pszAccept);
+    pHeaders = curl_slist_append(pHeaders, szHeader);
+    pHeaders = curl_slist_append(pHeaders, "X-GitHub-Api-Version: 2022-11-28");
+    const char *pszToken = getenv("FREQ_UPDATE_TOKEN");
+    if (pszToken != NULL && pszToken[0] != '\0') {
+        snprintf(szHeader, sizeof(szHeader), "Authorization: Bearer %s", pszToken);
+        pHeaders = curl_slist_append(pHeaders, szHeader);
+    }
+    curl_easy_setopt(pCurl, CURLOPT_URL, pszUrl);
+    curl_easy_setopt(pCurl, CURLOPT_HTTPHEADER, pHeaders);
+    curl_easy_setopt(pCurl, CURLOPT_USERAGENT, "Frequency-PS5/" FREQ_VERSION);
+    curl_easy_setopt(pCurl, CURLOPT_CAINFO, TITLE_DIR "/cacert.pem");
+    curl_easy_setopt(pCurl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(pCurl, CURLOPT_FAILONERROR, 1L);
+    curl_easy_setopt(pCurl, CURLOPT_CONNECTTIMEOUT, 15L);
+    curl_easy_setopt(pCurl, CURLOPT_TIMEOUT, pFile != NULL ? 600L : 30L);
+    if (pFile != NULL) {
+        curl_easy_setopt(pCurl, CURLOPT_WRITEDATA, pFile); // curl's own fwrite
+    } else {
+        curl_easy_setopt(pCurl, CURLOPT_WRITEFUNCTION, ToBuffer);
+        curl_easy_setopt(pCurl, CURLOPT_WRITEDATA, pBuffer);
+    }
+    const CURLcode result = curl_easy_perform(pCurl);
+    long nStatus = 0;
+    curl_easy_getinfo(pCurl, CURLINFO_RESPONSE_CODE, &nStatus);
+    curl_slist_free_all(pHeaders);
+    curl_easy_cleanup(pCurl);
+    if (result != CURLE_OK) {
+        fprintf(stderr, "PS5: update: %s: %s (HTTP %ld)\n", pszUrl, curl_easy_strerror(result), nStatus);
+        return -1;
+    }
+    return 0;
+}
+
+// The string value after "pszKey": at pszFrom, into pszOut. NULL if there is none.
+static const char *JsonString(const char *pszFrom, const char *pszKey, char *pszOut, size_t nOut) {
+    char szNeedle[64];
+    snprintf(szNeedle, sizeof(szNeedle), "\"%s\":\"", pszKey);
+    const char *pszAt = pszFrom != NULL ? strstr(pszFrom, szNeedle) : NULL;
+    if (pszAt == NULL) {
+        return NULL;
+    }
+    pszAt += strlen(szNeedle);
+    const char *pszEnd = strchr(pszAt, '"');
+    if (pszEnd == NULL || (size_t)(pszEnd - pszAt) >= nOut) {
+        return NULL;
+    }
+    memcpy(pszOut, pszAt, (size_t)(pszEnd - pszAt));
+    pszOut[pszEnd - pszAt] = '\0';
+    return pszEnd;
+}
+
+static void *RunUpdater(void *pUnused) {
+    (void)pUnused;
+    const char *pszRepo = getenv("FREQ_UPDATE_REPO");
+    if (pszRepo == NULL) {
+        pszRepo = "thesmokesession-bit/frequency-remaster";
+    }
+    char szUrl[512];
+    snprintf(szUrl, sizeof(szUrl), "https://api.github.com/repos/%s/releases/latest", pszRepo);
+    Buffer release = {NULL, 0};
+    char szTag[128];
+    if (Fetch(szUrl, "application/vnd.github+json", &release, NULL) != 0 ||
+        JsonString(release.pData, "tag_name", szTag, sizeof(szTag)) == NULL) {
+        free(release.pData);
+        return NULL;
+    }
+    // The release's tag ends with the commit it was built from (v1.0-abc1234, or abc1234).
+    const size_t nTag = strlen(szTag), nVersion = strlen(FREQ_VERSION);
+    if (nTag >= nVersion && strcmp(szTag + nTag - nVersion, FREQ_VERSION) == 0) {
+        fprintf(stderr, "PS5: update: %s is the latest\n", szTag);
+        free(release.pData);
+        return NULL;
+    }
+    // The eboot.bin asset's API address: the "url" its object starts with, before its "name".
+    char szAsset[512] = "";
+    const char *pszName = strstr(release.pData, "\"name\":\"eboot.bin\"");
+    for (const char *pszAt = release.pData; pszName != NULL;) {
+        const char *pszUrl = strstr(pszAt, "\"url\":\"");
+        if (pszUrl == NULL || pszUrl > pszName) {
+            break;
+        }
+        JsonString(pszUrl, "url", szAsset, sizeof(szAsset));
+        pszAt = pszUrl + 1;
+    }
+    free(release.pData);
+    if (strstr(szAsset, "/releases/assets/") == NULL) {
+        fprintf(stderr, "PS5: update: release %s has no eboot.bin\n", szTag);
+        return NULL;
+    }
+    fprintf(stderr, "PS5: update: downloading %s (this build is %s)\n", szTag, FREQ_VERSION);
+    const char *pszNew = TITLE_DIR "/eboot.bin.new";
+    FILE *pFile = fopen(pszNew, "wb");
+    const int nFetched = pFile != NULL ? Fetch(szAsset, "application/octet-stream", NULL, pFile) : -1;
+    const long nSize = pFile != NULL ? ftell(pFile) : 0;
+    if (pFile != NULL) {
+        fclose(pFile);
+    }
+    // A signed title starts with the SELF magic; anything else (an error page) is not installed.
+    unsigned char abMagic[4] = {0};
+    pFile = nFetched == 0 ? fopen(pszNew, "rb") : NULL;
+    if (pFile != NULL) {
+        fread(abMagic, 1, sizeof(abMagic), pFile);
+        fclose(pFile);
+    }
+    static const unsigned char kSelfMagic[4] = {0x4f, 0x15, 0x3d, 0x1d};
+    // 0777: without the executable bit the home screen cannot start the title (Perfect Eye,
+    // 2026-10-19).
+    if (nFetched != 0 || nSize < (1 << 20) || memcmp(abMagic, kSelfMagic, 4) != 0 ||
+        chmod(pszNew, 0777) != 0 || rename(pszNew, TITLE_DIR "/eboot.bin") != 0) {
+        fprintf(stderr, "PS5: update: %s not installed (%ld bytes)\n", szTag, nSize);
+        unlink(pszNew);
+        return NULL;
+    }
+    char szMessage[256];
+    snprintf(szMessage, sizeof(szMessage), "Frequency updated to %s. Close and start it again to play it.",
+             szTag);
+    Notify(szMessage);
+    return NULL;
+}
+
+static void StartUpdater(void) {
+    const char *pszUpdate = getenv("FREQ_UPDATE");
+    if (pszUpdate != NULL && strcmp(pszUpdate, "0") == 0) {
+        return;
+    }
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, RunUpdater, NULL) == 0) {
+        pthread_detach(thread);
+    }
 }

@@ -82,6 +82,15 @@ stub libSceAgcDriver vendor/ps5/sdk/stubs/agc_driver_canary_link_stub.c
 source "$root/tools/radv-link.sh"
 radv_link_recipe "$root" "$sdk_root" "$archive" || exit 2
 radv_linker_script=(-T "$here/title.ld" -L "$root/tooling/psbc" -L "$root/tooling/native")
+# The updater's network (host/ps5/ps5.c): getaddrinfo through the console's resolver (the SDK's
+# only fails) and fcntl's refused close-on-exec on a socket, as Perfect Eye's ps5/link-title.sh.
+for i in "${!radv_link_flags[@]}"; do
+    case ${radv_link_flags[$i]} in
+    --defsym=getaddrinfo=*) radv_link_flags[$i]=--defsym=getaddrinfo=freq_ps5_getaddrinfo ;;
+    --defsym=freeaddrinfo=*) radv_link_flags[$i]=--defsym=freeaddrinfo=freq_ps5_freeaddrinfo ;;
+    esac
+done
+radv_link_flags+=(--wrap=fcntl)
 # The low heap is host/core/heap.c's own malloc family (HostMapGameMemory); the platform's title
 # heap is what heap.c calls the system heap, so its wraps stay but are renamed for heap.c to call.
 platform="$work/libps5platform.a"
