@@ -13,7 +13,7 @@ jobs:
           persist-credentials: false
       - env:
           GH_TOKEN: '${{ github.token }}'
-        name: 'Publish eboot.bin as the release in tag.txt'
+        name: 'Publish eboot.bin and the title folder as the release in tag.txt'
         run: |
           # build.txt has the build's nine-character version, then the full source commit. The
           # updater matches the last nine characters of the tag to the running build's version.
@@ -34,11 +34,18 @@ jobs:
             echo "eboot.bin.sig is not the release key's signature of eboot.bin." >&2
             exit 1
           fi
+          # The title folder to copy to /data/homebrew: title/ (sce_sys, sce_module, cacert.pem,
+          # frequency.ini.example) and this eboot.bin.
+          zip="Frequency-PS5-${version}.zip"
+          mkdir -p "$RUNNER_TEMP/zip/PPSA64010"
+          cp -R title/. eboot.bin "$RUNNER_TEMP/zip/PPSA64010/"
+          (cd "$RUNNER_TEMP/zip" && zip -qr "$GITHUB_WORKSPACE/$zip" PPSA64010)
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-            echo "Release ${tag} already exists."
+            gh release upload "$tag" "$zip" --clobber --repo "$GITHUB_REPOSITORY"
+            gh release edit "$tag" --notes-file notes.md --repo "$GITHUB_REPOSITORY"
             exit 0
           fi
-          gh release create "$tag" eboot.bin eboot.bin.sig --notes-file notes.md \
+          gh release create "$tag" eboot.bin eboot.bin.sig "$zip" --notes-file notes.md \
             --repo "$GITHUB_REPOSITORY" \
             --target "$commit" --title "$(head -n 1 title.txt)"
 name: 'PS5 release'
