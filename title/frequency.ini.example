@@ -1,0 +1,186 @@
+# Frequency (native) settings. Copy to frequency.ini next to where you start the game, or point
+# FREQ_CONFIG at a file. An environment variable of the same name overrides a line here.
+
+# Disc image and memory card folder.
+#FREQ_DISC=Frequency (USA).iso
+#FREQ_MC=memcard
+
+# Display: frame rate 60 or 120; resolution factor (1 = PS2, 6 = 4K); 16:9 widescreen (1 = on).
+#FREQ_FPS=120
+#FREQ_SCALE=6
+#FREQ_WIDESCREEN=1
+# PS5: FREQ_SCALE defaults to what covers the TV's lines (5 on a 4K set); FREQ_FPS=120 suits a TV
+# that the log shows at 119880 mHz. Linux: FREQ_GFX=vulkan draws with Vulkan (a -DPS2GFX_VULKAN=ON build).
+#FREQ_GFX=vulkan
+# With FREQ_SCALE, lines, points and the feedback blur keep the PS2's size: on (default), or off for
+# one-pixel lines and a sharper blur.
+#FREQ_SCALE_EFFECTS=off
+# Texture filtering: enhanced (default: the game's mip levels with 16x anisotropic filtering, no
+# shimmer on far tunnel walls) or original (the top level only, as before).
+#FREQ_TEX_FILTER=original
+# Colour depth of the Vulkan renderer (PS5): full (default: 16-bit pictures keep 8 bits a channel, no
+# banding in glows and trails) or original (5 bits a channel, as the PS2 stores them). OpenGL is always full.
+#FREQ_COLOR_DEPTH=original
+# Anti-aliasing of edges (FXAA on the finished frame): off (default) or on. It also softens HUD text a
+# little and can ripple near-flat edges when the picture is scaled up.
+#FREQ_AA=on
+
+# Latency, in ms. Audio and video offsets play the sound and draw the picture that much later than
+# the game judges (negative: earlier). The input offset judges your presses that much earlier: the
+# calibration sets it (Options > Game Options, press Square, tap any button with the 12 clicks;
+# Triangle cancels) and saves it here. A positive video offset also delays catch effects with the
+# picture; a negative one cannot show them early. All three are on the remaster's settings too
+# (Options > Game Options, press Circle), in 5 ms steps from -250 to 250: the video and input
+# offsets apply from the next song, the audio offset from the next start. To line up a TV, play a
+# song and move VIDEO OFFSET until the gems reach the catcher on the beat you hear.
+#FREQ_AUDIO_OFFSET_MS=0
+#FREQ_VIDEO_OFFSET_MS=0
+#FREQ_INPUT_OFFSET_MS=0
+
+# Assists, off by default. No fail: running out of energy does not stop the song, but a song that
+# ran out still ends as a fail, with no progress or high score saved (1 = on).
+#FREQ_NO_FAIL=1
+# Timing window: the catch window times this (1.0 = original, 1.5 or 2.0 wider).
+#FREQ_TIMING_WINDOW=1.5
+# Unlock all: every arena and stage open from the start, as the game's own cheat opens them; unlike
+# the cheat, progress and high scores still save (1 = on).
+#FREQ_UNLOCK_ALL=1
+# Auto-pause, on by default: a song pauses itself, as with Start, when a player's controller
+# disconnects, and on the PS5 when the PS button or a system overlay covers the game or the console
+# wakes from rest mode. Never in network play (0 = off).
+#FREQ_AUTOPAUSE=0
+
+# Practice mode: every song is a practice run, the game's own practice mode (no juice drain; no
+# score or progress saved). Select restarts the song at once, and so does Restart in the pause menu,
+# without its confirmation. A speed under 1 or a loop turns it on.
+#FREQ_PRACTICE=1
+# Practice speed, 0.5 to 1 (or 50 to 100 percent): the song plays slower at the same pitch.
+#FREQ_PRACTICE_SPEED=0.75
+# Practice loop, repeated until you quit or restart: bars (9-16), or phrases, the song's sections
+# as the HUD's song-position blocks show them (p3 or p3-4). Counted from 1.
+#FREQ_PRACTICE_LOOP=9-16
+
+# Sample playback interpolation: gaussian (default, the console's), linear, cubic, or sinc (8 taps).
+#FREQ_SPU_INTERP=sinc
+
+# HUD at the screen edges in 16:9 (1 = on; needs FREQ_WIDESCREEN=1).
+#FREQ_HUD_EDGES=1
+# Strength of the motion trails (score text trails, feedback blur): 1 = original, 0.5, 0 = off.
+#FREQ_TRAILS=0.5
+# Player colours (gems, catcher, pointer, lane, HUD): original, or cb for colours that stay
+# distinct with red-green colour blindness.
+#FREQ_GEM_PALETTE=cb
+
+# The DualSense light bar shows each player's colour (FREQ_GEM_PALETTE's when cb), pulsing on the
+# beat during a song and flashing on a captured section (1 = on, default; 0 leaves the bar alone).
+#FREQ_LIGHTBAR=0
+# On the PS5, L2 or R2 clicks at its press point when it plays a lane, through the adaptive
+# triggers (1 = on, default).
+#FREQ_TRIGGERS=0
+# Online play, up to 4 players on up to 4 machines, free: no account and no paid server. In the
+# game, Multiplayer > ONLINE picks HOST or JOIN and a code of three words, and shows the room's
+# players; the settings below open a room at start instead. Every machine sets the same room code;
+# pick a few words nobody would guess, since anyone with the code can join. One machine is the host
+# (FREQ_ONLINE_HOST=1): the songs it starts in Solo or Multiplayer (not remixes or the tutorial)
+# start on every machine in the room, and each guest plays one player with its first controller.
+# Guests wait in the menus; the console shows a notification when a machine joins or leaves.
+#FREQ_ONLINE_ROOM=purple tunnel friday
+#FREQ_ONLINE_HOST=1
+# The last room Multiplayer > ONLINE opened, for one press there to open it again (these do not open
+# a room at start).
+#FREQ_ONLINE_LAST_ROOM=ace bird cat
+#FREQ_ONLINE_LAST_HOST=1
+# The name the others see for this machine's player (up to 12 characters).
+#FREQ_ONLINE_NAME=Lefty
+# The UDP port (host default 47125, guest any free port). Most home routers let the machines reach
+# each other without help; if they cannot, forward this port on the host's router to the host.
+#FREQ_ONLINE_PORT=47125
+# A guest can skip the meeting and name the host's address (its public IP and port, or its LAN
+# address at home).
+#FREQ_ONLINE_PEER=203.0.113.7:47125
+# Where the machines meet: an ntfy server (default https://ntfy.sh, free, no account; the topic is
+# made from the room code, and what is posted there is signed with it), or off with
+# FREQ_ONLINE_PEER. The STUN server tells each machine its public address (off to skip).
+#FREQ_ONLINE_SIGNAL=https://ntfy.sh
+#FREQ_ONLINE_STUN=stun.l.google.com:19302
+
+# 5.1 sound (1 = on), on an output that takes it; otherwise stereo as before.
+#FREQ_SURROUND=1
+# Spatial mix (1 = on; needs FREQ_SURROUND=1): each instrument plays from its lane in the tunnel,
+# the track you are on in front and the others around you, turning as you change tracks. Sound
+# effects, reverb, and the backing parts stay spread over the speakers as in plain 5.1.
+#FREQ_SPATIAL=1
+
+# Custom songs. FREQ_SONGS is a folder of song folders with files at their game paths (for example
+# mysong/levels/mysong/mysongf1_c.mid), and they replace or add to the disc's files; the image is
+# not changed. host/io/songs.py unpacks a disc song into a song folder and lists what a new song
+# needs. The PS5 default is songs in the title folder.
+#FREQ_SONGS=songs
+
+# Bonus songs, on by default: BT's Godspeed and Kareem Caines' Scratchotronic, finished songs on the
+# disc that the game never lists, play as a sixth song of stage 4 and stage 1. They open with the
+# secret songs (Expert finished, or FREQ_UNLOCK_ALL) and save high scores like any song; progress
+# toward a stage does not count them (0 = off).
+#FREQ_BONUS_SONGS=0
+# Fast boot, on by default: from the second start the memory card check and the Sony screen go by
+# without their waits and fades, and the intro movie is skipped. A missing card is still reported.
+# The first start writes FREQ_BOOTED=1 here; remove that line to see the full boot again (0 = off).
+#FREQ_FAST_BOOT=0
+
+# A look over the finished frame: off (default), bloom (a light glow around the neon), or crt
+# (scanlines on each of the PS2's lines). A change applies at once.
+#FREQ_FILTER=bloom
+# Photo mode has no setting. Pause a song and click the touchpad (or R3). The left stick orbits the
+# camera, the right stick zooms, Cross saves a PNG of the screen to photos/ (on the PS5
+# /app0/photos, with a notification of the file), and Circle or the touchpad goes back to the pause
+# menu.
+
+# Every setting above except the disc, memory card, renderer, songs folder, practice loop and
+# online keys is also on the remaster's settings page (Options > Game Options, press Circle), a
+# list in sections. Up and Down pick a setting, L1 and R1 jump to the previous or next section,
+# Left and Right change it and save it here at once, and Circle or Triangle closes the page. The
+# panel under the list explains the setting and shows whether it takes effect from the next start
+# or the next song. The keys below are on the page too, except the board code.
+# Automatic updates on the PS5, on by default: each start looks for a newer build of the remaster
+# and downloads it for the next start (0 = off).
+#FREQ_UPDATE=0
+# HD textures: a folder of replacement textures (host/gfx/ps2gfx/src/TexReplace.h describes the
+# files). Empty or unset is off. The page's HD TEXTURES row sets hd in the working directory
+# (/app0/hd on the PS5).
+#FREQ_TEX_REPLACE=hd
+# Reduce flashing: the white flash of each caught gem at full strength (0, default), half (0.5),
+# or none (1).
+#FREQ_REDUCE_FLASH=1
+# Watch mode: the game plays every song perfectly by itself, with no score or progress saved, as
+# a jukebox with the visuals or a demo for guests. Not in network play (1 = on).
+#FREQ_WATCH=1
+# How early the beat rumble starts, in ms (default 90, tuned for the DualShock 2's motors; the
+# page offers 0 to 180 in 10 ms steps). Lower it if the pulse lands after the beat.
+#FREQ_RUMBLE_LEAD_MS=60
+
+# Best runs: every solo song is recorded, and a new high score keeps the run in replays/ in the
+# title folder (one per song and difficulty). Square on the results screen plays it back.
+# FREQ_GHOST=1 shows the kept run's score at the same point of the song, the number under yours.
+#FREQ_GHOST=1
+# Achievements (25) are listed in achievements.txt in the title folder; each pops a notification.
+# A friends board: machines with the same board code share their best score per song, through
+# ntfy.sh as online play does (FREQ_ONLINE_SIGNAL applies; the name is FREQ_ONLINE_NAME, or the
+# Freq's name); Multiplayer > SCOREBOARD sets the code. Anyone with the code can post any score,
+# so give it to friends only. A notification shows your rank after each new best; a post goes out at
+# most every 6 minutes.
+#FREQ_BOARD=green tunnel scores
+
+# Logs and crash reports have no setting. frequency.log in the title folder (beside this file on
+# Linux) is the log of this run. Each start moves the last run's log to
+# logs/frequency-<date>-<time>.log, and a crash writes logs/crash-<date>-<time>.txt (the build, the
+# signal, the registers and stack, and the end of the log). The newest 10 of each stay; older ones
+# are deleted. After a crash the next start shows a notification.
+# Send report (on the settings page) sends the last run's crash report, or this run's log, to an
+# ntfy topic (free, with no account) as up to 24000 bytes in messages of at most 3800, with tokens,
+# keys, room codes, and board codes removed. Open https://ntfy.sh/<topic> (or subscribe to the
+# topic in the ntfy app) within 12 hours to read it. The first start writes a random topic here.
+#FREQ_REPORT_TOPIC=frequency-0123456789abcdef
+# The ntfy server reports go to (default https://ntfy.sh).
+#FREQ_REPORT_SERVER=https://ntfy.sh
+# A crash at start, to try the crash report (1 = on; remove the line afterwards).
+#FREQ_TEST_CRASH=1
